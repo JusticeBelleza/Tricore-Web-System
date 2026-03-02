@@ -12,6 +12,7 @@ import AdminOrders from './pages/AdminOrders';
 import AdminUsers from './pages/AdminUsers';
 import Dashboard from './pages/Dashboard';
 import Reports from './pages/Reports';
+import FleetManagement from './pages/FleetManagement';
 
 // Import the new Admin & Operations pages
 import Products from './pages/Products';
@@ -65,6 +66,7 @@ export default function App() {
           <Route path="admin/products" element={<Products />} />
           <Route path="admin/users" element={<AdminUsers />} />
           <Route path="admin/reports" element={<Reports />} />
+          <Route path="/fleet" element={<FleetManagement />} />
         </Route>
       </Routes>
     </BrowserRouter>

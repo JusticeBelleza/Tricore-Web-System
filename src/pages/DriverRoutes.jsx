@@ -1,28 +1,29 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../lib/AuthContext'; // NEW: We pull the logged in driver!
+import { Search, MapPin, Truck, CheckCircle2, Navigation, PackageCheck, User, Car, Hash } from 'lucide-react';
 
 export default function DriverRoutes() {
+  const { profile } = useAuth(); // NEW: Get the currently logged in profile
+  
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [processingId, setProcessingId] = useState(null);
-
-  // States for the active delivery being processed
-  const [activeDelivery, setActiveDelivery] = useState(null);
-  const [photoFile, setPhotoFile] = useState(null);
-  const [signatureFile, setSignatureFile] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [activeTab, setActiveTab] = useState('ready_for_delivery'); 
 
   useEffect(() => {
-    fetchRoutes();
-  }, []);
+    // Only fetch if profile exists to prevent fetching the wrong data
+    if (profile) fetchDriverOrders();
+  }, [profile]);
 
-  const fetchRoutes = async () => {
+  const fetchDriverOrders = async () => {
     setLoading(true);
     try {
       const { data, error } = await supabase
         .from('orders')
-        .select('*, companies(name, shipping_fee)')
-        .eq('status', 'out_for_delivery')
-        .order('created_at', { ascending: true });
+        .select(`*, companies ( name, address, city, state, zip )`)
+        .in('status', ['ready_for_delivery', 'shipped'])
+        .order('created_at', { ascending: false });
 
       if (error) throw error;
       setOrders(data || []);
@@ -33,137 +34,101 @@ export default function DriverRoutes() {
     }
   };
 
-  const handleUpload = async (file, pathPrefix) => {
-    if (!file) return null;
-    const fileExt = file.name.split('.').pop();
-    const fileName = `${pathPrefix}-${Math.random()}.${fileExt}`;
-    const filePath = `${fileName}`;
-
-    const { error: uploadError } = await supabase.storage
-      .from('deliveries')
-      .upload(filePath, file);
-
-    if (uploadError) throw uploadError;
-
-    const { data } = supabase.storage.from('deliveries').getPublicUrl(filePath);
-    return data.publicUrl;
+  const getDisplayName = (order) => {
+    if (order.companies?.name) return order.patient_name ? `${order.companies.name} - ${order.patient_name}` : order.companies.name;
+    return order.customer_name || 'Retail Customer';
   };
 
-  const submitDelivery = async (e) => {
-    e.preventDefault();
-    if (!photoFile || !signatureFile || !activeDelivery) {
-      alert("Both a photo and signature image are required.");
-      return;
-    }
-
-    setProcessingId(activeDelivery.id);
+  const acceptDelivery = async (orderId) => {
+    if(!window.confirm("Start route? This will mark the order as Out For Delivery.")) return;
     try {
-      // 1. Upload files
-      const photoUrl = await handleUpload(photoFile, `photo-${activeDelivery.id}`);
-      const sigUrl = await handleUpload(signatureFile, `sig-${activeDelivery.id}`);
-
-      // 2. Call our secure RPC to complete delivery & deduct inventory
-      const { error } = await supabase.rpc('complete_delivery', {
-        p_order_id: activeDelivery.id,
-        p_photo_url: photoUrl,
-        p_signature_url: sigUrl
-      });
-
+      const { error } = await supabase.from('orders').update({ status: 'shipped' }).eq('id', orderId);
       if (error) throw error;
-
-      alert('Delivery completed successfully! Inventory deducted.');
-      setActiveDelivery(null);
-      setPhotoFile(null);
-      setSignatureFile(null);
-      fetchRoutes(); // Refresh the list
-
+      setOrders(orders.map(o => o.id === orderId ? { ...o, status: 'shipped' } : o));
     } catch (error) {
-      console.error('Delivery error:', error.message);
-      alert('Failed to process delivery.');
-    } finally {
-      setProcessingId(null);
+      alert('Failed to start route.');
     }
   };
 
-  if (loading) return <div className="text-slate-500">Loading routes...</div>;
+  // NEW: Filters out orders NOT assigned to the currently logged in driver
+  const displayedOrders = orders.filter(o => {
+    const isMyRoute = o.driver_name === profile?.full_name; // Strict security filter
+    const isCorrectTab = o.status === activeTab;
+    const matchesSearch = o.id.toLowerCase().includes(searchTerm.toLowerCase()) || getDisplayName(o).toLowerCase().includes(searchTerm.toLowerCase());
+    
+    return isMyRoute && isCorrectTab && matchesSearch;
+  });
+
+  if (loading) return <div className="text-slate-500 font-medium">Loading routes...</div>;
 
   return (
-    <div className="space-y-6 max-w-2xl mx-auto">
-      <div>
-        <h2 className="text-2xl font-bold text-slate-900">Driver Routes</h2>
-        <p className="text-sm text-slate-500 mt-1">Orders out for delivery today.</p>
+    <div className="space-y-6 max-w-7xl mx-auto pb-12">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 pb-2">
+        <div><h2 className="text-3xl font-bold text-slate-900 tracking-tight">My Routes</h2><p className="text-sm text-slate-500 mt-2">View your assigned boxes and begin deliveries.</p></div>
       </div>
 
-      {orders.length === 0 ? (
-        <div className="bg-white p-8 rounded-xl border border-slate-200 text-center text-slate-500 shadow-sm">
-          No pending deliveries for you right now. Great job!
+      <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
+        <div className="flex gap-2 p-1 bg-slate-50 rounded-xl border border-slate-100 w-full md:w-auto">
+          <button onClick={() => setActiveTab('ready_for_delivery')} className={`flex-1 md:flex-none px-6 py-2.5 text-sm font-bold rounded-lg transition-all ${activeTab === 'ready_for_delivery' ? 'bg-white text-blue-700 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}>Available ({orders.filter(o => o.status === 'ready_for_delivery' && o.driver_name === profile?.full_name).length})</button>
+          <button onClick={() => setActiveTab('shipped')} className={`flex-1 md:flex-none px-6 py-2.5 text-sm font-bold rounded-lg transition-all ${activeTab === 'shipped' ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}>En Route ({orders.filter(o => o.status === 'shipped' && o.driver_name === profile?.full_name).length})</button>
+        </div>
+        <div className="relative w-full md:w-80">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+          <input type="text" placeholder="Search Route or Name..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 outline-none text-sm font-medium transition-all" />
+        </div>
+      </div>
+
+      {displayedOrders.length === 0 ? (
+        <div className="p-16 text-center bg-white rounded-3xl border border-slate-100 shadow-sm mt-6">
+          <Navigation size={48} strokeWidth={1.5} className="mx-auto text-slate-300 mb-4" />
+          <h3 className="text-lg font-bold text-slate-900 mb-1">No Routes Assigned</h3>
+          <p className="text-slate-500 text-sm">Wait for dispatch to assign you a delivery.</p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {orders.map(order => (
-            <div key={order.id} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-              <div className="flex justify-between items-start mb-4">
-                <div>
-                  <h3 className="font-bold text-slate-900 text-lg">{order.companies?.name}</h3>
-                  <p className="text-sm font-mono text-slate-500">Order #{order.id.split('-')[0]}</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
+          {displayedOrders.map(order => {
+            let address = "No Address Provided";
+            if (order.companies && order.companies.address) {
+              address = `${order.companies.address}, ${order.companies.city || ''} ${order.companies.state || ''} ${order.companies.zip || ''}`;
+            }
+            
+            return (
+              <div key={order.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-all p-6 flex flex-col">
+                <div className="flex justify-between items-start mb-4">
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Order #{order.id.substring(0, 8).toUpperCase()}</p>
+                    <h3 className="text-lg font-bold text-slate-900 leading-tight">{getDisplayName(order)}</h3>
+                  </div>
+                  {activeTab === 'ready_for_delivery' ? <span className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center text-blue-600 border border-blue-100"><PackageCheck size={16}/></span> : <span className="w-8 h-8 rounded-full bg-green-50 flex items-center justify-center text-green-600 border border-green-100"><CheckCircle2 size={16}/></span>}
                 </div>
-                <span className="bg-orange-100 text-orange-800 px-2.5 py-0.5 rounded-full text-xs font-medium uppercase tracking-wider">
-                  Action Required
-                </span>
-              </div>
+                
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 mb-4 flex gap-3">
+                  <MapPin size={18} className="text-slate-400 shrink-0 mt-0.5" />
+                  <p className="text-sm font-medium text-slate-700 leading-relaxed">{address}</p>
+                </div>
 
-              {activeDelivery?.id === order.id ? (
-                <form onSubmit={submitDelivery} className="mt-6 pt-6 border-t border-slate-100 space-y-4">
-                  <h4 className="font-medium text-slate-900">Proof of Delivery</h4>
+                <div className="mb-6 space-y-2 border-t border-slate-100 pt-4">
+                  <p className="text-xs text-slate-500 flex items-center justify-between">
+                    <span className="flex items-center gap-2"><User size={14} className="text-slate-400"/> <span className="font-semibold text-slate-700">{order.driver_name || 'Assigned to You'}</span></span>
+                    <span className="font-mono text-slate-400">Driver</span>
+                  </p>
                   
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Take Photo of Delivery</label>
-                    <input 
-                      type="file" 
-                      accept="image/*" 
-                      capture="environment"
-                      onChange={(e) => setPhotoFile(e.target.files[0])}
-                      className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
-                    />
+                  <div className="bg-slate-50 rounded-lg p-3 space-y-2 border border-slate-100">
+                    <div className="flex justify-between items-start gap-2">
+                      <p className="text-xs font-semibold text-slate-700 flex items-center gap-2"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Vehicle'} ({order.vehicle_type || 'Type'})</p>
+                      <p className="text-[10px] font-mono font-bold text-slate-600 tracking-wider bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-sm">{order.vehicle_license || 'NO-PLATE'}</p>
+                    </div>
                   </div>
+                </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Customer Signature (Image)</label>
-                    <input 
-                      type="file" 
-                      accept="image/*"
-                      onChange={(e) => setSignatureFile(e.target.files[0])}
-                      className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
-                    />
-                  </div>
-
-                  <div className="flex gap-3 pt-4">
-                    <button 
-                      type="button" 
-                      onClick={() => setActiveDelivery(null)}
-                      className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-md transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button 
-                      type="submit" 
-                      disabled={processingId === order.id}
-                      className="flex-1 px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-md hover:bg-slate-800 disabled:opacity-50"
-                    >
-                      {processingId === order.id ? 'Uploading & Updating...' : 'Complete Delivery'}
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <button 
-                  onClick={() => setActiveDelivery(order)}
-                  className="w-full mt-2 px-4 py-2 bg-slate-100 text-slate-900 text-sm font-medium rounded-md hover:bg-slate-200 transition-colors"
-                >
-                  Deliver Order
-                </button>
-              )}
-            </div>
-          ))}
+                {activeTab === 'ready_for_delivery' ? (
+                  <button onClick={() => acceptDelivery(order.id)} className="mt-auto w-full py-4 rounded-xl text-sm font-bold bg-slate-900 text-white hover:bg-slate-800 transition-all shadow-md flex items-center justify-center gap-2"><Truck size={18} /> Accept & Start Route</button>
+                ) : (
+                  <button disabled className="mt-auto w-full py-3 rounded-xl text-sm font-bold bg-slate-50 text-slate-400 border border-slate-200 cursor-not-allowed flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Out for Delivery</button>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

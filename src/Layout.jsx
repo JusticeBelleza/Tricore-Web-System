@@ -3,7 +3,7 @@ import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from './lib/AuthContext';
 import { 
   LayoutDashboard, Package, ShoppingCart, Truck, Warehouse, 
-  Users, BarChart3, ClipboardList, LogOut, User, Menu, X
+  Users, BarChart3, ClipboardList, LogOut, User, Menu, X, Car
 } from "lucide-react"; 
 
 export default function Layout() {
@@ -116,6 +116,12 @@ export default function Layout() {
                 <Link to="/admin/orders" onClick={closeMobileMenu} className={navItemClass('/admin/orders')}>
                   <ShoppingCart size={18} /> All Orders
                 </Link>
+                
+                {/* NEW FLEET MANAGEMENT LINK ADDED HERE */}
+                <Link to="/fleet" onClick={closeMobileMenu} className={navItemClass('/fleet')}>
+                  <Car size={18} /> Fleet Management
+                </Link>
+
                 <Link to="/admin/users" onClick={closeMobileMenu} className={navItemClass('/admin/users')}>
                   <Users size={18} /> User Management
                 </Link>
