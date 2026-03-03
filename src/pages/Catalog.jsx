@@ -175,7 +175,8 @@ export default function Catalog() {
       const { data: productsData, error: productsError } = await supabase.from('products').select('*').order('name');
       if (productsError) throw productsError;
 
-      const { data: variantsData, error: variantsError } = await supabase.from('product_variants').select('*');
+      // FIXED: Ordered product variants by multiplier so smallest packaging is always first!
+      const { data: variantsData, error: variantsError } = await supabase.from('product_variants').select('*').order('multiplier', { ascending: true });
       if (variantsError) throw variantsError;
 
       let rulesData = [];
@@ -216,7 +217,7 @@ export default function Catalog() {
     });
   }, [products, searchTerm, selectedCategory]);
 
-  // --- Grouping Logic (Applied AFTER filtering) ---
+  // --- Grouping & Smart Sorting Logic ---
   const groupedProducts = useMemo(() => {
     const groups = {};
     filteredProducts.forEach(p => {
@@ -224,6 +225,32 @@ export default function Catalog() {
       if (!groups[familyName]) groups[familyName] = [];
       groups[familyName].push(p);
     });
+
+    // Smart Sorter to force correct size order (Small, Medium, Large)
+    const getSizeWeight = (name) => {
+      const parts = name.split(' - ');
+      const sizeName = parts.length > 1 ? parts[1].trim().toLowerCase() : '';
+      
+      if (sizeName === 'xs' || sizeName === 'extra small') return 1;
+      if (sizeName === 'small' || sizeName === 's') return 2;
+      if (sizeName === 'medium' || sizeName === 'm') return 3;
+      if (sizeName === 'large' || sizeName === 'l') return 4;
+      if (sizeName === 'xl' || sizeName === 'extra large') return 5;
+      if (sizeName === 'xxl' || sizeName === '2xl') return 6;
+      
+      return 99; // Default weight for non-standard sizes, forces them to the end
+    };
+
+    // Apply the sorting to every product family group
+    Object.values(groups).forEach(familyArray => {
+      familyArray.sort((a, b) => {
+        const weightA = getSizeWeight(a.name);
+        const weightB = getSizeWeight(b.name);
+        if (weightA !== weightB) return weightA - weightB;
+        return a.name.localeCompare(b.name); // Fallback to alphabetical if same weight
+      });
+    });
+
     return Object.entries(groups);
   }, [filteredProducts]);
 

@@ -188,13 +188,13 @@ export default function AdminUsers() {
         </div>
         <div className="flex gap-3">
           {activeTab === 'staff' && (
-            <button onClick={() => setShowAddStaffModal(true)} className="px-6 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center gap-2">
-              <UserPlus size={18} /> Add Staff
+            <button onClick={() => setShowAddStaffModal(true)} className="px-4 py-2 text-sm bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center gap-2">
+              <UserPlus size={16} /> Add Staff
             </button>
           )}
           {activeTab === 'b2b' && (
-            <button onClick={() => setShowAddB2bModal(true)} className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 active:scale-95 transition-all shadow-md flex items-center gap-2">
-              <Building2 size={18} /> Register Agency
+            <button onClick={() => setShowAddB2bModal(true)} className="px-4 py-2 text-sm bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 active:scale-95 transition-all shadow-md flex items-center gap-2">
+              <Building2 size={16} /> Register Agency
             </button>
           )}
         </div>
@@ -202,14 +202,14 @@ export default function AdminUsers() {
 
       <div className="flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
         <div className="flex gap-2 p-1 bg-slate-50 rounded-xl border border-slate-100 w-full lg:w-auto overflow-x-auto shrink-0">
-          <button onClick={() => setActiveTab('staff')} className={`flex items-center gap-2 px-6 py-2.5 text-sm font-bold rounded-lg transition-all whitespace-nowrap ${activeTab === 'staff' ? 'bg-white text-blue-700 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}><Shield size={16}/> Staff Directory ({staffList.length})</button>
-          <button onClick={() => setActiveTab('b2b')} className={`flex items-center gap-2 px-6 py-2.5 text-sm font-bold rounded-lg transition-all whitespace-nowrap ${activeTab === 'b2b' ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}><Building size={16}/> B2B Agencies ({b2bList.length})</button>
-          <button onClick={() => setActiveTab('retail')} className={`flex items-center gap-2 px-6 py-2.5 text-sm font-bold rounded-lg transition-all whitespace-nowrap ${activeTab === 'retail' ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}><ShoppingBag size={16}/> Retail Customers ({retailList.length})</button>
+          <button onClick={() => setActiveTab('staff')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-lg transition-all whitespace-nowrap ${activeTab === 'staff' ? 'bg-white text-blue-700 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}><Shield size={16}/> Staff Directory ({staffList.length})</button>
+          <button onClick={() => setActiveTab('b2b')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-lg transition-all whitespace-nowrap ${activeTab === 'b2b' ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}><Building size={16}/> B2B Agencies ({b2bList.length})</button>
+          <button onClick={() => setActiveTab('retail')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-lg transition-all whitespace-nowrap ${activeTab === 'retail' ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}><ShoppingBag size={16}/> Retail Customers ({retailList.length})</button>
         </div>
 
         <div className="relative w-full lg:w-80 shrink-0">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input type="text" placeholder="Search accounts..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 outline-none text-sm font-medium transition-all" />
+          <input type="text" placeholder="Search accounts..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 outline-none text-sm font-medium transition-all" />
         </div>
       </div>
 
@@ -265,7 +265,7 @@ export default function AdminUsers() {
                     )}
 
                     <td className="px-6 py-4 text-right">
-                      <button onClick={() => triggerDeleteConfirmation(user.id, user.full_name)} title="Delete User" className="p-2.5 rounded-xl transition-all shadow-sm inline-flex items-center justify-center ml-auto bg-white border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50 active:scale-95"><Trash2 size={16} /></button>
+                      <button onClick={() => triggerDeleteConfirmation(user.id, user.full_name)} title="Delete User" className="p-1.5 rounded-xl transition-all shadow-sm inline-flex items-center justify-center ml-auto bg-white border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50 active:scale-95"><Trash2 size={16} /></button>
                     </td>
                   </tr>
                 ))}
@@ -281,7 +281,7 @@ export default function AdminUsers() {
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl flex flex-col border border-slate-100 overflow-hidden">
             <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-blue-50/50">
               <h3 className="text-lg font-bold text-blue-900 tracking-tight flex items-center gap-2"><Building2 size={18}/> Register B2B Agency</h3>
-              <button onClick={() => setShowAddB2bModal(false)} className="p-1.5 text-blue-400 hover:text-blue-900 bg-white border border-blue-200 rounded-full"><X size={16} /></button>
+              <button onClick={() => setShowAddB2bModal(false)} className="p-1 text-blue-400 hover:text-blue-900 bg-white border border-blue-200 rounded-full"><X size={16} /></button>
             </div>
             
             <form onSubmit={triggerAddB2bConfirm} className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
@@ -317,7 +317,7 @@ export default function AdminUsers() {
                 </div>
               </div>
 
-              <div className="pt-2 flex gap-3"><button type="button" onClick={() => setShowAddB2bModal(false)} className="w-full py-3.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50">Cancel</button><button type="submit" disabled={isSubmitting} className="w-full py-3.5 bg-blue-600 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-blue-700 disabled:opacity-50">{isSubmitting ? 'Processing...' : <><Building2 size={18} /> Register Agency</>}</button></div>
+              <div className="pt-2 flex gap-3"><button type="button" onClick={() => setShowAddB2bModal(false)} className="w-full py-2.5 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50">Cancel</button><button type="submit" disabled={isSubmitting} className="w-full py-2.5 text-sm bg-blue-600 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-blue-700 disabled:opacity-50">{isSubmitting ? 'Processing...' : <><Building2 size={16} /> Register Agency</>}</button></div>
             </form>
           </div>
         </div>
@@ -327,7 +327,7 @@ export default function AdminUsers() {
       {showAddStaffModal && (
         <div className="fixed inset-0 z-[50] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-xl flex flex-col border border-slate-100 overflow-hidden">
-            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50"><h3 className="text-lg font-bold text-slate-900 tracking-tight">Add New Staff Member</h3><button onClick={() => setShowAddStaffModal(false)} className="p-1.5 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full"><X size={16} /></button></div>
+            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50"><h3 className="text-lg font-bold text-slate-900 tracking-tight">Add New Staff Member</h3><button onClick={() => setShowAddStaffModal(false)} className="p-1 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full"><X size={16} /></button></div>
             <form onSubmit={triggerAddStaffConfirm} className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
               <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Full Name</label><input type="text" name="full_name" required value={staffForm.full_name} onChange={e => setStaffForm({...staffForm, full_name: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold" /></div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -340,7 +340,7 @@ export default function AdminUsers() {
                 <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Temporary Password</label><div className="relative"><Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="password" name="password" required value={staffForm.password} onChange={e => setStaffForm({...staffForm, password: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium" /></div></div>
                 <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Confirm Password</label><div className="relative"><Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="password" name="confirm_password" required value={staffForm.confirm_password} onChange={e => setStaffForm({...staffForm, confirm_password: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium" /></div></div>
               </div>
-              <div className="pt-2 flex gap-3"><button type="button" onClick={() => setShowAddStaffModal(false)} className="w-full py-3.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50">Cancel</button><button type="submit" disabled={isSubmitting} className="w-full py-3.5 bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 disabled:opacity-50">{isSubmitting ? 'Processing...' : <><UserPlus size={18} /> Create Staff</>}</button></div>
+              <div className="pt-2 flex gap-3"><button type="button" onClick={() => setShowAddStaffModal(false)} className="w-full py-2.5 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50">Cancel</button><button type="submit" disabled={isSubmitting} className="w-full py-2.5 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 disabled:opacity-50">{isSubmitting ? 'Processing...' : <><UserPlus size={16} /> Create Staff</>}</button></div>
             </form>
           </div>
         </div>
@@ -356,8 +356,8 @@ export default function AdminUsers() {
             <h4 className="text-xl font-bold text-slate-900 tracking-tight">{confirmAction.title}</h4>
             <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">{confirmAction.message}</p>
             <div className="flex gap-3 pt-5">
-              <button onClick={() => setConfirmAction({ show: false })} className="w-full py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95">Cancel</button>
-              <button disabled={isSubmitting} onClick={confirmAction.type === 'add_staff' ? executeAddStaff : confirmAction.type === 'add_b2b' ? executeAddB2b : executeDeleteUser} className={`w-full py-3 text-white font-bold rounded-xl shadow-md active:scale-95 flex items-center justify-center gap-2 ${confirmAction.type === 'delete' ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-900 hover:bg-slate-800'}`}>{isSubmitting ? 'Processing...' : 'Confirm'}</button>
+              <button onClick={() => setConfirmAction({ show: false })} className="w-full py-2.5 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95">Cancel</button>
+              <button disabled={isSubmitting} onClick={confirmAction.type === 'add_staff' ? executeAddStaff : confirmAction.type === 'add_b2b' ? executeAddB2b : executeDeleteUser} className={`w-full py-2.5 text-sm text-white font-bold rounded-xl shadow-md active:scale-95 flex items-center justify-center gap-2 ${confirmAction.type === 'delete' ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-900 hover:bg-slate-800'}`}>{isSubmitting ? 'Processing...' : 'Confirm'}</button>
             </div>
           </div>
         </div>
@@ -369,7 +369,7 @@ export default function AdminUsers() {
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
             <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border ${notification.isError ? 'bg-red-50 text-red-600 border-red-100' : 'bg-green-50 text-green-600 border-green-100'}`}>{notification.isError ? <XCircle size={32} /> : <CheckCircle2 size={32} />}</div>
             <h4 className="text-xl font-bold text-slate-900 tracking-tight">{notification.isError ? 'Error' : 'Success'}</h4><p className="text-sm text-slate-500 mt-2 font-medium">{notification.message}</p>
-            <button onClick={() => setNotification({ show: false, message: '', isError: false })} className="w-full mt-5 py-3.5 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 active:scale-95">Okay</button>
+            <button onClick={() => setNotification({ show: false, message: '', isError: false })} className="w-full mt-5 py-2.5 text-sm bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 active:scale-95">Okay</button>
           </div>
         </div>
       )}

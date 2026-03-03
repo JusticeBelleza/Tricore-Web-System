@@ -266,7 +266,12 @@ export default function Products() {
       let uploadedUrls = [];
       for (const file of photos) {
         const fileName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
-        await supabase.storage.from('product_images').upload(fileName, file);
+        
+        // FIXED: Added contentType so Supabase knows it is an image, allowing webp/svg to render!
+        await supabase.storage.from('product_images').upload(fileName, file, {
+          contentType: file.type 
+        });
+        
         const { data } = supabase.storage.from('product_images').getPublicUrl(fileName);
         uploadedUrls.push(data.publicUrl);
       }

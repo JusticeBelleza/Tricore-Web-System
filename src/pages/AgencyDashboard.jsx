@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext'; // To know who is logged in!
+import { createClient } from '@supabase/supabase-js'; 
+import { useAuth } from '../lib/AuthContext'; 
 import { 
   Search, UserPlus, Shield, User, MapPin, Trash2, 
   CheckCircle2, XCircle, X, Building, Navigation
 } from 'lucide-react';
 
 export default function AgencyDashboard() {
-  const { profile } = useAuth(); // The currently logged in B2B Admin
+  const { profile } = useAuth(); 
   
   const [activeTab, setActiveTab] = useState('patients'); 
   const [searchTerm, setSearchTerm] = useState('');
@@ -42,22 +43,26 @@ export default function AgencyDashboard() {
   const fetchAgencyData = async () => {
     setLoading(true);
     try {
-      // ONLY fetch users that belong to this exact Agency (company_id)
-      const { data, error } = await supabase
+      // 1. Fetch Sub-Admins from user_profiles
+      const { data: admins, error: adminError } = await supabase
         .from('user_profiles')
         .select('*')
         .eq('company_id', profile.company_id)
+        .eq('role', 'agency_admin')
         .order('full_name', { ascending: true });
         
-      if (error) throw error;
+      if (adminError) throw adminError;
+      setSubAdminList((admins || []).filter(p => p.id !== profile.id));
 
-      const profiles = data || [];
-      
-      // Separate the lists
-      setPatientList(profiles.filter(p => p.role?.toLowerCase() === 'patient'));
-      
-      // We exclude the currently logged in profile from the SubAdmin list so they don't delete themselves!
-      setSubAdminList(profiles.filter(p => p.role?.toLowerCase() === 'agency_admin' && p.id !== profile.id));
+      // 2. Fetch Patients from our NEW agency_patients table
+      const { data: patients, error: patientError } = await supabase
+        .from('agency_patients')
+        .select('*')
+        .eq('agency_id', profile.company_id)
+        .order('full_name', { ascending: true });
+
+      if (patientError) throw patientError;
+      setPatientList(patients || []);
       
     } catch (error) {
       console.error('Error fetching agency data:', error);
@@ -66,7 +71,7 @@ export default function AgencyDashboard() {
     }
   };
 
-  // --- SUB-ADMIN LOGIC ---
+  // --- SUB-ADMIN LOGIC (Keeps Ghost Client so they can login) ---
   const triggerAddSubAdminConfirm = (e) => {
     e.preventDefault();
     if (subAdminForm.password !== subAdminForm.confirm_password) return setNotification({ show: true, isError: true, message: "Passwords do not match!" });
@@ -82,30 +87,42 @@ export default function AgencyDashboard() {
   const executeAddSubAdmin = async () => {
     setConfirmAction({ show: false }); setIsSubmitting(true);
     try {
-      // Use our master RPC, passing the current user's company_id!
-      const { error } = await supabase.rpc('admin_create_user', {
-        user_email: confirmAction.data.email, 
-        user_password: confirmAction.data.password,
-        user_full_name: confirmAction.data.full_name, 
-        user_role: 'agency_admin', // Fixed role
-        user_contact: confirmAction.data.contact_number,
-        user_company_id: profile.company_id, // LOCKED TO CURRENT AGENCY
-        new_company_name: null
-      });
-      if (error) throw error;
+      const tempSupabase = createClient(
+        import.meta.env.VITE_SUPABASE_URL, 
+        import.meta.env.VITE_SUPABASE_ANON_KEY, 
+        { auth: { persistSession: false, autoRefreshToken: false } }
+      );
 
-      fetchAgencyData(); 
-      setShowAddSubAdminModal(false);
-      setSubAdminForm({ full_name: '', email: '', contact_number: '', password: '', confirm_password: '' });
-      setNotification({ show: true, isError: false, message: 'Agency Admin created successfully!' });
+      const { error: authError } = await tempSupabase.auth.signUp({
+        email: confirmAction.data.email,
+        password: confirmAction.data.password,
+        options: { 
+          data: { 
+            full_name: confirmAction.data.full_name, 
+            role: 'agency_admin',
+            contact_number: confirmAction.data.contact_number,
+            company_id: profile.company_id 
+          } 
+        }
+      });
+
+      if (authError) throw authError;
+
+      setTimeout(() => {
+        fetchAgencyData(); 
+        setShowAddSubAdminModal(false);
+        setSubAdminForm({ full_name: '', email: '', contact_number: '', password: '', confirm_password: '' });
+        setNotification({ show: true, isError: false, message: 'Agency Admin created successfully!' });
+        setIsSubmitting(false);
+      }, 1500);
+      
     } catch (error) {
       setNotification({ show: true, isError: true, message: `Failed to create account: ${error.message}` }); 
-    } finally {
       setIsSubmitting(false);
     }
   };
 
-  // --- PATIENT LOGIC ---
+  // --- PATIENT LOGIC (Simple Database Insert now!) ---
   const triggerAddPatientConfirm = (e) => {
     e.preventDefault();
     setConfirmAction({ 
@@ -118,39 +135,25 @@ export default function AgencyDashboard() {
   const executeAddPatient = async () => {
     setConfirmAction({ show: false }); setIsSubmitting(true);
     try {
-      // Because patients don't need to log in right away (usually), we can just insert them directly into user_profiles
-      // Or, if you WANT them to log in, we can use the RPC. Let's use the RPC so they get a login!
-      
-      const { error } = await supabase.rpc('admin_create_user', {
-        user_email: confirmAction.data.email, 
-        user_password: 'TemporaryPassword123!', // Auto-generated temporary password for patients
-        user_full_name: confirmAction.data.full_name, 
-        user_role: 'patient', 
-        user_contact: confirmAction.data.contact_number,
-        user_company_id: profile.company_id, // LOCKED TO CURRENT AGENCY
-        new_company_name: null
-      });
+      // Just a direct insert into our new table. No Auth required!
+      const { error } = await supabase.from('agency_patients').insert([{
+        agency_id: profile.company_id,
+        full_name: confirmAction.data.full_name,
+        email: confirmAction.data.email || null, // Optional email handles itself
+        contact_number: confirmAction.data.contact_number,
+        address: confirmAction.data.address,
+        city: confirmAction.data.city,
+        state: confirmAction.data.state,
+        zip: confirmAction.data.zip
+      }]);
 
       if (error) throw error;
-
-      // Now we need to update their newly created profile with their specific address!
-      // We find the user we just made by email
-      const { data: newUserProfile } = await supabase.from('user_profiles').select('id').eq('email', confirmAction.data.email).single();
-      
-      if(newUserProfile) {
-          // Since the RPC didn't have fields for address, we do a quick update right after!
-          await supabase.from('user_profiles').update({
-              address: confirmAction.data.address,
-              city: confirmAction.data.city,
-              state: confirmAction.data.state,
-              zip: confirmAction.data.zip
-          }).eq('id', newUserProfile.id);
-      }
 
       fetchAgencyData(); 
       setShowAddPatientModal(false);
       setPatientForm({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '' });
       setNotification({ show: true, isError: false, message: 'Patient added to roster successfully!' });
+
     } catch (error) {
       setNotification({ show: true, isError: true, message: `Failed to add patient: ${error.message}` }); 
     } finally {
@@ -160,15 +163,26 @@ export default function AgencyDashboard() {
 
   // --- DELETE LOGIC ---
   const triggerDeleteConfirmation = (id, name, type) => {
-    setConfirmAction({ show: true, type: 'delete', title: `Remove ${type}?`, message: `Are you sure you want to permanently remove ${name}?`, data: id });
+    // We pass 'delete_patient' or 'delete_admin' so we know which table to delete from!
+    setConfirmAction({ show: true, type: type === 'Patient' ? 'delete_patient' : 'delete_admin', title: `Remove ${type}?`, message: `Are you sure you want to permanently remove ${name}?`, data: id });
   };
 
   const executeDeleteUser = async () => {
     const idToDelete = confirmAction.data;
+    const isPatient = confirmAction.type === 'delete_patient';
     setConfirmAction({ show: false });
+    
     try {
-      const { error } = await supabase.rpc('delete_user', { user_id: idToDelete });
-      if (error) throw error;
+      if (isPatient) {
+        // Delete from new patients table
+        const { error } = await supabase.from('agency_patients').delete().eq('id', idToDelete);
+        if (error) throw error;
+      } else {
+        // Delete Auth user (Sub-Admin)
+        const { error } = await supabase.rpc('delete_user', { user_id: idToDelete });
+        if (error) throw error;
+      }
+
       fetchAgencyData();
       setNotification({ show: true, isError: false, message: 'Successfully removed.' });
     } catch (error) {
@@ -190,7 +204,6 @@ export default function AgencyDashboard() {
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12 relative">
       
-      {/* Header Area */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 pb-2">
         <div>
           <h2 className="text-3xl font-bold text-slate-900 tracking-tight flex items-center gap-3">
@@ -254,7 +267,9 @@ export default function AgencyDashboard() {
                             {user.city ? `${user.city}, ${user.state}` : 'No Address'}
                         </td>
                     )}
-                    <td className="px-6 py-4 text-slate-600 font-medium">{user.email || 'N/A'}</td>
+                    <td className="px-6 py-4 text-slate-600 font-medium">
+                      {user.email || <span className="text-slate-400 italic">No Email Provided</span>}
+                    </td>
                     <td className="px-6 py-4 text-slate-600 font-medium">{user.contact_number || 'N/A'}</td>
                     <td className="px-6 py-4 text-right">
                       <button onClick={() => triggerDeleteConfirmation(user.id, user.full_name, activeTab === 'patients' ? 'Patient' : 'Admin')} title="Remove" className="p-2.5 rounded-xl transition-all shadow-sm inline-flex items-center justify-center ml-auto bg-white border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50 active:scale-95"><Trash2 size={16} /></button>
@@ -337,7 +352,7 @@ export default function AgencyDashboard() {
             <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">{confirmAction.message}</p>
             <div className="flex gap-3 pt-5">
               <button onClick={() => setConfirmAction({ show: false })} className="w-full py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50">Cancel</button>
-              <button disabled={isSubmitting} onClick={confirmAction.type === 'add_patient' ? executeAddPatient : confirmAction.type === 'add_sub_admin' ? executeAddSubAdmin : executeDeleteUser} className={`w-full py-3 text-white font-bold rounded-xl shadow-md ${confirmAction.type === 'delete' ? 'bg-red-600' : 'bg-slate-900'}`}>{isSubmitting ? 'Processing...' : 'Confirm'}</button>
+              <button disabled={isSubmitting} onClick={confirmAction.type === 'delete_patient' || confirmAction.type === 'delete_admin' ? executeDeleteUser : (confirmAction.type === 'add_patient' ? executeAddPatient : executeAddSubAdmin)} className={`w-full py-3 text-white font-bold rounded-xl shadow-md ${confirmAction.type.includes('delete') ? 'bg-red-600' : 'bg-slate-900'}`}>{isSubmitting ? 'Processing...' : 'Confirm'}</button>
             </div>
           </div>
         </div>

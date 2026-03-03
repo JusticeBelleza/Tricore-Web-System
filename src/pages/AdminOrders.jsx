@@ -2,13 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { 
   Search, Package, CheckCircle2, XCircle, Clock, 
-  Eye, Truck, X, AlertCircle, PackageCheck, User, Car, Hash, Info
+  Eye, Truck, X, AlertCircle, PackageCheck, User, Car, Hash, Info, Building, MapPin
 } from 'lucide-react';
 
 export default function AdminOrders() {
   const [orders, setOrders] = useState([]);
   const [fleetVehicles, setFleetVehicles] = useState([]);
-  const [drivers, setDrivers] = useState([]); // NEW: Stores staff directory drivers
+  const [drivers, setDrivers] = useState([]); 
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -34,11 +34,12 @@ export default function AdminOrders() {
   const fetchOrdersFleetAndDrivers = async () => {
     setLoading(true);
     try {
-      // Fetch Orders, Fleet, and Drivers simultaneously for speed!
+      // Fetch Orders, Fleet, and Drivers. 
+      // FIXED: Added address fields to the companies fetch so we can display B2B billing addresses!
       const [ordersRes, fleetRes, driversRes] = await Promise.all([
-        supabase.from('orders').select(`*, companies ( name ), order_items ( id, quantity_variants, unit_price, line_total, product_variants ( name, sku ) )`).order('created_at', { ascending: false }),
+        supabase.from('orders').select(`*, companies ( name, address, city, state, zip ), order_items ( id, quantity_variants, unit_price, line_total, product_variants ( name, sku ) )`).order('created_at', { ascending: false }),
         supabase.from('vehicles').select('*').order('name', { ascending: true }),
-        supabase.from('profiles').select('id, full_name').eq('role', 'driver').order('full_name', { ascending: true }) // Pulls from staff directory
+        supabase.from('profiles').select('id, full_name').eq('role', 'driver').order('full_name', { ascending: true }) 
       ]);
 
       if (ordersRes.error) throw ordersRes.error;
@@ -129,7 +130,7 @@ export default function AdminOrders() {
   };
 
   const filteredOrders = orders.filter(o => {
-    const matchesSearch = o.id.toLowerCase().includes(searchTerm.toLowerCase()) || (o.companies?.name || '').toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesSearch = o.id.toLowerCase().includes(searchTerm.toLowerCase()) || (o.companies?.name || o.shipping_name || '').toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = statusFilter ? o.status === statusFilter : true;
     return matchesSearch && matchesStatus;
   });
@@ -156,7 +157,7 @@ export default function AdminOrders() {
       <div className="flex flex-col sm:flex-row gap-3 bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
         <div className="relative flex-1">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input type="text" placeholder="Search Order ID or Company Name..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 outline-none text-sm transition-all" />
+          <input type="text" placeholder="Search Order ID, Customer, or Company..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 outline-none text-sm transition-all" />
         </div>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full sm:w-48 px-4 py-2 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 outline-none text-sm transition-all cursor-pointer font-semibold text-slate-700">
           <option value="">All Statuses</option>
@@ -172,15 +173,34 @@ export default function AdminOrders() {
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead className="bg-slate-50/50 border-b border-slate-100 text-slate-500">
-              <tr><th className="px-6 py-4 font-bold tracking-tight">Order ID</th><th className="px-6 py-4 font-bold tracking-tight">Date</th><th className="px-6 py-4 font-bold tracking-tight">Customer</th><th className="px-6 py-4 font-bold tracking-tight">Total</th><th className="px-6 py-4 font-bold tracking-tight">Status</th><th className="px-6 py-4 font-bold tracking-tight text-right">Action</th></tr>
+              <tr>
+                <th className="px-6 py-4 font-bold tracking-tight">Order ID</th>
+                <th className="px-6 py-4 font-bold tracking-tight">Date</th>
+                <th className="px-6 py-4 font-bold tracking-tight">Customer</th>
+                <th className="px-6 py-4 font-bold tracking-tight">Total</th>
+                <th className="px-6 py-4 font-bold tracking-tight">Status</th>
+                <th className="px-6 py-4 font-bold tracking-tight text-right">Action</th>
+              </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-              {filteredOrders.map(order => (
+              {filteredOrders.map(order => {
+                const isB2B = !!order.company_id;
+                return (
                 <tr key={order.id} className="hover:bg-slate-50/50 group">
-                  <td className="px-6 py-4 font-mono text-xs text-slate-500">{order.id.substring(0, 8).toUpperCase()}</td><td className="px-6 py-4 text-slate-600 font-medium">{new Date(order.created_at).toLocaleDateString()}</td><td className="px-6 py-4 font-bold text-slate-900">{order.companies?.name || 'Retail Customer'}</td><td className="px-6 py-4 font-extrabold text-slate-900">${Number(order.total_amount).toFixed(2)}</td><td className="px-6 py-4">{getStatusBadge(order.status)}</td>
+                  <td className="px-6 py-4 font-mono text-xs text-slate-500">{order.id.substring(0, 8).toUpperCase()}</td>
+                  <td className="px-6 py-4 text-slate-600 font-medium">{new Date(order.created_at).toLocaleDateString()}</td>
+                  <td className="px-6 py-4">
+                    <p className="font-bold text-slate-900">{order.companies?.name || order.shipping_name || 'Retail Customer'}</p>
+                    {/* B2B vs Retail Badge */}
+                    <span className={`inline-flex mt-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wider font-bold rounded ${isB2B ? 'bg-blue-50 text-blue-600 border border-blue-100' : 'bg-emerald-50 text-emerald-600 border border-emerald-100'}`}>
+                      {isB2B ? 'B2B Order' : 'Retail Order'}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 font-extrabold text-slate-900">${Number(order.total_amount).toFixed(2)}</td>
+                  <td className="px-6 py-4">{getStatusBadge(order.status)}</td>
                   <td className="px-6 py-4 text-right"><button onClick={() => setViewingOrder(order)} className="px-4 py-2 bg-white border border-slate-200 text-slate-900 text-xs font-bold rounded-xl hover:bg-slate-900 hover:text-white transition-all shadow-sm inline-flex items-center gap-2"><Eye size={14} /> Review</button></td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>
@@ -190,14 +210,50 @@ export default function AdminOrders() {
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[90dvh] flex flex-col border border-slate-100 overflow-hidden">
             <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50 shrink-0">
-              <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Order #{viewingOrder.id.substring(0, 8).toUpperCase()}</p><h3 className="text-2xl font-bold text-slate-900 tracking-tight">{viewingOrder.companies?.name || 'Retail Customer'}</h3></div>
+              <div>
+                <div className="flex gap-3 items-center mb-1">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Order #{viewingOrder.id.substring(0, 8).toUpperCase()}</p>
+                  <span className={`px-2 py-0.5 text-[9px] uppercase tracking-wider font-bold rounded flex items-center gap-1 ${viewingOrder.company_id ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                    {viewingOrder.company_id ? 'B2B Order' : 'Retail Order'}
+                  </span>
+                </div>
+                <h3 className="text-2xl font-bold text-slate-900 tracking-tight">{viewingOrder.companies?.name || viewingOrder.shipping_name || 'Retail Customer'}</h3>
+              </div>
               <button onClick={() => setViewingOrder(null)} className="p-2 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 hover:bg-slate-100 rounded-full"><X size={18} /></button>
             </div>
 
             <div className="p-8 overflow-y-auto flex-1 space-y-8">
               <div className="flex justify-between items-center">
                 <div><p className="text-xs text-slate-500 font-semibold mb-1">Current Status</p>{getStatusBadge(viewingOrder.status)}</div>
-                <div className="text-right"><p className="text-xs text-slate-500 font-semibold mb-1">Payment Method</p><p className="text-sm font-bold text-slate-900 uppercase tracking-wide">{viewingOrder.payment_method === 'net_30' ? 'Net 30 Terms' : 'Cash on Delivery'}</p></div>
+                <div className="text-right"><p className="text-xs text-slate-500 font-semibold mb-1">Payment Method</p><p className="text-sm font-bold text-slate-900 uppercase tracking-wide">{viewingOrder.payment_method === 'net_30' ? 'Net 30 Terms' : (viewingOrder.payment_method === 'credit_card' ? 'Credit Card' : 'Cash on Delivery')}</p></div>
+              </div>
+
+              {/* NEW: Bill To / Ship To Section */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 bg-slate-50 p-6 rounded-2xl border border-slate-100">
+                <div>
+                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5"><Building size={14}/> Bill To</h4>
+                  {viewingOrder.company_id ? (
+                    <div className="text-sm font-medium text-slate-700">
+                      <p className="font-bold text-slate-900">{viewingOrder.companies?.name}</p>
+                      <p>{viewingOrder.companies?.address || 'No address provided'}</p>
+                      {viewingOrder.companies?.city && <p>{viewingOrder.companies.city}, {viewingOrder.companies.state} {viewingOrder.companies.zip}</p>}
+                    </div>
+                  ) : (
+                    <div className="text-sm font-medium text-slate-700">
+                      <p className="font-bold text-slate-900">{viewingOrder.shipping_name}</p>
+                      <p>{viewingOrder.shipping_address || 'No address provided'}</p>
+                      {viewingOrder.shipping_city && <p>{viewingOrder.shipping_city}, {viewingOrder.shipping_state} {viewingOrder.shipping_zip}</p>}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5"><MapPin size={14}/> Ship To</h4>
+                  <div className="text-sm font-medium text-slate-700">
+                    <p className="font-bold text-slate-900">{viewingOrder.shipping_name}</p>
+                    <p>{viewingOrder.shipping_address || <span className="text-red-500 italic">No shipping address</span>}</p>
+                    {viewingOrder.shipping_city && <p>{viewingOrder.shipping_city}, {viewingOrder.shipping_state} {viewingOrder.shipping_zip}</p>}
+                  </div>
+                </div>
               </div>
 
               {(viewingOrder.status === 'ready_for_delivery' || viewingOrder.status === 'shipped') && viewingOrder.driver_name && (
@@ -247,7 +303,6 @@ export default function AdminOrders() {
             
             <form onSubmit={confirmAssignment} className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
               
-              {/* NEW: Staff Directory Dropdown for Drivers */}
               <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Assigned Driver</label>
                 <div className="relative">
                   <User className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
