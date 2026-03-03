@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './Layout';
 import Login from './pages/Login';
@@ -13,10 +13,12 @@ import AdminUsers from './pages/AdminUsers';
 import Dashboard from './pages/Dashboard';
 import Reports from './pages/Reports';
 import FleetManagement from './pages/FleetManagement';
+import AgencyDashboard from './pages/AgencyDashboard';
 
 // Import the new Admin & Operations pages
 import Products from './pages/Products';
 import PurchaseOrders from './pages/PurchaseOrders';
+import { supabase } from './lib/supabase'; // NEEDED TO CHECK USER ROLE
 
 // Component to protect routes - redirects to login if there is no active session
 const ProtectedRoute = ({ children }) => {
@@ -37,6 +39,42 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
+// Component to handle Dashboard routing based on Role
+const DashboardRouter = () => {
+    const { user, profile } = useAuth();
+    const [loading, setLoading] = useState(true);
+    const [role, setRole] = useState(null);
+
+    useEffect(() => {
+        // If profile is already loaded in Context, use it.
+        if (profile?.role) {
+            setRole(profile.role);
+            setLoading(false);
+            return;
+        }
+
+        // Fallback: Fetch role if Context hasn't caught up yet
+        const fetchRole = async () => {
+             if (!user) return;
+             const { data } = await supabase.from('user_profiles').select('role').eq('id', user.id).single();
+             setRole(data?.role);
+             setLoading(false);
+        };
+        fetchRole();
+    }, [user, profile]);
+
+    if (loading) return <div>Loading...</div>;
+
+    // Route B2B and Agency Admins to their specific dashboard
+    if (role === 'b2b' || role === 'agency_admin') {
+        return <AgencyDashboard />;
+    }
+
+    // Everyone else (Admins, Warehouse, etc.) gets the standard Dashboard
+    return <Dashboard />;
+};
+
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -53,7 +91,9 @@ export default function App() {
           {/* Automatically redirect from root "/" to "/dashboard" */}
           <Route index element={<Navigate to="/dashboard" replace />} />
           
-          <Route path="dashboard" element={<Dashboard />} />
+          {/* Dashboard is now a Router Component */}
+          <Route path="dashboard" element={<DashboardRouter />} />
+          
           <Route path="catalog" element={<Catalog />} />
           <Route path="checkout" element={<Checkout />} />
           <Route path="orders" element={<MyOrders />} /> 
