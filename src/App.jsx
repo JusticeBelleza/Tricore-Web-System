@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import Layout from './Layout';
+
 import Login from './pages/Login';
 import Catalog from './pages/Catalog';
 import Checkout from './pages/Checkout';
