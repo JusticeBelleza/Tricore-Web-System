@@ -146,7 +146,15 @@ export default function Catalog() {
   const [variants, setVariants] = useState([]);
   const [pricingRules, setPricingRules] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [cart, setCart] = useState([]);
+  
+  const [cart, setCart] = useState(() => {
+    const savedCart = localStorage.getItem('tricore_cart');
+    return savedCart ? JSON.parse(savedCart) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('tricore_cart', JSON.stringify(cart));
+  }, [cart]);
 
   // Search & Filter States
   const [searchTerm, setSearchTerm] = useState('');
@@ -154,17 +162,19 @@ export default function Catalog() {
 
   // Modal States
   const [viewingFamily, setViewingFamily] = useState(null); 
-  const [notification, setNotification] = useState({ show: false, message: '' });
+  
+  // --- NEW: Toast & Animation States ---
+  const [toast, setToast] = useState({ show: false, message: '' });
+  const [isAddingToCart, setIsAddingToCart] = useState(false);
 
   // Modal Local States
   const [selectedProductId, setSelectedProductId] = useState('');
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const [quantity, setQuantity] = useState(1);
 
-  // Track primitive values to prevent Alt-Tab re-fetching
   useEffect(() => {
     fetchCatalogData();
-  }, [profile?.id, profile?.companies?.account_type, profile?.company_id]);
+  }, [profile?.id, profile?.role, profile?.company_id]);
 
   const fetchCatalogData = async () => {
     setLoading(true);
@@ -176,7 +186,7 @@ export default function Catalog() {
       if (variantsError) throw variantsError;
 
       let rulesData = [];
-      if (profile?.companies?.account_type === 'B2B' && profile.company_id) {
+      if (profile?.company_id && profile?.role?.toLowerCase() === 'b2b') {
         const { data, error } = await supabase.from('pricing_rules').select('*').eq('company_id', profile.company_id);
         if (error) throw error;
         rulesData = data;
@@ -192,28 +202,22 @@ export default function Catalog() {
     }
   };
 
-  // --- NEW UNIFIED PRICING LOGIC ---
   const getVariantPrice = (product, variant) => {
     if (!product) return { originalPrice: 0, finalPrice: 0, isDiscounted: false };
 
-    const rule = pricingRules.find(r => r.product_id === product.id);
+    const rule = pricingRules.find(r => r.variant_id === variant?.id);
     const baseRetail = Number(product.retail_base_price);
     
-    // 1. Did the admin set a custom price on this specific variant?
-    // If Yes: Use it. If No: Fall back to Base Price * Multiplier.
     const variantRetail = (variant && Number(variant.price) > 0) 
       ? Number(variant.price) 
       : (baseRetail * (variant?.multiplier || 1));
     
     let finalPrice = variantRetail;
 
-    // 2. Apply B2B rules if they exist
     if (rule) {
       if (rule.rule_type === 'fixed') {
-         // Fixed rules usually apply to the base unit, so we multiply it up to match the packaging
-         finalPrice = Number(rule.value) * (variant?.multiplier || 1);
+         finalPrice = Number(rule.value);
       } else if (rule.rule_type === 'percentage') {
-         // Percentage applies directly to whatever the variant's retail price is
          finalPrice = variantRetail * (1 - (Number(rule.value) / 100));
       }
     }
@@ -225,7 +229,6 @@ export default function Catalog() {
     };
   };
 
-  // --- Filtering Logic ---
   const categories = Array.from(new Set(products.map(p => p.category).filter(Boolean))).sort();
 
   const filteredProducts = useMemo(() => {
@@ -237,7 +240,6 @@ export default function Catalog() {
     });
   }, [products, searchTerm, selectedCategory]);
 
-  // --- Grouping & Smart Sorting Logic ---
   const groupedProducts = useMemo(() => {
     const groups = {};
     filteredProducts.forEach(p => {
@@ -246,7 +248,6 @@ export default function Catalog() {
       groups[familyName].push(p);
     });
 
-    // Smart Sorter to force correct size order (Small, Medium, Large)
     const getSizeWeight = (name) => {
       const parts = name.split(' - ');
       const sizeName = parts.length > 1 ? parts[1].trim().toLowerCase() : '';
@@ -281,6 +282,7 @@ export default function Catalog() {
     setSelectedProductId(defaultProduct.id);
     setSelectedVariantId(defaultVariants[0]?.id || '');
     setQuantity(1);
+    setIsAddingToCart(false); // Reset animation state
   };
 
   const handleSizeChange = (newProductId) => {
@@ -296,9 +298,12 @@ export default function Catalog() {
     const product = products.find(p => p.id === selectedProductId);
     const variant = variants.find(v => v.id === selectedVariantId);
     
-    // Use the unified pricing logic to get the correct cart unit price
     const { finalPrice: unitPrice } = getVariantPrice(product, variant);
 
+    // 1. Trigger the Button Animation
+    setIsAddingToCart(true);
+
+    // 2. Update the Cart Data
     setCart(prev => {
       const existing = prev.find(item => item.variant_id === selectedVariantId);
       if (existing) {
@@ -318,8 +323,17 @@ export default function Catalog() {
       }];
     });
 
-    setViewingFamily(null); 
-    setNotification({ show: true, message: `Added ${quantity}x ${variant.name} to your cart.` }); 
+    // 3. Show Toast & Auto-Close Modal slightly delayed for a cool feel
+    setTimeout(() => {
+      setViewingFamily(null); 
+      setIsAddingToCart(false);
+      setToast({ show: true, message: `Added ${quantity}x ${variant.name} to cart.` });
+      
+      // Hide Toast after 3 seconds
+      setTimeout(() => {
+        setToast({ show: false, message: '' });
+      }, 3000);
+    }, 600); // 600ms delay lets them see the button turn green!
   };
 
   if (loading) return <div className="text-slate-500 font-medium">Loading catalog...</div>;
@@ -328,19 +342,18 @@ export default function Catalog() {
   const activeVariants = activeProduct ? variants.filter(v => v.product_id === activeProduct.id) : [];
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
   
-  // Calculate price for the Modal
   const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
 
   return (
     <div className="space-y-6 pb-12 relative max-w-7xl mx-auto">
       
-      {/* Minimalist Header Area */}
+      {/* Header Area */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-6 pb-2">
         <div>
           <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Catalog</h2>
-          {profile?.companies?.account_type === 'B2B' ? (
+          {profile?.role?.toLowerCase() === 'b2b' ? (
             <p className="text-sm text-slate-900 font-semibold mt-2">
-              B2B Pricing Applied for {profile.companies.name}
+              B2B Pricing Applied for {profile?.companies?.name || 'your Agency'}
             </p>
           ) : (
             <p className="text-sm text-slate-500 mt-2">
@@ -357,7 +370,7 @@ export default function Catalog() {
             </p>
           </div>
           <button 
-            onClick={() => navigate('/checkout', { state: { cart } })}
+            onClick={() => navigate('/checkout')}
             disabled={cart.length === 0}
             className="px-5 py-2.5 bg-slate-900 text-white text-sm font-semibold rounded-xl hover:bg-slate-800 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
           >
@@ -366,7 +379,7 @@ export default function Catalog() {
         </div>
       </div>
 
-      {/* --- Search & Category Filters --- */}
+      {/* Filters Row */}
       <div className="flex flex-col sm:flex-row gap-3 bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
         <div className="relative flex-1">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -417,8 +430,11 @@ export default function Catalog() {
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-md sm:p-4">
           <div className="bg-white w-full max-w-4xl max-h-[90dvh] flex flex-col sm:flex-row sm:rounded-3xl shadow-2xl animate-in slide-in-from-bottom-8 sm:slide-in-from-bottom-0 sm:zoom-in-95 duration-200 overflow-hidden relative border border-slate-100">
             
-            {/* Mobile Close Button */}
-            <button onClick={() => setViewingFamily(null)} className="absolute top-4 right-4 z-10 p-2 bg-white/80 backdrop-blur-md rounded-full text-slate-900 shadow-sm sm:hidden hover:bg-slate-100">
+            {/* Sticky Close Button */}
+            <button 
+              onClick={() => setViewingFamily(null)} 
+              className="absolute top-4 right-4 sm:top-5 sm:right-5 z-[60] w-9 h-9 flex items-center justify-center bg-white/90 backdrop-blur-sm border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-full shadow-sm transition-all"
+            >
               <X size={20} />
             </button>
 
@@ -436,25 +452,20 @@ export default function Catalog() {
 
             {/* Right: Details & Actions Area */}
             <div className="w-full sm:w-1/2 flex flex-col overflow-y-auto bg-white">
-              <div className="p-6 sm:p-8 flex-1 space-y-6">
+              <div className="p-6 sm:p-8 pr-14 sm:pr-16 flex-1 space-y-6">
                 
-                {/* Title, Manufacturer, SKU & Close */}
-                <div className="flex justify-between items-start gap-4">
-                  <div>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">{activeProduct.category || 'General'}</p>
-                    <h3 className="text-2xl font-bold text-slate-900 tracking-tight leading-tight">
-                      {viewingFamily.familyName}
-                    </h3>
-                    <div className="mt-3 space-y-1">
-                      {activeProduct.manufacturer && (
-                        <p className="text-sm text-slate-600"><span className="text-slate-400 mr-2">Brand:</span>{activeProduct.manufacturer}</p>
-                      )}
-                      <p className="text-sm text-slate-600"><span className="text-slate-400 mr-2">SKU:</span><span className="font-mono text-slate-900">{activeVariant?.sku || activeProduct.base_sku}</span></p>
-                    </div>
+                {/* Title, Manufacturer, SKU */}
+                <div>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">{activeProduct.category || 'General'}</p>
+                  <h3 className="text-2xl font-bold text-slate-900 tracking-tight leading-tight">
+                    {viewingFamily.familyName}
+                  </h3>
+                  <div className="mt-3 space-y-1">
+                    {activeProduct.manufacturer && (
+                      <p className="text-sm text-slate-600"><span className="text-slate-400 mr-2">Brand:</span>{activeProduct.manufacturer}</p>
+                    )}
+                    <p className="text-sm text-slate-600"><span className="text-slate-400 mr-2">SKU:</span><span className="font-mono text-slate-900">{activeVariant?.sku || activeProduct.base_sku}</span></p>
                   </div>
-                  <button onClick={() => setViewingFamily(null)} className="hidden sm:flex items-center justify-center w-8 h-8 text-slate-400 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-full transition-all">
-                    <X size={18} />
-                  </button>
                 </div>
 
                 {/* Description */}
@@ -464,10 +475,8 @@ export default function Catalog() {
 
                 <div className="h-px w-full bg-slate-100"></div>
 
-                {/* --- SMALLER MODAL OPTION BUTTONS --- */}
+                {/* Size & Packaging Selectors */}
                 <div className="space-y-5">
-                  
-                  {/* Size / Attribute Buttons */}
                   {(viewingFamily.familyProducts.length > 1 || viewingFamily.familyProducts[0].name.includes(' - ')) && (
                     <div>
                       <label className="block text-[10px] font-bold text-slate-400 mb-2 uppercase tracking-widest">Size / Option</label>
@@ -494,7 +503,6 @@ export default function Catalog() {
                     </div>
                   )}
 
-                  {/* Packaging Unit Buttons */}
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 mb-2 uppercase tracking-widest">Packaging Unit</label>
                     <div className="flex flex-wrap gap-2">
@@ -517,7 +525,6 @@ export default function Catalog() {
                       {activeVariants.length === 0 && <span className="text-sm text-slate-400 italic">No variants available</span>}
                     </div>
                   </div>
-
                 </div>
 
                 <div className="h-px w-full bg-slate-100"></div>
@@ -555,12 +562,25 @@ export default function Catalog() {
                     </div>
                   </div>
 
+                  {/* ANIMATED BUTTON */}
                   <button 
                     onClick={handleAddToCart}
-                    disabled={!selectedVariantId}
-                    className="w-full flex items-center justify-center gap-2 py-3.5 bg-slate-900 text-white text-sm font-semibold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={!selectedVariantId || isAddingToCart}
+                    className={`w-full flex items-center justify-center gap-2 py-3.5 text-sm font-semibold rounded-xl transition-all shadow-md ${
+                      isAddingToCart 
+                        ? 'bg-emerald-500 text-white scale-105 shadow-emerald-500/30' 
+                        : 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed'
+                    }`}
                   >
-                    <ShoppingCart size={16} /> Add to Cart — ${(displayPrice * quantity).toFixed(2)}
+                    {isAddingToCart ? (
+                      <>
+                        <CheckCircle2 size={18} className="animate-bounce" /> Added!
+                      </>
+                    ) : (
+                      <>
+                        <ShoppingCart size={16} /> Add to Cart — ${(displayPrice * quantity).toFixed(2)}
+                      </>
+                    )}
                   </button>
                 </div>
 
@@ -571,37 +591,16 @@ export default function Catalog() {
         </div>
       )}
 
-      {/* --- ADD TO CART SUCCESS NOTIFICATION --- */}
-      {notification.show && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center space-y-4 animate-in zoom-in-95 duration-200 border border-slate-100">
-            <div className="w-16 h-16 bg-slate-50 text-slate-900 rounded-full flex items-center justify-center mx-auto mb-4">
-              <CheckCircle2 size={32} strokeWidth={2} />
-            </div>
-            <div>
-              <h4 className="text-xl font-bold text-slate-900 tracking-tight">Added to Cart</h4>
-              <p className="text-sm text-slate-500 mt-2 leading-relaxed">{notification.message}</p>
-            </div>
-            <div className="flex flex-col gap-3 mt-8">
-              <button
-                onClick={() => {
-                  setNotification({ show: false, message: '' });
-                  navigate('/checkout', { state: { cart } });
-                }}
-                className="w-full py-3 bg-slate-900 text-white font-semibold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-sm"
-              >
-                Go to Checkout
-              </button>
-              <button
-                onClick={() => setNotification({ show: false, message: '' })}
-                className="w-full py-3 bg-white text-slate-700 font-semibold rounded-xl hover:bg-slate-50 active:scale-95 transition-all border border-slate-200"
-              >
-                Keep Shopping
-              </button>
-            </div>
+      {/* --- MODERN TOAST NOTIFICATION --- */}
+      {toast.show && (
+        <div className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-[100] flex items-center gap-3 bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-300">
+          <div className="bg-emerald-500/20 text-emerald-400 p-1.5 rounded-full">
+            <CheckCircle2 size={18} strokeWidth={2.5} />
           </div>
+          <p className="text-sm font-medium pr-2">{toast.message}</p>
         </div>
       )}
+
     </div>
   );
 }

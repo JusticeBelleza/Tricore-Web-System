@@ -1,16 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
-import { ArrowLeft, CheckCircle2, Package, CreditCard, Receipt, X, Building, MapPin, Search, User } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Package, CreditCard, Receipt, X, Building, MapPin, Search, User, Trash2 } from 'lucide-react';
 
 export default function Checkout() {
   const { profile } = useAuth();
-  const location = useLocation();
   const navigate = useNavigate();
   
-  // Grab the cart passed from the Catalog page
-  const cart = location.state?.cart || [];
+  // Load cart directly from Local Storage
+  const [cart, setCart] = useState(() => {
+    const savedCart = localStorage.getItem('tricore_cart');
+    return savedCart ? JSON.parse(savedCart) : [];
+  });
   
   // Identify if the user is B2B (Agency) or Retail
   const isB2B = !!profile?.company_id; 
@@ -19,6 +21,9 @@ export default function Checkout() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showSuccess, setShowSuccess] = useState(false);
+
+  // --- NEW: Delete Confirmation State ---
+  const [itemToDelete, setItemToDelete] = useState(null);
 
   // Patient Search State (Only used for B2B)
   const [patients, setPatients] = useState([]);
@@ -32,6 +37,11 @@ export default function Checkout() {
       fetchPatients();
     }
   }, [isB2B, profile]);
+
+  // Keep Local Storage synced perfectly whenever the cart changes
+  useEffect(() => {
+    localStorage.setItem('tricore_cart', JSON.stringify(cart));
+  }, [cart]);
 
   const fetchPatients = async () => {
     try {
@@ -51,6 +61,19 @@ export default function Checkout() {
   const filteredPatients = patients.filter(p => 
     p.full_name.toLowerCase().includes(patientSearch.toLowerCase())
   );
+
+  // --- Trigger the Confirmation Modal ---
+  const confirmRemoveFromCart = (index) => {
+    setItemToDelete(index);
+  };
+
+  // --- Execute the Deletion ---
+  const executeRemoveFromCart = () => {
+    if (itemToDelete !== null) {
+      setCart(prevCart => prevCart.filter((_, index) => index !== itemToDelete));
+      setItemToDelete(null);
+    }
+  };
 
   // --- Calculations ---
   const subtotal = cart.reduce((sum, item) => sum + item.line_total, 0);
@@ -73,14 +96,13 @@ export default function Checkout() {
     setError('');
 
     try {
-      // 1. Create the Order Record (Handles both B2B and Retail)
+      // 1. Create the Order Record
       const { data: order, error: orderError } = await supabase
         .from('orders')
         .insert({
           user_id: profile.id, 
           company_id: profile.company_id || null, 
           patient_id: isB2B ? selectedPatient.id : null,
-          // Conditionally save Shipping Info based on user type
           shipping_name: isB2B ? selectedPatient.full_name : profile.full_name, 
           shipping_address: isB2B ? selectedPatient.address : profile.address,
           shipping_city: isB2B ? selectedPatient.city : profile.city,
@@ -127,6 +149,8 @@ export default function Checkout() {
   };
 
   const finishCheckout = () => {
+    localStorage.removeItem('tricore_cart');
+    setCart([]);
     setShowSuccess(false);
     navigate('/orders'); 
   };
@@ -153,7 +177,7 @@ export default function Checkout() {
       {/* Header Area */}
       <div className="flex flex-col sm:flex-row sm:items-center gap-4">
         <button 
-          onClick={() => navigate(-1)} 
+          onClick={() => navigate('/catalog')} 
           className="flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-900 transition-colors w-fit"
         >
           <ArrowLeft size={16} /> Back to Catalog
@@ -286,16 +310,27 @@ export default function Checkout() {
             
             <div className="divide-y divide-slate-50">
               {cart.map((item, index) => (
-                <div key={index} className="px-6 py-5 flex items-center justify-between hover:bg-slate-50/50 transition-colors">
-                  <div className="pr-4">
+                <div key={index} className="px-6 py-5 flex items-center justify-between hover:bg-slate-50/50 transition-colors group">
+                  <div className="pr-4 flex-1">
                     <p className="font-bold text-slate-900 leading-snug">{item.name}</p>
                     <p className="text-sm font-medium text-slate-500 mt-1">
                       {item.quantity} x ${item.unit_price.toFixed(2)}
                     </p>
                   </div>
-                  <p className="font-extrabold text-slate-900 text-lg shrink-0">
-                    ${item.line_total.toFixed(2)}
-                  </p>
+                  
+                  {/* Total & Delete Button Area */}
+                  <div className="flex items-center gap-3 sm:gap-5 shrink-0">
+                    <p className="font-extrabold text-slate-900 text-lg">
+                      ${item.line_total.toFixed(2)}
+                    </p>
+                    <button 
+                      onClick={() => confirmRemoveFromCart(index)}
+                      className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                      title="Remove from cart"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -377,6 +412,37 @@ export default function Checkout() {
 
         </div>
       </div>
+
+      {/* --- CONFIRMATION MODAL FOR DELETING CART ITEM --- */}
+      {itemToDelete !== null && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center space-y-4 animate-in zoom-in-95 duration-200 border border-slate-100">
+            <div className="w-16 h-16 bg-red-50 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-100">
+              <Trash2 size={32} />
+            </div>
+            <div>
+              <h4 className="text-xl font-bold text-slate-900 tracking-tight">Remove Item?</h4>
+              <p className="text-sm text-slate-500 mt-2 font-medium">
+                Are you sure you want to remove <span className="text-slate-900 font-bold">{cart[itemToDelete]?.name}</span> from your cart?
+              </p>
+            </div>
+            <div className="flex gap-3 mt-6 pt-2">
+              <button
+                onClick={() => setItemToDelete(null)}
+                className="w-full py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={executeRemoveFromCart}
+                className="w-full py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 active:scale-95 transition-all shadow-sm"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* --- SUCCESS NOTIFICATION MODAL --- */}
       {showSuccess && (
