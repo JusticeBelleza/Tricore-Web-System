@@ -5,7 +5,7 @@ import { useAuth } from '../lib/AuthContext';
 import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search } from 'lucide-react';
 
 // --- SUB-COMPONENT: Minimalist Catalog Card ---
-function ProductFamilyCard({ familyName, familyProducts, globalVariants, getFinalBasePrice, onClick }) {
+function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVariantPrice, onClick }) {
   const [selectedProductId, setSelectedProductId] = useState(familyProducts[0].id);
   const activeProduct = familyProducts.find(p => p.id === selectedProductId) || familyProducts[0];
   const activeVariants = globalVariants.filter(v => v.product_id === activeProduct.id);
@@ -21,11 +21,8 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getFina
 
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
 
-  // Calculate prices
-  const finalBasePrice = getFinalBasePrice(activeProduct);
-  const isDiscounted = finalBasePrice < Number(activeProduct.retail_base_price);
-  const displayPrice = activeVariant ? (finalBasePrice * activeVariant.multiplier) : finalBasePrice;
-  const originalDisplayPrice = activeVariant ? (Number(activeProduct.retail_base_price) * activeVariant.multiplier) : Number(activeProduct.retail_base_price);
+  // Calculate prices using the new unified pricing logic
+  const { originalPrice: originalDisplayPrice, finalPrice: displayPrice, isDiscounted } = getVariantPrice(activeProduct, activeVariant);
 
   return (
     <div className="bg-white rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-all flex flex-col overflow-hidden group">
@@ -175,7 +172,6 @@ export default function Catalog() {
       const { data: productsData, error: productsError } = await supabase.from('products').select('*').order('name');
       if (productsError) throw productsError;
 
-      // FIXED: Ordered product variants by multiplier so smallest packaging is always first!
       const { data: variantsData, error: variantsError } = await supabase.from('product_variants').select('*').order('multiplier', { ascending: true });
       if (variantsError) throw variantsError;
 
@@ -196,13 +192,37 @@ export default function Catalog() {
     }
   };
 
-  const getFinalBasePrice = (product) => {
+  // --- NEW UNIFIED PRICING LOGIC ---
+  const getVariantPrice = (product, variant) => {
+    if (!product) return { originalPrice: 0, finalPrice: 0, isDiscounted: false };
+
     const rule = pricingRules.find(r => r.product_id === product.id);
-    const basePrice = Number(product.retail_base_price);
-    if (!rule) return basePrice;
-    if (rule.rule_type === 'fixed') return Number(rule.value);
-    if (rule.rule_type === 'percentage') return basePrice * (1 - (Number(rule.value) / 100));
-    return basePrice;
+    const baseRetail = Number(product.retail_base_price);
+    
+    // 1. Did the admin set a custom price on this specific variant?
+    // If Yes: Use it. If No: Fall back to Base Price * Multiplier.
+    const variantRetail = (variant && Number(variant.price) > 0) 
+      ? Number(variant.price) 
+      : (baseRetail * (variant?.multiplier || 1));
+    
+    let finalPrice = variantRetail;
+
+    // 2. Apply B2B rules if they exist
+    if (rule) {
+      if (rule.rule_type === 'fixed') {
+         // Fixed rules usually apply to the base unit, so we multiply it up to match the packaging
+         finalPrice = Number(rule.value) * (variant?.multiplier || 1);
+      } else if (rule.rule_type === 'percentage') {
+         // Percentage applies directly to whatever the variant's retail price is
+         finalPrice = variantRetail * (1 - (Number(rule.value) / 100));
+      }
+    }
+
+    return {
+      originalPrice: variantRetail,
+      finalPrice: finalPrice,
+      isDiscounted: finalPrice < variantRetail
+    };
   };
 
   // --- Filtering Logic ---
@@ -238,16 +258,15 @@ export default function Catalog() {
       if (sizeName === 'xl' || sizeName === 'extra large') return 5;
       if (sizeName === 'xxl' || sizeName === '2xl') return 6;
       
-      return 99; // Default weight for non-standard sizes, forces them to the end
+      return 99; 
     };
 
-    // Apply the sorting to every product family group
     Object.values(groups).forEach(familyArray => {
       familyArray.sort((a, b) => {
         const weightA = getSizeWeight(a.name);
         const weightB = getSizeWeight(b.name);
         if (weightA !== weightB) return weightA - weightB;
-        return a.name.localeCompare(b.name); // Fallback to alphabetical if same weight
+        return a.name.localeCompare(b.name); 
       });
     });
 
@@ -277,8 +296,8 @@ export default function Catalog() {
     const product = products.find(p => p.id === selectedProductId);
     const variant = variants.find(v => v.id === selectedVariantId);
     
-    const basePrice = getFinalBasePrice(product);
-    const unitPrice = variant.price ? Number(variant.price) : (basePrice * variant.multiplier);
+    // Use the unified pricing logic to get the correct cart unit price
+    const { finalPrice: unitPrice } = getVariantPrice(product, variant);
 
     setCart(prev => {
       const existing = prev.find(item => item.variant_id === selectedVariantId);
@@ -309,8 +328,8 @@ export default function Catalog() {
   const activeVariants = activeProduct ? variants.filter(v => v.product_id === activeProduct.id) : [];
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
   
-  const finalBasePrice = activeProduct ? getFinalBasePrice(activeProduct) : 0;
-  const displayPrice = activeVariant ? (finalBasePrice * activeVariant.multiplier) : finalBasePrice;
+  // Calculate price for the Modal
+  const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
 
   return (
     <div className="space-y-6 pb-12 relative max-w-7xl mx-auto">
@@ -386,7 +405,7 @@ export default function Catalog() {
               familyName={familyName}
               familyProducts={familyProducts}
               globalVariants={variants}
-              getFinalBasePrice={getFinalBasePrice}
+              getVariantPrice={getVariantPrice}
               onClick={() => openProductModal(familyName, familyProducts)}
             />
           ))}

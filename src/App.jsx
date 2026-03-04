@@ -15,19 +15,29 @@ import Reports from './pages/Reports';
 import FleetManagement from './pages/FleetManagement';
 import AgencyDashboard from './pages/AgencyDashboard';
 
-// Import the new Admin & Operations pages
 import Products from './pages/Products';
 import PurchaseOrders from './pages/PurchaseOrders';
-import { supabase } from './lib/supabase'; // NEEDED TO CHECK USER ROLE
 
 // Component to protect routes - redirects to login if there is no active session
 const ProtectedRoute = ({ children }) => {
-  const { user, loading } = useAuth();
+  // Grab profile as well so we can ensure it's loaded before rendering the app
+  const { user, profile, loading } = useAuth();
   
-  if (loading) {
+  // Wait if AuthContext is loading OR if we have a user but their profile hasn't arrived yet
+  if (loading || (user && !profile)) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500">
-        Authenticating...
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="flex flex-col items-center gap-4">
+          {/* TRICORE LOGO SPINNER */}
+          <img 
+            src="/images/tricore-logo.png" 
+            alt="Tricore Loading" 
+            className="w-12 h-12 animate-spin drop-shadow-sm" 
+          />
+          <span className="text-sm font-bold text-slate-500 tracking-wider uppercase animate-pulse">
+            Authenticating...
+          </span>
+        </div>
       </div>
     );
   }
@@ -41,29 +51,11 @@ const ProtectedRoute = ({ children }) => {
 
 // Component to handle Dashboard routing based on Role
 const DashboardRouter = () => {
-    const { user, profile } = useAuth();
-    const [loading, setLoading] = useState(true);
-    const [role, setRole] = useState(null);
-
-    useEffect(() => {
-        // If profile is already loaded in Context, use it.
-        if (profile?.role) {
-            setRole(profile.role);
-            setLoading(false);
-            return;
-        }
-
-        // Fallback: Fetch role if Context hasn't caught up yet
-        const fetchRole = async () => {
-             if (!user) return;
-             const { data } = await supabase.from('user_profiles').select('role').eq('id', user.id).single();
-             setRole(data?.role);
-             setLoading(false);
-        };
-        fetchRole();
-    }, [user, profile]);
-
-    if (loading) return <div>Loading...</div>;
+    const { profile } = useAuth();
+    
+    // Because ProtectedRoute forces the app to wait for the profile, 
+    // we can securely rely on profile.role being instantly available here!
+    const role = profile?.role;
 
     // Route B2B and Agency Admins to their specific dashboard
     if (role === 'b2b' || role === 'agency_admin') {
@@ -101,7 +93,7 @@ export default function App() {
           <Route path="admin/orders" element={<AdminOrders />} />
           <Route path="driver" element={<DriverRoutes />} />
           
-          {/* NEW ADMIN & STAFF ROUTES */}
+          {/* ADMIN & STAFF ROUTES */}
           <Route path="purchase-orders" element={<PurchaseOrders />} />
           <Route path="admin/products" element={<Products />} />
           <Route path="admin/users" element={<AdminUsers />} />

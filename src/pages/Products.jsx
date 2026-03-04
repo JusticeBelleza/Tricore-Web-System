@@ -76,7 +76,6 @@ export default function Products() {
     }
   };
 
-  // --- Derived Filters Data ---
   const categories = Array.from(new Set(products.map(p => p.category).filter(Boolean))).sort();
 
   const filteredProducts = products.filter(p => {
@@ -93,7 +92,6 @@ export default function Products() {
     }));
   };
 
-  // --- CSV Logic ---
   const downloadTemplate = () => {
     const headers = "Name,Base_SKU,Retail_Price,Base_Unit,Category,Manufacturer,Initial_Stock\n";
     const sample = "Premium Nitrile Gloves,GLV-NIT-01,15.99,Each,PPE,Tricore,100\n";
@@ -148,7 +146,6 @@ export default function Products() {
     }
   };
 
-  // --- Form Handlers ---
   const openCreateForm = () => {
     setEditingId(null);
     setFormData({ name: '', description: '', base_sku: '', retail_base_price: '', base_unit_name: '', manufacturer: '', category: '', continue_selling: false, initial_stock: 0 });
@@ -198,8 +195,6 @@ export default function Products() {
     setVariants(variants.filter((_, i) => i !== index));
   };
 
-  // --- RICH TEXT EDITOR LOGIC ---
-  
   const checkFormats = () => {
     setActiveFormats({
       bold: document.queryCommandState('bold'),
@@ -222,9 +217,7 @@ export default function Products() {
   const handleEditorKeyDown = (e) => {
     if (e.key === 'Tab') {
       e.preventDefault(); 
-      // Check if we are inside ANY type of list
       const isList = document.queryCommandState('insertUnorderedList') || document.queryCommandState('insertOrderedList');
-      
       if (e.shiftKey) {
         if (isList) document.execCommand('outdent');
       } else {
@@ -242,8 +235,6 @@ export default function Products() {
     setFormData(prev => ({ ...prev, description: editorRef.current.innerHTML }));
     checkFormats();
   };
-
-  // --------------------------------
 
   const handleFormSubmit = (e) => {
     e.preventDefault();
@@ -264,13 +255,22 @@ export default function Products() {
     setSaving(true);
     try {
       let uploadedUrls = [];
+      
+      // 1. UPLOAD IMAGES
       for (const file of photos) {
         const fileName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
         
-        // FIXED: Added contentType so Supabase knows it is an image, allowing webp/svg to render!
-        await supabase.storage.from('product_images').upload(fileName, file, {
-          contentType: file.type 
-        });
+        // IMPORTANT: We now capture uploadError so we know if Supabase blocked it!
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('product_images')
+          .upload(fileName, file, {
+            contentType: file.type 
+          });
+
+        if (uploadError) {
+          console.error("Storage Upload Error:", uploadError);
+          throw new Error(`Failed to upload ${file.name}: ${uploadError.message}`);
+        }
         
         const { data } = supabase.storage.from('product_images').getPublicUrl(fileName);
         uploadedUrls.push(data.publicUrl);
@@ -280,6 +280,7 @@ export default function Products() {
 
       let productId = editingId;
 
+      // 2. SAVE PRODUCT DATA
       if (editingId) {
         await supabase.from('products').update({
           name: formData.name, description: formData.description, base_sku: formData.base_sku,
@@ -306,6 +307,7 @@ export default function Products() {
         await supabase.from('inventory').insert({ product_id: productId, base_units_on_hand: Number(formData.initial_stock), base_units_reserved: 0 });
       }
 
+      // 3. CLEAN UP AND SAVE VARIANTS
       if (deletedVariantIds.length > 0) {
         await supabase.from('product_variants').delete().in('id', deletedVariantIds);
       }
@@ -330,7 +332,8 @@ export default function Products() {
       
     } catch (error) {
       console.error('Save error:', error);
-      alert('Failed to save product. Ensure SKU is unique.');
+      // We now show an alert if the image upload fails!
+      alert(`Save Failed: ${error.message}`); 
     } finally {
       setSaving(false);
     }
@@ -356,11 +359,9 @@ export default function Products() {
     });
   };
 
-  // --- UI Class Helpers ---
   const inputClass = "w-full px-3 py-1.5 bg-white border border-slate-300 rounded-md focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-sm transition-all placeholder:text-slate-400";
   const labelClass = "block text-sm font-bold text-slate-700 mb-1";
   
-  // Style for Rich Text Editor buttons
   const getFormatClass = (isActive) => 
     `p-1.5 rounded transition-all ${isActive ? 'bg-blue-100 text-blue-700 shadow-inner ring-1 ring-blue-300' : 'text-slate-700 hover:bg-slate-200 active:scale-90'}`;
 
@@ -526,7 +527,6 @@ export default function Products() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className={labelClass}>Base SKU</label>
-                    {/* DISABLED ATTRIBUTE REMOVED - User can edit Base SKU! */}
                     <input type="text" required value={formData.base_sku} onChange={e => setFormData({...formData, base_sku: e.target.value})} className={`${inputClass} font-mono uppercase`} />
                   </div>
                   <div>
@@ -556,7 +556,6 @@ export default function Products() {
                 <label className={labelClass}>Description</label>
                 <div className="bg-white border border-slate-300 rounded-lg overflow-hidden focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-200 transition-all">
                   
-                  {/* Updated Toolbar */}
                   <div className="flex flex-wrap gap-1 p-1.5 border-b border-slate-200 bg-slate-50 items-center">
                     <select onChange={(e) => formatText('fontSize', e.target.value)} defaultValue="3" className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-medium outline-none focus:border-blue-500 hover:bg-slate-100 transition-colors">
                       <option value="1">Smallest</option><option value="3">Normal</option><option value="5">Larger</option><option value="7">Huge</option>
@@ -564,21 +563,18 @@ export default function Products() {
                     
                     <div className="w-px h-4 bg-slate-300 my-auto mx-1"></div>
                     
-                    {/* Basic Formatting */}
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('bold'); }} className={getFormatClass(activeFormats.bold)}><Bold size={15}/></button>
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('italic'); }} className={getFormatClass(activeFormats.italic)}><Italic size={15}/></button>
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('underline'); }} className={getFormatClass(activeFormats.underline)}><Underline size={15}/></button>
                     
                     <div className="w-px h-4 bg-slate-300 my-auto mx-1"></div>
 
-                    {/* Alignment */}
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('justifyLeft'); }} className={getFormatClass(activeFormats.alignLeft)}><AlignLeft size={15}/></button>
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('justifyCenter'); }} className={getFormatClass(activeFormats.alignCenter)}><AlignCenter size={15}/></button>
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('justifyRight'); }} className={getFormatClass(activeFormats.alignRight)}><AlignRight size={15}/></button>
 
                     <div className="w-px h-4 bg-slate-300 my-auto mx-1"></div>
                     
-                    {/* Lists */}
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('insertUnorderedList'); }} className={getFormatClass(activeFormats.unorderedList)}><List size={15}/></button>
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('insertOrderedList'); }} className={getFormatClass(activeFormats.orderedList)}><ListOrdered size={15}/></button>
                   </div>
@@ -718,7 +714,7 @@ export default function Products() {
         </div>
       )}
 
-      {/* --- CONFIRM MODAL (USED FOR DELETE, SAVE, IMPORT, EXPORT) --- */}
+      {/* --- CONFIRM MODAL --- */}
       {confirmAction.show && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center space-y-4 animate-in zoom-in-95 duration-200">
