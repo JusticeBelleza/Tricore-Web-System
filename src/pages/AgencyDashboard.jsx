@@ -5,10 +5,10 @@ import { useAuth } from '../lib/AuthContext';
 import { 
   Search, UserPlus, Trash2, Mail, Phone, Lock, 
   CheckCircle2, XCircle, X, Users, Building, 
-  MapPin, Edit, MoreVertical, Wallet, Activity, UserCog
+  MapPin, Edit, MoreVertical, Wallet, Activity, UserCog, Save, ShieldCheck
 } from 'lucide-react';
 
-export default function B2BDashboard() {
+export default function AgencyDashboard() {
   const { profile } = useAuth();
   const [activeTab, setActiveTab] = useState('patients'); 
   const [searchTerm, setSearchTerm] = useState('');
@@ -20,6 +20,10 @@ export default function B2BDashboard() {
   const [financials, setFinancials] = useState({ limit: 0, outstanding: 0, available: 0 });
   const [activeMenuId, setActiveMenuId] = useState(null); 
 
+  // --- NEW: Identify the Primary Agency Admin ---
+  const [isPrimaryAdmin, setIsPrimaryAdmin] = useState(false);
+  const [companyEmail, setCompanyEmail] = useState('');
+
   // Modal States
   const [showAddPatientModal, setShowAddPatientModal] = useState(false);
   const [showEditPatientModal, setShowEditPatientModal] = useState(false);
@@ -30,8 +34,8 @@ export default function B2BDashboard() {
   const [toast, setToast] = useState({ show: false, message: '', isError: false });
 
   // Forms
-  const [patientForm, setPatientForm] = useState({ full_name: '', email: '', phone: '', address: '', city: '', state: '', zip: '' });
-  const [editPatientForm, setEditPatientForm] = useState({ id: '', full_name: '', email: '', phone: '', address: '', city: '', state: '', zip: '' });
+  const [patientForm, setPatientForm] = useState({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '' });
+  const [editPatientForm, setEditPatientForm] = useState({ id: '', full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '' });
   const [subAdminForm, setSubAdminForm] = useState({ full_name: '', email: '', contact_number: '', password: '', confirm_password: '' });
 
   // Close 3-dot menu on click outside
@@ -41,7 +45,6 @@ export default function B2BDashboard() {
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
-  // --- ALT-TAB FIX: Only fetch when company_id exists, and depend strictly on the ID primitive ---
   useEffect(() => {
     if (profile?.company_id) {
       fetchDashboardData();
@@ -51,21 +54,24 @@ export default function B2BDashboard() {
   const fetchDashboardData = async () => {
     setLoading(true);
     try {
-      // Parallel Data Fetch for Speed
       const [patientsRes, usersRes, ordersRes, companyRes] = await Promise.all([
         supabase.from('agency_patients').select('*').eq('agency_id', profile.company_id).order('full_name', { ascending: true }),
         supabase.from('user_profiles').select('*').eq('company_id', profile.company_id).order('full_name', { ascending: true }),
         supabase.from('orders').select('total_amount').eq('company_id', profile.company_id).eq('payment_status', 'unpaid'),
-        supabase.from('companies').select('credit_limit').eq('id', profile.company_id).single()
+        supabase.from('companies').select('credit_limit, email').eq('id', profile.company_id).single()
       ]);
 
       setPatientsList(patientsRes.data || []);
       setSubAdminList(usersRes.data || []);
 
-      // Calculate Financials
       const limit = Number(companyRes.data?.credit_limit || 0);
       const outstanding = ordersRes.data?.reduce((sum, order) => sum + Number(order.total_amount), 0) || 0;
       setFinancials({ limit, outstanding, available: limit - outstanding });
+
+      // Identify if the logged-in user is the Primary Admin
+      const cEmail = companyRes.data?.email;
+      setCompanyEmail(cEmail);
+      setIsPrimaryAdmin(profile.email === cEmail);
 
     } catch (error) {
       console.error('Error fetching dashboard:', error);
@@ -91,12 +97,12 @@ export default function B2BDashboard() {
     e.preventDefault();
     setIsSubmitting(true);
     try {
-      const { error } = await supabase.from('agency_patients').insert([{ ...patientForm, agency_id: profile.company_id }]);
+      const { error } = await supabase.from('agency_patients').insert([{ ...patientForm, email: patientForm.email.trim(), agency_id: profile.company_id }]);
       if (error) throw error;
       
       fetchDashboardData();
       setShowAddPatientModal(false);
-      setPatientForm({ full_name: '', email: '', phone: '', address: '', city: '', state: '', zip: '' });
+      setPatientForm({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '' });
       showToast('Patient added successfully!');
     } catch (error) {
       showToast(error.message, true);
@@ -110,9 +116,15 @@ export default function B2BDashboard() {
     setIsSubmitting(true);
     try {
       const { error } = await supabase.from('agency_patients').update({
-        full_name: editPatientForm.full_name, email: editPatientForm.email, phone: editPatientForm.phone,
-        address: editPatientForm.address, city: editPatientForm.city, state: editPatientForm.state, zip: editPatientForm.zip
+        full_name: editPatientForm.full_name, 
+        email: editPatientForm.email.trim(), 
+        contact_number: editPatientForm.contact_number,
+        address: editPatientForm.address, 
+        city: editPatientForm.city, 
+        state: editPatientForm.state, 
+        zip: editPatientForm.zip
       }).eq('id', editPatientForm.id);
+      
       if (error) throw error;
 
       fetchDashboardData();
@@ -152,11 +164,18 @@ export default function B2BDashboard() {
   const executeAddSubAdmin = async () => {
     setConfirmAction({ show: false }); setIsSubmitting(true);
     try {
-      // SECONDARY CLIENT TRICK: Prevents the current user from being logged out!
-      const tempSupabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+      // UNIQUE STORAGE KEY: Fixes the "Multiple GoTrueClient instances" warning in the console!
+      const tempSupabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, { 
+        auth: { 
+          persistSession: false, 
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+          storageKey: 'temp_subadmin_registration_key'
+        } 
+      });
       
       const { error: authError } = await tempSupabase.auth.signUp({ 
-        email: confirmAction.data.email, 
+        email: confirmAction.data.email.trim(), // Strips accidental spaces that cause 422 errors!
         password: confirmAction.data.password, 
         options: { 
           data: { 
@@ -183,7 +202,7 @@ export default function B2BDashboard() {
   };
 
   const triggerDeleteSubAdmin = (admin) => {
-    setConfirmAction({ show: true, type: 'delete_subadmin', title: 'Delete Sub-Admin?', message: `Revoke access for ${admin.full_name}?`, data: admin.id });
+    setConfirmAction({ show: true, type: 'delete_subadmin', title: 'Revoke Sub-Admin Access?', message: `Permanently delete access for ${admin.full_name}?`, data: admin.id });
   };
 
   const executeDeleteSubAdmin = async () => {
@@ -192,7 +211,7 @@ export default function B2BDashboard() {
       const { error } = await supabase.rpc('delete_user', { user_id: confirmAction.data });
       if (error) throw error;
       fetchDashboardData(); 
-      showToast('Sub-admin removed.');
+      showToast('Sub-admin access revoked.');
     } catch (error) { 
       showToast(error.message, true); 
     }
@@ -226,8 +245,8 @@ export default function B2BDashboard() {
               <UserPlus size={16} /> Add Patient
             </button>
           )}
-          {activeTab === 'subadmins' && (
-            <button onClick={() => setShowAddSubAdminModal(true)} className="px-5 py-2.5 text-sm bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 active:scale-95 transition-all shadow-md flex items-center gap-2">
+          {activeTab === 'subadmins' && isPrimaryAdmin && (
+            <button onClick={() => setShowAddSubAdminModal(true)} className="px-5 py-2.5 text-sm bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center gap-2">
               <UserCog size={16} /> Add Sub-Admin
             </button>
           )}
@@ -322,56 +341,74 @@ export default function B2BDashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 border-b border-slate-200">
-                {filteredData.map(item => (
-                  <tr key={item.id} className="hover:bg-slate-50 group transition-colors">
-                    
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-4">
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 border shadow-sm ${activeTab === 'patients' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
-                          {getInitials(item.full_name)}
-                        </div>
-                        <div className="flex flex-col">
-                          <p className="font-bold text-slate-900">{item.full_name}</p>
-                          <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
-                            {item.email && <span className="font-mono">{item.email}</span>}
-                            {item.email && (item.phone || item.contact_number) && <span className="text-slate-300">&bull;</span>}
-                            {(item.phone || item.contact_number) && <span className="font-mono">{item.phone || item.contact_number}</span>}
+                {filteredData.map(item => {
+                  
+                  // Logic to identify if this specific row is the Primary Agency Admin
+                  const isThisRowPrimaryAdmin = item.email === companyEmail;
+
+                  return (
+                    <tr key={item.id} className="hover:bg-slate-50 group transition-colors">
+                      
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-4">
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 border shadow-sm ${activeTab === 'patients' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+                            {getInitials(item.full_name)}
+                          </div>
+                          <div className="flex flex-col">
+                            <p className="font-bold text-slate-900">{item.full_name}</p>
+                            <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
+                              {item.email && <span className="font-mono">{item.email}</span>}
+                              {item.email && (item.phone || item.contact_number) && <span className="text-slate-300">&bull;</span>}
+                              {(item.phone || item.contact_number) && <span className="font-mono">{item.phone || item.contact_number}</span>}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </td>
+                      </td>
 
-                    <td className="px-6 py-4">
-                      {activeTab === 'patients' ? (
-                        item.address ? (
-                          <div className="text-sm text-slate-600">
-                            <p className="font-medium text-slate-900">{item.address}</p>
-                            <p>{item.city}, {item.state} {item.zip}</p>
+                      <td className="px-6 py-4">
+                        {activeTab === 'patients' ? (
+                          item.address ? (
+                            <div className="text-sm text-slate-600">
+                              <p className="font-medium text-slate-900">{item.address}</p>
+                              <p>{item.city}, {item.state} {item.zip}</p>
+                            </div>
+                          ) : (<span className="text-xs text-slate-400 italic">No address provided</span>)
+                        ) : (
+                          <div className="flex items-center gap-2 text-slate-700 font-semibold">
+                            {isThisRowPrimaryAdmin ? (
+                              <><ShieldCheck size={16} className="text-emerald-600" /> <span>Primary Admin</span></>
+                            ) : (
+                              <><UserCog size={16} className="text-blue-600" /> <span>Sub-Admin</span></>
+                            )}
                           </div>
-                        ) : (<span className="text-xs text-slate-400 italic">No address provided</span>)
-                      ) : (
-                        <div className="flex items-center gap-2 text-slate-700 font-semibold"><UserCog size={16} className="text-blue-600" /> <span>Sub-Admin</span></div>
-                      )}
-                    </td>
+                        )}
+                      </td>
 
-                    <td className="px-6 py-4 text-right relative">
-                      <button onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === item.id ? null : item.id); }} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-300 active:scale-95 transition-all"><MoreVertical size={20} /></button>
-                      {activeMenuId === item.id && (
-                        <div className="absolute right-10 top-8 w-48 bg-white border border-slate-200 rounded-xl shadow-xl z-[90] py-1.5 flex flex-col text-left overflow-hidden animate-in fade-in zoom-in-95">
-                          {activeTab === 'patients' ? (
-                            <>
-                              <button onClick={() => { setActiveMenuId(null); setEditPatientForm(item); setShowEditPatientModal(true); }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-3"><Edit size={16} className="text-slate-500" /> Edit Patient</button>
-                              <div className="h-px w-full bg-slate-100 my-1"></div>
-                              <button onClick={() => triggerDeletePatient(item)} className="w-full px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100 transition-colors flex items-center gap-3"><Trash2 size={16} /> Delete</button>
-                            </>
-                          ) : (
-                            <button onClick={() => triggerDeleteSubAdmin(item)} className="w-full px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100 transition-colors flex items-center gap-3"><Trash2 size={16} /> Revoke Access</button>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                      <td className="px-6 py-4 text-right relative">
+                        {/* Only render 3 dots for patients, OR if you are the Primary Admin (and not trying to edit yourself) */}
+                        {(activeTab === 'patients' || (isPrimaryAdmin && !isThisRowPrimaryAdmin)) ? (
+                          <button onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === item.id ? null : item.id); }} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-300 active:scale-95 transition-all"><MoreVertical size={20} /></button>
+                        ) : (
+                          <span className="text-xs font-medium text-slate-400 italic pr-3">Secured</span>
+                        )}
+
+                        {activeMenuId === item.id && (
+                          <div className="absolute right-10 top-8 w-48 bg-white border border-slate-200 rounded-xl shadow-xl z-[90] py-1.5 flex flex-col text-left overflow-hidden animate-in fade-in zoom-in-95">
+                            {activeTab === 'patients' ? (
+                              <>
+                                <button onClick={() => { setActiveMenuId(null); setEditPatientForm(item); setShowEditPatientModal(true); }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-3"><Edit size={16} className="text-slate-500" /> Edit Patient</button>
+                                <div className="h-px w-full bg-slate-100 my-1"></div>
+                                <button onClick={() => triggerDeletePatient(item)} className="w-full px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100 transition-colors flex items-center gap-3"><Trash2 size={16} /> Delete</button>
+                              </>
+                            ) : (
+                              <button onClick={() => triggerDeleteSubAdmin(item)} className="w-full px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100 transition-colors flex items-center gap-3"><Trash2 size={16} /> Revoke Access</button>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -393,7 +430,7 @@ export default function B2BDashboard() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="sm:col-span-2"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Full Name</label><input type="text" required value={patientForm.full_name} onChange={e => setPatientForm({...patientForm, full_name: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold transition-all" /></div>
                   <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Email Address</label><div className="relative"><Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="email" value={patientForm.email} onChange={e => setPatientForm({...patientForm, email: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
-                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Phone Number</label><div className="relative"><Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="tel" value={patientForm.phone} onChange={e => setPatientForm({...patientForm, phone: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
+                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Phone Number</label><div className="relative"><Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="tel" value={patientForm.contact_number} onChange={e => setPatientForm({...patientForm, contact_number: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
                 </div>
               </div>
 
@@ -430,7 +467,7 @@ export default function B2BDashboard() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="sm:col-span-2"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Full Name</label><input type="text" required value={editPatientForm.full_name} onChange={e => setEditPatientForm({...editPatientForm, full_name: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold transition-all" /></div>
                   <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Email Address</label><div className="relative"><Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="email" value={editPatientForm.email || ''} onChange={e => setEditPatientForm({...editPatientForm, email: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
-                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Phone Number</label><div className="relative"><Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="tel" value={editPatientForm.phone || ''} onChange={e => setEditPatientForm({...editPatientForm, phone: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
+                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Phone Number</label><div className="relative"><Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="tel" value={editPatientForm.contact_number || ''} onChange={e => setEditPatientForm({...editPatientForm, contact_number: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
                 </div>
               </div>
 

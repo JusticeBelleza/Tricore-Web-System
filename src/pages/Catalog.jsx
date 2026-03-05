@@ -100,14 +100,30 @@ export default function Catalog() {
   const [financials, setFinancials] = useState({ limit: 0, outstanding: 0, available: 0 });
   const [loading, setLoading] = useState(true);
   
-  const [cart, setCart] = useState(() => {
-    const savedCart = localStorage.getItem('tricore_cart');
-    return savedCart ? JSON.parse(savedCart) : [];
-  });
+  // --- FIXED: Shared Agency Cart Logic ---
+  const [cart, setCart] = useState([]);
+  const [cartLoaded, setCartLoaded] = useState(false);
+
+  // Use company_id if they are B2B, otherwise use their personal ID
+  const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
 
   useEffect(() => {
-    localStorage.setItem('tricore_cart', JSON.stringify(cart));
-  }, [cart]);
+    if (profile?.id) {
+      const savedCart = localStorage.getItem(cartKey);
+      if (savedCart) {
+        setCart(JSON.parse(savedCart));
+      } else {
+        setCart([]); 
+      }
+      setCartLoaded(true);
+    }
+  }, [profile?.id, cartKey]);
+
+  useEffect(() => {
+    if (cartLoaded && profile?.id) {
+      localStorage.setItem(cartKey, JSON.stringify(cart));
+    }
+  }, [cart, cartLoaded, profile?.id, cartKey]);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
@@ -126,7 +142,6 @@ export default function Catalog() {
   const fetchCatalogData = async () => {
     setLoading(true);
     try {
-      // 🚀 SPEED OPTIMIZATION: Fetch basic catalog data in parallel
       const [productsRes, variantsRes] = await Promise.all([
         supabase.from('products').select('*').order('name'),
         supabase.from('product_variants').select('*').order('multiplier', { ascending: true })
@@ -139,7 +154,6 @@ export default function Catalog() {
       let calcFinancials = { limit: 0, outstanding: 0, available: 0 };
 
       if (profile?.company_id && profile?.role?.toLowerCase() === 'b2b') {
-        // 🚀 SPEED OPTIMIZATION: Fetch agency data in parallel
         const [rulesRes, unpaidRes] = await Promise.all([
           supabase.from('pricing_rules').select('*').eq('company_id', profile.company_id),
           supabase.from('orders').select('total_amount').eq('company_id', profile.company_id).eq('payment_status', 'unpaid')

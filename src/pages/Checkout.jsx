@@ -8,10 +8,29 @@ export default function Checkout() {
   const { profile } = useAuth();
   const navigate = useNavigate();
   
-  const [cart, setCart] = useState(() => {
-    const savedCart = localStorage.getItem('tricore_cart');
-    return savedCart ? JSON.parse(savedCart) : [];
-  });
+  // --- FIXED: Shared Agency Cart Logic ---
+  const [cart, setCart] = useState([]);
+  const [cartLoaded, setCartLoaded] = useState(false);
+
+  const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
+
+  useEffect(() => {
+    if (profile?.id) {
+      const savedCart = localStorage.getItem(cartKey);
+      if (savedCart) {
+        setCart(JSON.parse(savedCart));
+      } else {
+        setCart([]); // Clear if no cart
+      }
+      setCartLoaded(true);
+    }
+  }, [profile?.id, cartKey]);
+
+  useEffect(() => {
+    if (cartLoaded && profile?.id) {
+      localStorage.setItem(cartKey, JSON.stringify(cart));
+    }
+  }, [cart, cartLoaded, profile?.id, cartKey]);
   
   const isB2B = !!profile?.company_id; 
 
@@ -22,7 +41,6 @@ export default function Checkout() {
 
   const [itemToDelete, setItemToDelete] = useState(null);
 
-  // Patient Search & Dropdown States
   const [patients, setPatients] = useState([]);
   const [patientSearch, setPatientSearch] = useState('');
   const [selectedPatient, setSelectedPatient] = useState(null);
@@ -37,11 +55,6 @@ export default function Checkout() {
     }
   }, [isB2B, profile]);
 
-  useEffect(() => {
-    localStorage.setItem('tricore_cart', JSON.stringify(cart));
-  }, [cart]);
-
-  // Handle clicking outside the dropdown to close it
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
@@ -77,14 +90,12 @@ export default function Checkout() {
     if (itemToDelete !== null) { setCart(prevCart => prevCart.filter((_, index) => index !== itemToDelete)); setItemToDelete(null); }
   };
 
-  // --- Calculations ---
   const subtotal = cart.reduce((sum, item) => sum + item.line_total, 0);
   const shippingFee = isB2B ? Number(profile?.companies?.shipping_fee || 0) : 10.00; 
   const taxRate = (isB2B && profile?.companies?.tax_exempt) ? 0 : 0.08;
   const taxAmount = subtotal * taxRate;
   const totalAmount = subtotal + shippingFee + taxAmount;
 
-  // --- Block Logic for Net 30 ---
   const isCreditExceeded = isB2B && paymentMethod === 'net_30' && totalAmount > financials.available;
 
   const handlePlaceOrder = async () => {
@@ -124,9 +135,14 @@ export default function Checkout() {
     } finally { setLoading(false); }
   };
 
-  const finishCheckout = () => { localStorage.removeItem('tricore_cart'); setCart([]); setShowSuccess(false); navigate('/orders'); };
+  const finishCheckout = () => { 
+    localStorage.removeItem(cartKey); 
+    setCart([]); 
+    setShowSuccess(false); 
+    navigate('/orders'); 
+  };
 
-  if (cart.length === 0) {
+  if (!cartLoaded || cart.length === 0) {
     return (
       <div className="max-w-xl mx-auto text-center py-20 bg-white rounded-3xl border border-slate-100 shadow-sm mt-10">
         <Package size={48} strokeWidth={1.5} className="mx-auto text-slate-300 mb-5" />
@@ -234,7 +250,7 @@ export default function Checkout() {
                       <User size={16} className="text-slate-400" /> {selectedPatient.full_name}
                     </p>
                     
-                    {/* Patient Contact Info (with fallback for contact_number vs phone) */}
+                    {/* Patient Contact Info */}
                     <div className="flex flex-col gap-1.5 text-xs text-slate-500">
                       {selectedPatient.email && (
                         <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {selectedPatient.email}</p>
