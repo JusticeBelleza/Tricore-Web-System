@@ -44,7 +44,6 @@ export default function AdminUsers() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [confirmAction, setConfirmAction] = useState({ show: false, type: '', title: '', message: '', data: null });
   
-  // --- NEW: Toast Notification State ---
   const [toast, setToast] = useState({ show: false, message: '', isError: false });
 
   // Forms
@@ -53,7 +52,6 @@ export default function AdminUsers() {
   const [retailForm, setRetailForm] = useState({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '', password: '', confirm_password: '' });
   const [editAgencyForm, setEditAgencyForm] = useState({ userId: '', companyId: '', company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_phone: '' });
 
-  // Close 3-dot menu when clicking outside
   useEffect(() => {
     const handleClickOutside = () => setActiveMenuId(null);
     document.addEventListener('click', handleClickOutside);
@@ -96,8 +94,28 @@ export default function AdminUsers() {
         return a.full_name?.localeCompare(b.full_name);
       });
 
+      // 🚀 FIXED: Group B2B users by Agency so sub-admins don't clutter the table
+      const b2bProfiles = profiles.filter(p => p.role?.toLowerCase() === 'b2b');
+      const uniqueB2bMap = new Map();
+      
+      b2bProfiles.forEach(p => {
+        const compId = p.companies?.id;
+        if (!compId) {
+          uniqueB2bMap.set(p.id, p); // Keep orphans just in case
+        } else {
+          if (!uniqueB2bMap.has(compId)) {
+            uniqueB2bMap.set(compId, p);
+          } else {
+            // Overwrite if this user is the Primary Admin (email matches company email)
+            if (p.email === p.companies.email) {
+              uniqueB2bMap.set(compId, p);
+            }
+          }
+        }
+      });
+
       setStaffList(staff);
-      setB2bList(profiles.filter(p => p.role?.toLowerCase() === 'b2b'));
+      setB2bList(Array.from(uniqueB2bMap.values()));
       setRetailList(profiles.filter(p => p.role?.toLowerCase() === 'retail' || p.role?.toLowerCase() === 'user'));
     } catch (error) { console.error('Error fetching users:', error); } finally { setLoading(false); }
   };
@@ -120,7 +138,6 @@ export default function AdminUsers() {
     return parts.length > 1 ? `${intPart}.${parts[1]}` : intPart;
   };
 
-  // --- HELPER: Trigger Toast ---
   const showToast = (message, isError = false) => {
     setToast({ show: true, message, isError });
     setTimeout(() => setToast({ show: false, message: '', isError: false }), 4000);
@@ -320,12 +337,10 @@ export default function AdminUsers() {
   const catalogPageCount = Math.ceil(filteredCatalog.length / ITEMS_PER_PAGE);
   const paginatedCatalog = filteredCatalog.slice(pricingPage * ITEMS_PER_PAGE, (pricingPage + 1) * ITEMS_PER_PAGE);
 
-  // --- TAB THEME CONSTANTS ---
   const tabBaseClass = "flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95";
   const tabActiveClass = "bg-slate-900 text-white shadow-md";
   const tabInactiveClass = "text-slate-500 hover:text-slate-900 hover:bg-slate-200/50";
 
-  // --- RENDER ROLES CLEANLY ---
   const renderRole = (role) => {
     const r = (role || 'user').toLowerCase();
     let Icon = User;

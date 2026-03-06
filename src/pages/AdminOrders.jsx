@@ -22,7 +22,6 @@ export default function AdminOrders() {
   const [confirmAction, setConfirmAction] = useState({ show: false, title: '', message: '', onConfirm: null });
   const [notification, setNotification] = useState({ show: false, message: '', isError: false });
   
-  // Assign Driver Modal States
   const [assigningOrder, setAssigningOrder] = useState(null);
   const [driverName, setDriverName] = useState('');
   const [driverPhone, setDriverPhone] = useState('');
@@ -89,6 +88,30 @@ export default function AdminOrders() {
     }
   };
 
+  // --- MARK AS PAID LOGIC ---
+  const handleMarkAsPaid = (orderId) => {
+    setConfirmAction({
+      show: true,
+      title: 'Mark as Paid?',
+      message: 'Confirming this will mark the invoice as Paid and replenish the agency\'s available credit limit.',
+      onConfirm: () => {
+        setConfirmAction({ show: false, title: '', message: '', onConfirm: null });
+        executeMarkAsPaid(orderId);
+      }
+    });
+  };
+
+  const executeMarkAsPaid = async (orderId) => {
+    try {
+      const { error } = await supabase.from('orders').update({ payment_status: 'paid' }).eq('id', orderId);
+      if (error) throw error;
+      setOrders(orders.map(o => o.id === orderId ? { ...o, payment_status: 'paid' } : o));
+      setNotification({ show: true, isError: false, message: 'Order successfully marked as Paid!' });
+    } catch (error) {
+      setNotification({ show: true, isError: true, message: `Failed to update payment status: ${error.message}` });
+    }
+  };
+
   const openAssignModal = (order) => {
     const driverParts = (order.driver_name || '').split(' | ');
     setDriverName(driverParts[0] || '');
@@ -117,7 +140,6 @@ export default function AdminOrders() {
     e.preventDefault();
     if (!assigningOrder) return;
     try {
-      // 🚀 Hack: Save driver phone next to name so we don't get 400 schema errors!
       const finalDriverName = driverName + (driverPhone ? ` | ${driverPhone}` : '');
       const updates = { 
         driver_name: finalDriverName || null, 
@@ -168,7 +190,6 @@ export default function AdminOrders() {
     const shipAddress = order.shipping_address || 'N/A';
     const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
 
-    // 🚀 PDF Layout Sequence: Email -> Phone -> Address
     let currentYBill = 56;
     doc.text(billName, 14, currentYBill); currentYBill += 5;
     if (billEmail) { doc.text(billEmail, 14, currentYBill); currentYBill += 5; }
@@ -214,6 +235,14 @@ export default function AdminOrders() {
     doc.save(`Invoice_${orderNum}.pdf`);
   };
 
+  // 🚀 FIXED: Defined getDisplayName to prevent the rendering crash!
+  const getDisplayName = (order) => {
+    if (order.companies?.name) {
+      return order.companies.name;
+    }
+    return order.shipping_name || 'Retail Customer';
+  };
+
   const filteredOrders = orders.filter(o => {
     const matchesSearch = o.id.toLowerCase().includes(searchTerm.toLowerCase()) || (o.companies?.name || o.shipping_name || '').toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = statusFilter ? o.status === statusFilter : true;
@@ -221,9 +250,23 @@ export default function AdminOrders() {
   });
 
   const getStatusBadge = (status) => {
-    const styles = { pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', processing: 'bg-blue-50 text-blue-700 border-blue-200', ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', cancelled: 'bg-red-50 text-red-700 border-red-200' };
-    const icons = { pending: <Clock size={12}/>, processing: <Package size={12}/>, ready_for_delivery: <PackageCheck size={12}/>, shipped: <Truck size={12}/>, delivered: <CheckCircle2 size={12}/>, cancelled: <XCircle size={12}/> };
-    return (<span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center gap-1.5 w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{icons[status]} {status.replace(/_/g, ' ')}</span>);
+    const styles = {
+      pending: 'bg-yellow-50 text-yellow-700 border-yellow-200',
+      processing: 'bg-blue-50 text-blue-700 border-blue-200',
+      ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200',
+      shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+      delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      cancelled: 'bg-red-50 text-red-700 border-red-200'
+    };
+    const icons = {
+      pending: <Clock size={12}/>, processing: <Package size={12}/>, ready_for_delivery: <PackageCheck size={12}/>,
+      shipped: <Truck size={12}/>, delivered: <CheckCircle2 size={12}/>, cancelled: <XCircle size={12}/>
+    };
+    return (
+      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center gap-1.5 w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>
+        {icons[status]} {status.replace(/_/g, ' ')}
+      </span>
+    );
   };
 
   const getPaymentBadge = (paymentStatus) => {
@@ -233,27 +276,49 @@ export default function AdminOrders() {
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12 relative">
+      
+      {/* --- HEADER --- */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 pb-2">
         <div className="flex items-center gap-4">
-          <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md"><ShieldAlert size={28} strokeWidth={1.5} /></div>
-          <div><h2 className="text-3xl font-bold text-slate-900 tracking-tight">Order Management</h2><p className="text-sm text-slate-500 mt-1 font-medium">Review, approve, dispatch, and track incoming orders.</p></div>
+          <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md">
+            <ShieldAlert size={28} strokeWidth={1.5} />
+          </div>
+          <div>
+            <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Order Management</h2>
+            <p className="text-sm text-slate-500 mt-1 font-medium">Review, approve, dispatch, and track incoming orders.</p>
+          </div>
         </div>
       </div>
 
+      {/* --- FILTERS --- */}
       <div className="flex flex-col sm:flex-row gap-3 bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
         <div className="relative flex-1">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
           <input type="text" placeholder="Search Order ID, Customer, or Company..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" />
         </div>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full sm:w-56 px-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm transition-all cursor-pointer font-bold text-slate-700">
-          <option value="">All Statuses</option><option value="pending">Pending Review</option><option value="processing">In Warehouse</option><option value="ready_for_delivery">Ready for Delivery</option><option value="shipped">Shipped</option><option value="delivered">Delivered</option><option value="cancelled">Cancelled</option>
+          <option value="">All Statuses</option>
+          <option value="pending">Pending Review</option>
+          <option value="processing">In Warehouse</option>
+          <option value="ready_for_delivery">Ready for Delivery</option>
+          <option value="shipped">Shipped</option>
+          <option value="delivered">Delivered</option>
+          <option value="cancelled">Cancelled</option>
         </select>
       </div>
 
+      {/* --- ORDER TABLE --- */}
       {loading ? (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
-          {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div></div>))}
+          {[1,2,3,4,5].map(n => (
+            <div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse">
+              <div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div>
+              <div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div>
+              <div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div>
+              <div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div>
+            </div>
+          ))}
         </div>
       ) : filteredOrders.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm mt-6">
@@ -280,7 +345,6 @@ export default function AdminOrders() {
                 const isB2B = !!order.company_id;
                 const shortId = order.id.substring(0, 8).toUpperCase();
 
-                // Build Contact Information Strings
                 const billName = order.companies?.name || 'Retail Customer';
                 const billEmail = order.companies?.email || order.user_profiles?.email || '';
                 const billPhone = order.companies?.phone || order.user_profiles?.contact_number || '';
@@ -293,48 +357,112 @@ export default function AdminOrders() {
                 const shipAddress = order.shipping_address || 'No shipping address provided';
                 const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
 
-                // Safely extract the driver name & phone from our hack
                 const driverParts = (order.driver_name || '').split(' | ');
                 const displayDriverName = driverParts[0];
                 const displayDriverPhone = driverParts[1] || '';
 
+                // Calculate Net 30 Due Date
+                const isNet30 = order.payment_method === 'net_30';
+                const placedDate = new Date(order.created_at);
+                const dueDate = new Date(placedDate);
+                dueDate.setDate(dueDate.getDate() + 30);
+                const isOverdue = isNet30 && order.payment_status === 'unpaid' && new Date() > dueDate;
+
                 return (
                   <React.Fragment key={order.id}>
-                    <tr onClick={() => toggleOrderDetails(order.id)} className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-900' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}>
+                    {/* --- MAIN ROW --- */}
+                    <tr 
+                      onClick={() => toggleOrderDetails(order.id)}
+                      className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-900' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}
+                    >
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-4">
-                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border transition-colors shadow-sm ${isExpanded ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-100 text-slate-500 border-slate-200'}`}><Package size={18} /></div>
-                          <div><p className="font-mono font-bold text-slate-900 text-sm tracking-tight">{shortId}</p><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Hash size={10}/> Order ID</p></div>
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border transition-colors shadow-sm ${isExpanded ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                            <Package size={18} />
+                          </div>
+                          <div>
+                            <p className="font-mono font-bold text-slate-900 text-sm tracking-tight">{shortId}</p>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Hash size={10}/> Order ID</p>
+                          </div>
                         </div>
                       </td>
-                      <td className="px-6 py-4"><p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> Placed</p></td>
+
                       <td className="px-6 py-4">
-                        <p className="font-bold text-slate-900">{order.companies?.name || order.shipping_name || 'Retail Customer'}</p>
-                        <span className={`inline-flex mt-1 px-1.5 py-0.5 text-[9px] uppercase tracking-widest font-bold rounded shadow-sm ${isB2B ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>{isB2B ? 'B2B Agency' : 'Retail'}</span>
+                        <p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> Placed</p>
                       </td>
-                      <td className="px-6 py-4"><div className="flex flex-col items-start gap-1"><p className="font-extrabold text-slate-900 text-base">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>{getPaymentBadge(order.payment_status)}</div></td>
-                      <td className="px-6 py-4">{getStatusBadge(order.status)}</td>
-                      <td className="px-6 py-4 text-right"><button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}><ChevronDown size={20} /></button></td>
+
+                      <td className="px-6 py-4">
+                        <p className="font-bold text-slate-900">{getDisplayName(order)}</p>
+                        <span className={`inline-flex mt-1 px-1.5 py-0.5 text-[9px] uppercase tracking-widest font-bold rounded shadow-sm ${isB2B ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>
+                          {isB2B ? 'B2B Agency' : 'Retail'}
+                        </span>
+                      </td>
+
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col items-start gap-1">
+                          <p className="font-extrabold text-slate-900 text-base">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+                          {getPaymentBadge(order.payment_status)}
+                        </div>
+                      </td>
+
+                      <td className="px-6 py-4">
+                        {getStatusBadge(order.status)}
+                      </td>
+
+                      <td className="px-6 py-4 text-right">
+                        <button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}>
+                          <ChevronDown size={20} />
+                        </button>
+                      </td>
                     </tr>
 
+                    {/* --- EXPANDED DETAILS DRAWER --- */}
                     {isExpanded && (
                       <tr className="bg-slate-50 shadow-inner">
                         <td colSpan="6" className="p-0 border-b border-slate-200">
                           <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
                             
+                            {/* Drawer Header */}
                             <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 mb-6 border-b border-slate-200 pb-4">
-                              <div><h3 className="text-xl font-bold text-slate-900 tracking-tight">Order Management Panel</h3><p className="text-sm text-slate-500 font-medium">Review details and process fulfillment</p></div>
-                              <div className="flex gap-2">
-                                {order.status === 'pending' && (<><button onClick={() => handleStatusChangeClick(order.id, 'cancelled')} className="px-5 py-2 bg-white border border-red-200 text-red-600 text-sm font-bold rounded-xl shadow-sm hover:bg-red-50 active:scale-95 transition-all">Reject</button><button onClick={() => handleStatusChangeClick(order.id, 'processing')} className="px-5 py-2 bg-slate-900 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-slate-800 active:scale-95 transition-all flex items-center gap-2"><CheckCircle2 size={16} /> Approve to Warehouse</button></>)}
-                                {order.status === 'ready_for_delivery' && (<button onClick={() => openAssignModal(order)} className="px-5 py-2 bg-blue-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-blue-700 active:scale-95 transition-all flex items-center gap-2"><Truck size={16} /> Dispatch Driver</button>)}
-                                {order.status === 'delivered' && (<button onClick={() => generateInvoice(order)} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2"><FileDown size={16} className="text-slate-400" /> Download Invoice</button>)}
+                              <div>
+                                <h3 className="text-xl font-bold text-slate-900 tracking-tight">Order Management Panel</h3>
+                                <p className="text-sm text-slate-500 font-medium">Review details and process fulfillment</p>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {/* Admin Actions based on Status */}
+                                {order.status === 'pending' && (
+                                  <>
+                                    <button onClick={() => handleStatusChangeClick(order.id, 'cancelled')} className="px-5 py-2 bg-white border border-red-200 text-red-600 text-sm font-bold rounded-xl shadow-sm hover:bg-red-50 active:scale-95 transition-all">Reject</button>
+                                    <button onClick={() => handleStatusChangeClick(order.id, 'processing')} className="px-5 py-2 bg-slate-900 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-slate-800 active:scale-95 transition-all flex items-center gap-2"><CheckCircle2 size={16} /> Approve to Warehouse</button>
+                                  </>
+                                )}
+                                {order.status === 'ready_for_delivery' && (
+                                  <button onClick={() => openAssignModal(order)} className="px-5 py-2 bg-blue-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-blue-700 active:scale-95 transition-all flex items-center gap-2"><Truck size={16} /> Dispatch Driver</button>
+                                )}
+                                
+                                {/* Delivered Actions */}
+                                {order.status === 'delivered' && (
+                                  <>
+                                    <button onClick={() => generateInvoice(order)} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2">
+                                      <FileDown size={16} className="text-slate-400" /> Download Invoice
+                                    </button>
+                                    {order.payment_status === 'unpaid' && (
+                                      <button onClick={() => handleMarkAsPaid(order.id)} className="px-5 py-2 bg-emerald-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-emerald-700 active:scale-95 transition-all flex items-center gap-2">
+                                        <CheckCircle2 size={16} /> Mark as Paid
+                                      </button>
+                                    )}
+                                  </>
+                                )}
                               </div>
                             </div>
 
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                              
+                              {/* Left & Center: Info & Items */}
                               <div className="lg:col-span-2 space-y-6">
                                 
-                                {/* 🚀 NEW: Sequence -> Email, Phone, Address */}
+                                {/* Addresses */}
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                   <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                                     <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Building size={14}/> Bill To</h4>
@@ -363,17 +491,33 @@ export default function AdminOrders() {
                                   </div>
                                 </div>
 
+                                {/* Items Table */}
                                 <div className="space-y-3">
-                                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider"><FileText size={16} className="text-slate-400" /> Order Items</h4>
+                                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
+                                    <FileText size={16} className="text-slate-400" /> Order Items
+                                  </h4>
                                   <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
                                     <table className="w-full text-left text-sm whitespace-normal">
-                                      <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest"><tr><th className="px-5 py-3 font-bold w-full rounded-tl-2xl">Product</th><th className="px-5 py-3 font-bold text-center">Qty</th><th className="px-5 py-3 font-bold text-right rounded-tr-2xl">Total</th></tr></thead>
+                                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest">
+                                        <tr>
+                                          <th className="px-5 py-3 font-bold w-full">Product</th>
+                                          <th className="px-5 py-3 font-bold text-center">Qty</th>
+                                          <th className="px-5 py-3 font-bold text-right">Total</th>
+                                        </tr>
+                                      </thead>
                                       <tbody className="divide-y divide-slate-100">
                                         {order.order_items?.map((item) => (
-                                          <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
-                                            <td className="px-5 py-4"><p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name || item.product_variants?.name}</p><p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku || item.product_variants?.sku}</span></p></td>
-                                            <td className="px-5 py-4 text-center"><span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span></td>
-                                            <td className="px-5 py-4 text-right font-extrabold text-slate-900">${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                                          <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                                            <td className="px-5 py-4">
+                                              <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name || item.product_variants?.name}</p>
+                                              <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku || item.product_variants?.sku}</span></p>
+                                            </td>
+                                            <td className="px-5 py-4 text-center">
+                                              <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span>
+                                            </td>
+                                            <td className="px-5 py-4 text-right font-extrabold text-slate-900">
+                                              ${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                            </td>
                                           </tr>
                                         ))}
                                       </tbody>
@@ -382,25 +526,49 @@ export default function AdminOrders() {
                                 </div>
                               </div>
 
+                              {/* Right: Financials & Dispatch */}
                               <div className="space-y-4">
+                                {/* Summary Box */}
                                 <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><DollarSign size={16} className="text-slate-400" /> Summary</h4>
+                                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
+                                    <DollarSign size={16} className="text-slate-400" /> Summary
+                                  </h4>
                                   <div className="space-y-3 text-sm font-medium">
                                     <div className="flex justify-between text-slate-500"><span>Subtotal</span><span className="text-slate-900">${Number(order.subtotal).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                     <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${Number(order.shipping_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                     <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${Number(order.tax_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                     <div className="h-px w-full bg-slate-200/60 my-2"></div>
-                                    <div className="flex justify-between items-end"><span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span><span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
+                                    <div className="flex justify-between items-end">
+                                      <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
+                                      <span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+                                    </div>
                                   </div>
+                                  
                                   <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-medium text-slate-500">
-                                    <div className="flex items-center gap-2"><CreditCard size={14} className="text-slate-400 shrink-0" /><span className="font-bold text-slate-700 capitalize">{order.payment_method.replace('_', ' ')}</span></div>
+                                    <div className="flex items-center gap-2">
+                                      <CreditCard size={14} className="text-slate-400 shrink-0" />
+                                      <span className="font-bold text-slate-700 capitalize">{order.payment_method.replace('_', ' ')}</span>
+                                    </div>
                                     {getPaymentBadge(order.payment_status)}
                                   </div>
+
+                                  {/* Dynamic Due Date Display */}
+                                  {isNet30 && (
+                                    <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
+                                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Net 30 Due Date</span>
+                                      <span className={`text-xs font-bold px-2 py-0.5 rounded ${isOverdue ? 'bg-red-100 text-red-700 border border-red-200 shadow-sm' : 'text-slate-700 bg-slate-100 border border-slate-200'}`}>
+                                        {dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                                      </span>
+                                    </div>
+                                  )}
                                 </div>
 
-                                {(order.status === 'ready_for_delivery' || order.status === 'shipped' || order.status === 'out_for_delivery' || order.status === 'delivered') && order.driver_name && (
+                                {/* Dispatch Box (If assigned) */}
+                                {(order.status === 'ready_for_delivery' || order.status === 'shipped' || order.status === 'delivered') && order.driver_name && (
                                   <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><Truck size={16} className="text-slate-400" /> Dispatch Info</h4>
+                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
+                                      <Truck size={16} className="text-slate-400" /> Dispatch Info
+                                    </h4>
                                     <div className="space-y-3 text-sm">
                                       <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p>
@@ -426,6 +594,7 @@ export default function AdminOrders() {
         </div>
       )}
 
+      {/* --- ASSIGN DRIVER MODAL --- */}
       {assigningOrder && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg flex flex-col border border-slate-100 overflow-hidden">
@@ -433,6 +602,7 @@ export default function AdminOrders() {
               <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><Truck size={18}/> Assign Fleet & Driver</h3>
               <button onClick={() => setAssigningOrder(null)} className="p-1.5 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
             </div>
+            
             <form onSubmit={confirmAssignment} className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Assigned Driver</label>
@@ -449,7 +619,9 @@ export default function AdminOrders() {
                   <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
                 </div>
               </div>
+
               <div className="h-px w-full bg-slate-100"></div>
+
               <div>
                 <label className="block text-xs font-bold text-blue-600 uppercase tracking-widest mb-1.5">Select Vehicle from Fleet</label>
                 <div className="relative">
@@ -461,16 +633,20 @@ export default function AdminOrders() {
                   <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none" size={16} />
                 </div>
               </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Vehicle Name</label><input type="text" required value={vehicleName} onChange={(e) => setVehicleName(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div>
               </div>
+
               <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">License Plate</label><input type="text" required value={vehicleLicense} onChange={(e) => setVehicleLicense(e.target.value.toUpperCase())} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold font-mono tracking-wide transition-all" /></div>
+
               <div className="pt-2 flex gap-3"><button type="button" onClick={() => setAssigningOrder(null)} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button><button type="submit" className="w-full py-3 text-sm bg-blue-600 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-blue-700 active:scale-95 transition-all"><Truck size={16} /> Confirm Dispatch</button></div>
             </form>
           </div>
         </div>
       )}
 
+      {/* --- CONFIRMATION MODAL --- */}
       {confirmAction.show && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
@@ -487,6 +663,7 @@ export default function AdminOrders() {
         </div>
       )}
 
+      {/* --- MODERN TOAST NOTIFICATION --- */}
       {notification.show && (
         <div className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-[120] flex items-center gap-3 bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-300">
           <div className={`p-1.5 rounded-full ${notification.isError ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
