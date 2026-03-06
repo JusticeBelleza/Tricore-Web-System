@@ -20,7 +20,7 @@ export default function AgencyDashboard() {
   const [financials, setFinancials] = useState({ limit: 0, outstanding: 0, available: 0 });
   const [activeMenuId, setActiveMenuId] = useState(null); 
 
-  // --- NEW: Identify the Primary Agency Admin ---
+  // --- Identify the Primary Agency Admin ---
   const [isPrimaryAdmin, setIsPrimaryAdmin] = useState(false);
   const [companyEmail, setCompanyEmail] = useState('');
 
@@ -62,16 +62,22 @@ export default function AgencyDashboard() {
       ]);
 
       setPatientsList(patientsRes.data || []);
-      setSubAdminList(usersRes.data || []);
+      
+      const cEmail = companyRes.data?.email;
+      setCompanyEmail(cEmail);
+      setIsPrimaryAdmin(profile.email === cEmail);
+
+      // --- FEATURE: Sort Users so Primary Admin is always on top ---
+      const sortedUsers = (usersRes.data || []).sort((a, b) => {
+        if (a.email === cEmail && b.email !== cEmail) return -1;
+        if (b.email === cEmail && a.email !== cEmail) return 1;
+        return 0; // Keep alphabetical order for the rest
+      });
+      setSubAdminList(sortedUsers);
 
       const limit = Number(companyRes.data?.credit_limit || 0);
       const outstanding = ordersRes.data?.reduce((sum, order) => sum + Number(order.total_amount), 0) || 0;
       setFinancials({ limit, outstanding, available: limit - outstanding });
-
-      // Identify if the logged-in user is the Primary Admin
-      const cEmail = companyRes.data?.email;
-      setCompanyEmail(cEmail);
-      setIsPrimaryAdmin(profile.email === cEmail);
 
     } catch (error) {
       console.error('Error fetching dashboard:', error);
@@ -164,7 +170,6 @@ export default function AgencyDashboard() {
   const executeAddSubAdmin = async () => {
     setConfirmAction({ show: false }); setIsSubmitting(true);
     try {
-      // UNIQUE STORAGE KEY: Fixes the "Multiple GoTrueClient instances" warning in the console!
       const tempSupabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, { 
         auth: { 
           persistSession: false, 
@@ -175,7 +180,7 @@ export default function AgencyDashboard() {
       });
       
       const { error: authError } = await tempSupabase.auth.signUp({ 
-        email: confirmAction.data.email.trim(), // Strips accidental spaces that cause 422 errors!
+        email: confirmAction.data.email.trim(),
         password: confirmAction.data.password, 
         options: { 
           data: { 
@@ -257,47 +262,47 @@ export default function AgencyDashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         {loading ? (
           [1,2,3,4].map(n => (
-            <div key={n} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm h-32 animate-pulse flex flex-col justify-between">
-              <div className="flex justify-between items-center"><div className="w-24 h-4 bg-slate-200 rounded"></div><div className="w-8 h-8 bg-slate-200 rounded-lg"></div></div>
-              <div className="w-16 h-8 bg-slate-200 rounded mt-2"></div><div className="w-32 h-3 bg-slate-100 rounded mt-2"></div>
+            <div key={n} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm h-28 animate-pulse flex flex-col justify-between">
+              <div className="flex justify-between items-center"><div className="w-24 h-3 bg-slate-200 rounded"></div><div className="w-7 h-7 bg-slate-200 rounded-lg"></div></div>
+              <div className="w-16 h-6 bg-slate-200 rounded mt-2"></div>
             </div>
           ))
         ) : (
           <>
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-              <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-emerald-50 transition-transform group-hover:scale-110"></div>
-              <div className="flex justify-between items-start mb-4 relative">
-                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Total Patients</h4>
-                <div className="p-2 rounded-xl bg-emerald-100 text-emerald-600 shadow-sm"><Activity size={18} /></div>
+            <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+              <div className="absolute -right-4 -top-4 w-16 h-16 rounded-full bg-emerald-50 transition-transform group-hover:scale-110"></div>
+              <div className="flex justify-between items-center mb-2 relative">
+                <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Patients</h4>
+                <div className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 shadow-sm border border-emerald-100"><Users size={16} /></div>
               </div>
-              <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{patientsList.length}</h2>
+              <h2 className="text-2xl font-bold text-slate-800 tracking-tight relative">{patientsList.length}</h2>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-              <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-blue-50 transition-transform group-hover:scale-110"></div>
-              <div className="flex justify-between items-start mb-4 relative">
-                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Sub-Admins</h4>
-                <div className="p-2 rounded-xl bg-blue-100 text-blue-600 shadow-sm"><UserCog size={18} /></div>
+            <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+              <div className="absolute -right-4 -top-4 w-16 h-16 rounded-full bg-blue-50 transition-transform group-hover:scale-110"></div>
+              <div className="flex justify-between items-center mb-2 relative">
+                <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Sub-Admins</h4>
+                <div className="p-1.5 rounded-lg bg-blue-50 text-blue-600 shadow-sm border border-blue-100"><UserCog size={16} /></div>
               </div>
-              <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{subAdminList.length}</h2>
+              <h2 className="text-2xl font-bold text-slate-800 tracking-tight relative">{subAdminList.length}</h2>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-              <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-amber-50 transition-transform group-hover:scale-110"></div>
-              <div className="flex justify-between items-start mb-4 relative">
-                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Credit Limit</h4>
-                <div className="p-2 rounded-xl bg-amber-100 text-amber-600 shadow-sm"><Building size={18} /></div>
+            <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+              <div className="absolute -right-4 -top-4 w-16 h-16 rounded-full bg-amber-50 transition-transform group-hover:scale-110"></div>
+              <div className="flex justify-between items-center mb-2 relative">
+                <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Credit Limit</h4>
+                <div className="p-1.5 rounded-lg bg-amber-50 text-amber-600 shadow-sm border border-amber-100"><Building size={16} /></div>
               </div>
-              <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">${financials.limit.toLocaleString(undefined, {minimumFractionDigits: 2})}</h2>
+              <h2 className="text-2xl font-bold text-slate-800 tracking-tight relative">${financials.limit.toLocaleString(undefined, {minimumFractionDigits: 2})}</h2>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-              <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-purple-50 transition-transform group-hover:scale-110"></div>
-              <div className="flex justify-between items-start mb-4 relative">
-                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Available Credit</h4>
-                <div className="p-2 rounded-xl bg-purple-100 text-purple-600 shadow-sm"><Wallet size={18} /></div>
+            <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+              <div className="absolute -right-4 -top-4 w-16 h-16 rounded-full bg-purple-50 transition-transform group-hover:scale-110"></div>
+              <div className="flex justify-between items-center mb-2 relative">
+                <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Available Credit</h4>
+                <div className="p-1.5 rounded-lg bg-purple-50 text-purple-600 shadow-sm border border-purple-100"><Wallet size={16} /></div>
               </div>
-              <h2 className={`text-3xl font-extrabold tracking-tight relative ${financials.available <= 0 && financials.limit > 0 ? 'text-red-600' : 'text-slate-900'}`}>
+              <h2 className={`text-2xl font-bold tracking-tight relative ${financials.available <= 0 && financials.limit > 0 ? 'text-red-600' : 'text-slate-800'}`}>
                 ${financials.available.toLocaleString(undefined, {minimumFractionDigits: 2})}
               </h2>
             </div>
@@ -343,19 +348,30 @@ export default function AgencyDashboard() {
               <tbody className="divide-y divide-slate-200 border-b border-slate-200">
                 {filteredData.map(item => {
                   
-                  // Logic to identify if this specific row is the Primary Agency Admin
                   const isThisRowPrimaryAdmin = item.email === companyEmail;
+                  const isCurrentUser = item.id === profile?.id; // Check if this is the logged in user
 
                   return (
-                    <tr key={item.id} className="hover:bg-slate-50 group transition-colors">
+                    <tr 
+                      key={item.id} 
+                      className={`group transition-colors border-l-4 ${isCurrentUser && activeTab === 'subadmins' ? 'bg-slate-50 border-slate-800' : 'hover:bg-slate-50 border-transparent'}`}
+                    >
                       
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-4">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 border shadow-sm ${activeTab === 'patients' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 border shadow-sm ${activeTab === 'patients' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : isCurrentUser ? 'bg-slate-800 text-white border-slate-900' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
                             {getInitials(item.full_name)}
                           </div>
                           <div className="flex flex-col">
-                            <p className="font-bold text-slate-900">{item.full_name}</p>
+                            <p className="font-bold text-slate-900 flex items-center gap-2">
+                              {item.full_name}
+                              {/* HIGHLIGHT: Badge for logged in user */}
+                              {isCurrentUser && activeTab === 'subadmins' && (
+                                <span className="px-1.5 py-0.5 rounded border border-slate-300 bg-white text-slate-600 text-[9px] font-bold uppercase tracking-wider shadow-sm">
+                                  You
+                                </span>
+                              )}
+                            </p>
                             <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
                               {item.email && <span className="font-mono">{item.email}</span>}
                               {item.email && (item.phone || item.contact_number) && <span className="text-slate-300">&bull;</span>}
