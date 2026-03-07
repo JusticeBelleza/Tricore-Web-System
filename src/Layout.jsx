@@ -16,12 +16,13 @@ export default function Layout() {
   // --- Real-time Badge States ---
   const [pendingCount, setPendingCount] = useState(0);
   const [overdueCount, setOverdueCount] = useState(0);
+  const [processingCount, setProcessingCount] = useState(0);
 
   useEffect(() => {
     if (!profile) return;
     
     const fetchBadges = async () => {
-      // Admins get badge for Pending Orders
+      // 1. Admins get badge for Pending Orders
       if (profile.role === 'admin') {
         const { count } = await supabase
           .from('orders')
@@ -29,8 +30,18 @@ export default function Layout() {
           .eq('status', 'pending');
         setPendingCount(count || 0);
       } 
-      // Agencies get badge for Overdue Net-30 Invoices
-      else if (profile.role === 'b2b' && profile.company_id) {
+      
+      // 2. Admins & Warehouse Staff get badge for Processing Orders (Pick & Pack)
+      if (profile.role === 'admin' || profile.role === 'warehouse') {
+        const { count } = await supabase
+          .from('orders')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', 'processing');
+        setProcessingCount(count || 0);
+      }
+
+      // 3. Agencies get badge for Overdue Net-30 Invoices
+      if (profile.role === 'b2b' && profile.company_id) {
         const { data } = await supabase
           .from('orders')
           .select('created_at, status')
@@ -56,12 +67,18 @@ export default function Layout() {
 
     fetchBadges();
     
-    // Subscribe to real-time order updates so the badge changes instantly
+    // Listen to Supabase DB updates (Cross-device syncing)
     const sub = supabase.channel('badge_updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchBadges)
       .subscribe();
 
-    return () => supabase.removeChannel(sub);
+    // 🚀 NEW: Listen for INSTANT local UI updates (Same-tab syncing)
+    window.addEventListener('orderStatusChanged', fetchBadges);
+
+    return () => {
+      supabase.removeChannel(sub);
+      window.removeEventListener('orderStatusChanged', fetchBadges);
+    };
   }, [profile]);
 
   const handleLogout = async () => {
@@ -102,17 +119,15 @@ export default function Layout() {
       `}>
         
         {/* Brand Header */}
-        <div className="h-16 flex items-center justify-between px-6 border-b border-slate-200 shrink-0">
-          <div className="flex items-center">
-            {/* 🚀 LOGO ENLARGED & SHADOW REMOVED */}
+        <div className="h-16 flex items-center justify-between px-4 border-b border-slate-200 shrink-0">
+          <div className="flex-1 flex justify-center items-center h-full pt-1">
             <img 
               src="/images/tricore-logo2.png" 
               alt="TriCore Logo" 
-              className="h-15 w-auto object-contain" 
+              className="h-12 w-auto object-contain" 
             />
           </div>
-          {/* Close button for mobile */}
-          <button onClick={closeMobileMenu} className="lg:hidden text-slate-400 hover:text-slate-900 p-1 bg-slate-100 rounded-md transition-colors">
+          <button onClick={closeMobileMenu} className="lg:hidden text-slate-400 hover:text-slate-900 p-1 bg-slate-100 rounded-md transition-colors absolute right-4">
             <X size={20} />
           </button>
         </div>
@@ -133,11 +148,13 @@ export default function Layout() {
                 <Link to="/orders" onClick={closeMobileMenu} className={navItemClass('/orders')}>
                   <ShoppingCart size={18} /> 
                   <span className="flex-1">My Orders</span>
-                  {/* B2B Overdue Badge */}
                   {overdueCount > 0 && (
-                    <span className="ml-auto bg-red-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full animate-pulse shadow-sm">
-                      {overdueCount} Due
-                    </span>
+                    <div className="relative flex items-center justify-center ml-auto">
+                      <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
+                      <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
+                        {overdueCount} Due
+                      </span>
+                    </div>
                   )}
                 </Link>
               </>
@@ -152,7 +169,16 @@ export default function Layout() {
             {(profile?.role === 'admin' || profile?.role === 'warehouse') && (
               <>
                 <Link to="/warehouse" onClick={closeMobileMenu} className={navItemClass('/warehouse')}>
-                  <Warehouse size={18} /> Pick & Pack
+                  <Warehouse size={18} /> 
+                  <span className="flex-1">Pick & Pack</span>
+                  {processingCount > 0 && (
+                    <div className="relative flex items-center justify-center ml-auto">
+                      <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
+                      <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
+                        {processingCount} New
+                      </span>
+                    </div>
+                  )}
                 </Link>
                 <Link to="/purchase-orders" onClick={closeMobileMenu} className={navItemClass('/purchase-orders')}>
                   <ClipboardList size={18} /> Purchase Orders
@@ -177,11 +203,13 @@ export default function Layout() {
                 <Link to="/admin/orders" onClick={closeMobileMenu} className={navItemClass('/admin/orders')}>
                   <ShoppingCart size={18} /> 
                   <span className="flex-1">All Orders</span>
-                  {/* Admin Pending Orders Badge */}
                   {pendingCount > 0 && (
-                    <span className="ml-auto bg-red-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full animate-pulse shadow-sm">
-                      {pendingCount} New
-                    </span>
+                    <div className="relative flex items-center justify-center ml-auto">
+                      <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
+                      <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
+                        {pendingCount} New
+                      </span>
+                    </div>
                   )}
                 </Link>
                 
@@ -237,11 +265,10 @@ export default function Layout() {
             <Menu size={24} />
           </button>
           <div className="flex items-center gap-3 lg:hidden">
-            {/* Mobile Header Logo Enlarged & Shadow Removed */}
             <img 
               src="/images/tricore-logo2.png" 
               alt="TriCore Logo" 
-              className="h-10 w-auto object-contain" 
+              className="h-8 w-auto object-contain mt-1" 
             />
           </div>
           <h1 className="text-lg font-bold text-slate-900 capitalize tracking-tight ml-auto lg:ml-0">

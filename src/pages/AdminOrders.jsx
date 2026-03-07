@@ -84,6 +84,8 @@ export default function AdminOrders() {
       if (error) throw error;
       setOrders(orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
       setNotification({ show: true, isError: false, message: newStatus === 'processing' ? 'Order sent to warehouse.' : 'Order rejected.' });
+      
+      window.dispatchEvent(new Event('orderStatusChanged'));
     } catch (error) {
       setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` });
     }
@@ -107,6 +109,8 @@ export default function AdminOrders() {
       if (error) throw error;
       setOrders(orders.map(o => o.id === orderId ? { ...o, payment_status: 'paid' } : o));
       setNotification({ show: true, isError: false, message: 'Order successfully marked as Paid!' });
+      
+      window.dispatchEvent(new Event('orderStatusChanged'));
     } catch (error) {
       setNotification({ show: true, isError: true, message: `Failed to update payment status: ${error.message}` });
     }
@@ -156,6 +160,8 @@ export default function AdminOrders() {
       setOrders(orders.map(o => o.id === assigningOrder.id ? { ...o, ...updates } : o));
       setAssigningOrder(null); setExpandedOrderId(null); 
       setNotification({ show: true, isError: false, message: 'Driver assigned and order shipped successfully!' });
+      
+      window.dispatchEvent(new Event('orderStatusChanged'));
     } catch (error) {
       setNotification({ show: true, isError: true, message: `Failed to dispatch: ${error.message}` });
     }
@@ -203,36 +209,45 @@ export default function AdminOrders() {
     doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34);
 
     const isB2B = !!order.company_id;
-    const agencyName = order.companies?.name || '';
 
-    const shipName = order.shipping_name || (isB2B ? 'Patient' : 'Retail Customer');
-    const shipAddress = order.shipping_address || 'No Address Provided';
-    const shipCityState = [order.shipping_city, order.shipping_state, order.shipping_zip].filter(Boolean).join(' ');
-
-    const billName = isB2B ? agencyName : shipName;
-    const billAddress = isB2B ? (order.companies?.address || 'No Address Provided') : shipAddress;
+    const billName = isB2B ? (order.companies?.name || 'Agency') : (order.shipping_name || 'Retail Customer');
+    const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
     const billCityState = isB2B 
-      ? [order.companies?.city, order.companies?.state, order.companies?.zip].filter(Boolean).join(' ') 
-      : shipCityState;
+      ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
+      : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
+    const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || '');
+    const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || '');
+
+    const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
+    const shipAddress = order.shipping_address || 'No shipping address provided';
+    const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
+    const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
+    const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
 
     doc.setFont("helvetica", "bold");
-    doc.text("BILL TO:", 14, 50); doc.text("SHIP TO:", 110, 50);
+    doc.text("BILL TO:", 14, 50); 
+    doc.text("SHIP TO:", 110, 50);
     
     doc.setFont("helvetica", "normal");
+    
     let currentYBill = 56;
     doc.setFont("helvetica", "bold");
     doc.text(billName, 14, currentYBill); currentYBill += 5;
     doc.setFont("helvetica", "normal");
-    if (billAddress !== 'N/A') { doc.text(billAddress, 14, currentYBill); currentYBill += 5; }
+    if (billAddress && billAddress !== 'No billing address provided') { doc.text(billAddress, 14, currentYBill); currentYBill += 5; }
     if (billCityState) { doc.text(billCityState, 14, currentYBill); currentYBill += 5; }
+    if (billPhone) { doc.text(`Phone: ${billPhone}`, 14, currentYBill); currentYBill += 5; }
+    if (billEmail) { doc.text(`Email: ${billEmail}`, 14, currentYBill); currentYBill += 5; }
 
     let currentYShip = 56;
     doc.setFont("helvetica", "bold");
     doc.text(shipName, 110, currentYShip); currentYShip += 5;
     doc.setFont("helvetica", "normal");
-    if (isB2B && agencyName) { doc.text(`c/o ${agencyName}`, 110, currentYShip); currentYShip += 5; }
-    if (shipAddress !== 'N/A') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
+    if (isB2B && order.companies?.name) { doc.text(order.companies.name, 110, currentYShip); currentYShip += 5; }
+    if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
     if (shipCityState) { doc.text(shipCityState, 110, currentYShip); currentYShip += 5; }
+    if (shipPhone) { doc.text(`Phone: ${shipPhone}`, 110, currentYShip); currentYShip += 5; }
+    if (shipEmail) { doc.text(`Email: ${shipEmail}`, 110, currentYShip); currentYShip += 5; }
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
@@ -275,7 +290,6 @@ export default function AdminOrders() {
     return order.shipping_name || 'Retail Customer';
   };
 
-  // 🚀 DUE ORDERS BADGE CALCULATION (Within 5 days or overdue)
   const dueOrdersCount = orders.filter(o => {
     if (o.payment_method !== 'net_30' || o.payment_status !== 'unpaid') return false;
     const dueDate = new Date(o.created_at);
@@ -294,7 +308,6 @@ export default function AdminOrders() {
     if (activeTab === 'completed') matchesTab = o.status === 'delivered';
     if (activeTab === 'cancelled') matchesTab = o.status === 'cancelled';
     
-    // 🚀 NEW TAB FILTER: Due within 5 days or Overdue
     if (activeTab === 'due') {
       if (o.payment_method !== 'net_30' || o.payment_status !== 'unpaid') {
         matchesTab = false;
@@ -337,9 +350,7 @@ export default function AdminOrders() {
 
       <div className="flex flex-col xl:flex-row gap-4 justify-between items-start xl:items-center bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full xl:w-auto overflow-x-auto shrink-0">
-          <button onClick={() => setActiveTab('all')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'all' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}>
-            All
-          </button>
+          <button onClick={() => setActiveTab('all')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'all' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}>All</button>
           <button onClick={() => setActiveTab('pending')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'pending' ? 'bg-red-500 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>
             {orders.filter(o=>o.status==='pending').length > 0 && <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>}
             Pending ({orders.filter(o=>o.status==='pending').length})
@@ -354,7 +365,6 @@ export default function AdminOrders() {
             Completed
           </button>
           
-          {/* 🚀 NEW PAYMENTS DUE TAB */}
           <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>
             {dueOrdersCount > 0 && <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>}
             Payments Due ({dueOrdersCount})
@@ -419,7 +429,6 @@ export default function AdminOrders() {
                   displayDriverPhone = assignedDriverObj?.contact_number || '';
                 }
 
-                // 🚀 SMART DUE DATE BADGES (Overdue vs Due Soon)
                 const isNet30 = order.payment_method === 'net_30';
                 let isOverdue = false;
                 let isDueSoon = false;
@@ -473,7 +482,6 @@ export default function AdminOrders() {
                           <p className="font-extrabold text-slate-900 text-base">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
                           <div className="flex items-center gap-2">
                             {getPaymentBadge(order.payment_status)}
-                            {/* 🚀 Visual Warning Badges for Net-30 Status */}
                             {isOverdue && <span className="text-[9px] font-bold text-red-600 uppercase tracking-widest flex items-center gap-1"><AlertCircle size={10} /> Overdue</span>}
                             {isDueSoon && <span className="text-[9px] font-bold text-amber-600 uppercase tracking-widest flex items-center gap-1"><Clock size={10} /> Due Soon</span>}
                           </div>
@@ -745,7 +753,6 @@ export default function AdminOrders() {
           <p className="text-sm font-medium pr-2">{notification.message}</p>
         </div>
       )}
-
     </div>
   );
 }

@@ -78,6 +78,9 @@ export default function Warehouse() {
       if (error) throw error;
       setOrders(orders.map(o => o.id === orderId ? { ...o, status: 'ready_for_delivery' } : o));
       
+      // INSTANTLY UPDATE THE SIDEBAR BADGE
+      window.dispatchEvent(new Event('orderStatusChanged'));
+
       if (activeTab === 'processing') {
         setExpandedOrderId(null);
       }
@@ -106,14 +109,14 @@ export default function Warehouse() {
     });
   };
 
-  // --- REBUILT PACKING SLIP PDF GENERATOR ---
+  // --- REBUILT PACKING SLIP PDF GENERATOR (WITH COMPLETE INFO) ---
   const generatePackingSlip = async (order) => {
     const doc = new jsPDF();
     const orderNum = order.id.substring(0, 8).toUpperCase();
     const dateObj = new Date(order.created_at);
     const datePacked = dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-    // 1. Fetch and Stamp Logo (Preserving Aspect Ratio securely)
+    // 1. Fetch and Stamp Logo
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
     if (logoData) {
       const imgWidth = 45; 
@@ -133,18 +136,20 @@ export default function Warehouse() {
 
     const isB2B = !!order.company_id;
 
-    // --- LOGIC: Agency = Bill To, Patient = Ship To ---
+    // --- COMPLETE LOGIC: Agency = Bill To, Patient = Ship To ---
     const billName = isB2B ? (order.companies?.name || 'Agency') : (order.shipping_name || 'Retail Customer');
-    const billAddress = isB2B ? (order.companies?.address || 'N/A') : (order.shipping_address || 'N/A');
+    const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
     const billCityState = isB2B 
       ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
       : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
     const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || '');
+    const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || '');
 
     const shipName = order.shipping_name || billName;
-    const shipAddress = order.shipping_address || 'N/A';
+    const shipAddress = order.shipping_address || 'No shipping address provided';
     const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
     const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
+    const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
 
     // Render Addresses Header
     doc.setFontSize(10); doc.setFont("helvetica", "bold");
@@ -159,22 +164,24 @@ export default function Warehouse() {
     if (isB2B && order.companies?.name) {
         doc.text(`c/o ${order.companies.name}`, 14, currentYShip); currentYShip += 5; 
     }
-    if (shipAddress !== 'N/A') { doc.text(shipAddress, 14, currentYShip); currentYShip += 5; }
+    if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 14, currentYShip); currentYShip += 5; }
     if (shipCityState) { doc.text(shipCityState, 14, currentYShip); currentYShip += 5; }
     if (shipPhone) { doc.text(`Phone: ${shipPhone}`, 14, currentYShip); currentYShip += 5; }
+    if (shipEmail) { doc.text(`Email: ${shipEmail}`, 14, currentYShip); currentYShip += 5; }
 
     // Right side: BILL TO (Agency or Retail Customer)
     let currentYBill = 52;
     doc.setFont("helvetica", "bold");
     doc.text(billName, 110, currentYBill); currentYBill += 5;
     doc.setFont("helvetica", "normal");
-    if (billAddress !== 'N/A') { doc.text(billAddress, 110, currentYBill); currentYBill += 5; }
+    if (billAddress && billAddress !== 'No billing address provided') { doc.text(billAddress, 110, currentYBill); currentYBill += 5; }
     if (billCityState) { doc.text(billCityState, 110, currentYBill); currentYBill += 5; }
     if (billPhone) { doc.text(`Phone: ${billPhone}`, 110, currentYBill); currentYBill += 5; }
+    if (billEmail) { doc.text(`Email: ${billEmail}`, 110, currentYBill); currentYBill += 5; }
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    // Render Items Table (Strict Columns: Name, Variant, SKU, Qty)
+    // Render Items Table
     const tableRows = order.order_items.map(item => {
       const productName = item.product_variants?.products?.name || item.product_variants?.name || 'Item';
       const variantName = item.product_variants?.name || 'N/A';
@@ -290,7 +297,6 @@ export default function Warehouse() {
                 const isB2B = !!order.company_id;
                 const isOrderDone = order.status === 'ready_for_delivery' || order.status === 'shipped';
                 
-                // 🚀 FIXED: Dynamic Counter
                 const currentPickedCount = isOrderDone 
                   ? (order.order_items?.length || 0) 
                   : Object.values(pickedItems).filter(Boolean).length;
@@ -340,7 +346,6 @@ export default function Warehouse() {
                               <div className="lg:col-span-2 space-y-4">
                                 <div className="flex justify-between items-end mb-4 border-b border-slate-200 pb-2">
                                   <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider"><CheckSquare size={16} className="text-slate-400" /> Items to Pick</h4>
-                                  {/* 🚀 FIXED: Renders the dynamically updated counter */}
                                   <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">{currentPickedCount} / {order.order_items?.length} Picked</span>
                                 </div>
                                 <div className="space-y-3">
