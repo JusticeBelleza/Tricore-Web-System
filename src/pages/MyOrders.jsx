@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { 
-  Package, Receipt, ChevronDown, Calendar, Hash, 
-  CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle
+  Package, Receipt, ChevronDown, Calendar, Hash, Building, MapPin, Mail,
+  CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -26,13 +26,15 @@ export default function MyOrders() {
   const fetchMyOrders = async () => {
     setLoading(true);
     try {
-      // REMOVED updated_at to prevent the Supabase 400 Error
       let query = supabase
         .from('orders')
         .select(`
           id, status, created_at, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url,
           driver_name, vehicle_name, vehicle_license,
-          companies ( name, address, city, state, zip ),
+          shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, company_id,
+          companies ( name, address, city, state, zip, phone, email ),
+          agency_patients ( contact_number, email ),
+          user_profiles ( full_name, contact_number, email ),
           order_items (
             id, quantity_variants, unit_price, line_total,
             product_variants ( name, sku, products ( name, base_sku ) )
@@ -101,7 +103,7 @@ export default function MyOrders() {
     });
   };
 
-  const generateInvoice = async (order) => {
+  const generatePDF = async (order, docType = 'invoice') => {
     const doc = new jsPDF();
     const orderNum = order.id.substring(0, 8).toUpperCase();
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
@@ -117,58 +119,70 @@ export default function MyOrders() {
     }
     
     doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
-    doc.text("INVOICE", 140, 18);
+    doc.text(docType === 'receipt' ? "PAYMENT RECEIPT" : "INVOICE", 140, 18);
     
     doc.setFontSize(10); doc.setFont("helvetica", "normal");
-    doc.setFont("helvetica", "bold"); doc.text(`Invoice #: INV-${orderNum}`, 140, 24);
+    doc.setFont("helvetica", "bold"); doc.text(`${docType === 'receipt' ? 'Receipt' : 'Invoice'} #: INV-${orderNum}`, 140, 24);
     doc.setFont("helvetica", "normal"); doc.text(`Date: ${datePlaced}`, 140, 29);
-    doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34);
+    
+    if (docType === 'receipt') {
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(16, 185, 129);
+      doc.text("Status: PAID IN FULL", 140, 34);
+      doc.setTextColor(15, 23, 42); 
+    } else {
+      doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34);
+    }
 
-    const isB2B = !!order.company_id;
-    const agencyName = order.companies?.name || '';
+    const isB2B = !!order.company_id || !!profile?.company_id;
 
-    const shipName = order.shipping_name || (isB2B ? 'Patient' : profile?.full_name || 'Retail Customer');
-    const shipAddress = order.shipping_address || 'No Address Provided';
-    const shipCityState = [order.shipping_city, order.shipping_state, order.shipping_zip].filter(Boolean).join(' ');
-
-    const billName = isB2B ? agencyName : shipName;
-    const billAddress = isB2B ? (order.companies?.address || 'No Address Provided') : shipAddress;
+    // BILL TO logic
+    const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || 'Retail Customer');
+    const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
     const billCityState = isB2B 
-      ? [order.companies?.city, order.companies?.state, order.companies?.zip].filter(Boolean).join(' ') 
-      : shipCityState;
+      ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
+      : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
+    const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || '');
+    const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || profile?.email || '');
+
+    // SHIP TO logic
+    const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
+    const shipAddress = order.shipping_address || 'No shipping address provided';
+    const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
+    const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
+    const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
 
     doc.setFont("helvetica", "bold");
-    doc.text("BILL TO:", 14, 50); doc.text("SHIP TO:", 110, 50);
+    doc.text("BILL TO:", 14, 50); 
+    doc.text("SHIP TO:", 110, 50);
     
     doc.setFont("helvetica", "normal");
+    
     let currentYBill = 56;
     doc.setFont("helvetica", "bold");
     doc.text(billName, 14, currentYBill); currentYBill += 5;
     doc.setFont("helvetica", "normal");
-    if (billAddress !== 'N/A') { doc.text(billAddress, 14, currentYBill); currentYBill += 5; }
+    if (billAddress && billAddress !== 'No billing address provided') { doc.text(billAddress, 14, currentYBill); currentYBill += 5; }
     if (billCityState) { doc.text(billCityState, 14, currentYBill); currentYBill += 5; }
+    if (billPhone) { doc.text(`Phone: ${billPhone}`, 14, currentYBill); currentYBill += 5; }
+    if (billEmail) { doc.text(`Email: ${billEmail}`, 14, currentYBill); currentYBill += 5; }
 
     let currentYShip = 56;
     doc.setFont("helvetica", "bold");
     doc.text(shipName, 110, currentYShip); currentYShip += 5;
     doc.setFont("helvetica", "normal");
-    if (isB2B && agencyName) { doc.text(`c/o ${agencyName}`, 110, currentYShip); currentYShip += 5; }
-    if (shipAddress !== 'N/A') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
+    // 🚀 FIXED: Removed the "c/o Company Name" line completely
+    if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
     if (shipCityState) { doc.text(shipCityState, 110, currentYShip); currentYShip += 5; }
+    if (shipPhone) { doc.text(`Phone: ${shipPhone}`, 110, currentYShip); currentYShip += 5; }
+    if (shipEmail) { doc.text(`Email: ${shipEmail}`, 110, currentYShip); currentYShip += 5; }
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    const tableRows = order.order_items?.map(item => {
-      const productName = item.product_variants?.products?.name || item.product_variants?.name || 'Item';
-      const variantName = item.product_variants?.name || 'N/A';
-      const sku = item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A';
-      return [
-        `${productName}\nVariant: ${variantName}\nSKU: ${sku}`,
-        item.quantity_variants, 
-        `$${Number(item.unit_price || 0).toFixed(2)}`, 
-        `$${Number(item.line_total || 0).toFixed(2)}`
-      ];
-    }) || [];
+    const tableRows = order.order_items?.map(item => [
+      `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.products?.base_sku || item.product_variants?.sku || 'N/A'}`,
+      item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}`
+    ]) || [];
 
     autoTable(doc, {
       startY: maxAddressY + 10,
@@ -184,8 +198,15 @@ export default function MyOrders() {
     doc.text("Shipping:", 140, finalY + 16); doc.text(`$${Number(order.shipping_amount || 0).toFixed(2)}`, 180, finalY + 16, { align: 'right' });
     doc.text("Tax:", 140, finalY + 22); doc.text(`$${Number(order.tax_amount || 0).toFixed(2)}`, 180, finalY + 22, { align: 'right' });
     
-    doc.setFont("helvetica", "bold");
-    doc.text("Grand Total:", 140, finalY + 30); doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
+    if (docType === 'receipt') {
+      doc.text(`Payment Method: ${order.payment_method?.replace(/_/g, ' ').toUpperCase() || 'CARD'}`, 14, finalY + 30);
+      doc.setFont("helvetica", "bold");
+      doc.text("Total Paid:", 140, finalY + 30); doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
+      doc.text("Balance Due:", 140, finalY + 36); doc.text("$0.00", 180, finalY + 36, { align: 'right' });
+    } else {
+      doc.setFont("helvetica", "bold");
+      doc.text("Grand Total:", 140, finalY + 30); doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
+    }
 
     const pageHeight = doc.internal.pageSize.height;
     doc.setFontSize(9); doc.setFont("helvetica", "bold");
@@ -196,7 +217,7 @@ export default function MyOrders() {
     doc.text("info@tricoremedicalsupply.com", 105, pageHeight - 14, { align: "center" });
     doc.text("www.tricoremedicalsupply.com", 105, pageHeight - 9, { align: "center" });
 
-    doc.save(`Invoice_${orderNum}.pdf`);
+    doc.save(`${docType === 'receipt' ? 'Receipt' : 'Invoice'}_${orderNum}.pdf`);
   };
 
   return (
@@ -249,8 +270,8 @@ export default function MyOrders() {
               {orders.map((order) => {
                 const isExpanded = expandedOrderId === order.id;
                 const shortId = order.id.split('-')[0].toUpperCase();
+                const isB2B = !!order.company_id || !!profile?.company_id;
 
-                // 🚀 SMART PARSER
                 const rawDriverName = order.driver_name || '';
                 const driverParts = rawDriverName.split('|').map(s => s.trim());
                 const displayDriverName = driverParts[0] || '';
@@ -261,7 +282,20 @@ export default function MyOrders() {
                   displayDriverPhone = assignedDriverObj?.contact_number || '';
                 }
 
-                // 🚀 DUE DATE CALCULATION (Fallback to created_at + 30 days)
+                const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || 'Retail Customer');
+                const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
+                const billCityState = isB2B 
+                  ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
+                  : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
+                const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || '');
+                const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || profile?.email || '');
+
+                const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
+                const shipAddress = order.shipping_address || 'No shipping address provided';
+                const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
+                const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
+                const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
+
                 const isNet30 = order.payment_method === 'net_30';
                 let dueDateDisplay = '';
                 let isOverdue = false;
@@ -327,36 +361,67 @@ export default function MyOrders() {
                         <td colSpan="6" className="p-0 border-b border-slate-200">
                           <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                              <div className="lg:col-span-2 space-y-4">
-                                <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
-                                  <FileText size={16} className="text-slate-400" /> Order Items
-                                </h4>
-                                <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
-                                  <table className="w-full text-left text-sm whitespace-normal">
-                                    <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest">
-                                      <tr>
-                                        <th className="px-5 py-3 font-bold w-full rounded-tl-2xl">Product</th>
-                                        <th className="px-5 py-3 font-bold text-center">Qty</th>
-                                        <th className="px-5 py-3 font-bold text-right rounded-tr-2xl">Total</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-100">
-                                      {order.order_items?.map((item) => (
-                                        <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
-                                          <td className="px-5 py-4">
-                                            <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name}</p>
-                                            <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku}</span></p>
-                                          </td>
-                                          <td className="px-5 py-4 text-center">
-                                            <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span>
-                                          </td>
-                                          <td className="px-5 py-4 text-right font-extrabold text-slate-900">
-                                            ${item.line_total.toLocaleString(undefined, {minimumFractionDigits: 2})}
-                                          </td>
+                              <div className="lg:col-span-2 space-y-6">
+                                
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Building size={14}/> Bill To</h4>
+                                    <p className="font-bold text-slate-900 text-base mb-2">{billName}</p>
+                                    <div className="space-y-2 text-sm font-medium text-slate-600">
+                                      {billEmail && <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {billEmail}</p>}
+                                      {billPhone && <p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {billPhone}</p>}
+                                      <div className="flex items-start gap-2">
+                                        <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
+                                        <div className="whitespace-normal leading-relaxed"><p>{billAddress}</p>{billCityState && <p>{billCityState}</p>}</div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><MapPin size={14}/> Ship To</h4>
+                                    <p className="font-bold text-slate-900 text-base mb-2">{shipName}</p>
+                                    <div className="space-y-2 text-sm font-medium text-slate-600">
+                                      {shipEmail && <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {shipEmail}</p>}
+                                      {shipPhone && <p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {shipPhone}</p>}
+                                      <div className="flex items-start gap-2">
+                                        <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
+                                        <div className="whitespace-normal leading-relaxed"><p>{shipAddress}</p>{shipCityState && <p>{shipCityState}</p>}</div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="space-y-4">
+                                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
+                                    <FileText size={16} className="text-slate-400" /> Order Items
+                                  </h4>
+                                  <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+                                    <table className="w-full text-left text-sm whitespace-normal">
+                                      <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest">
+                                        <tr>
+                                          <th className="px-5 py-3 font-bold w-full rounded-tl-2xl">Product</th>
+                                          <th className="px-5 py-3 font-bold text-center">Qty</th>
+                                          <th className="px-5 py-3 font-bold text-right rounded-tr-2xl">Total</th>
                                         </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100">
+                                        {order.order_items?.map((item) => (
+                                          <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
+                                            <td className="px-5 py-4">
+                                              <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name}</p>
+                                              <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku}</span></p>
+                                            </td>
+                                            <td className="px-5 py-4 text-center">
+                                              <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span>
+                                            </td>
+                                            <td className="px-5 py-4 text-right font-extrabold text-slate-900">
+                                              ${item.line_total.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
                                 </div>
                               </div>
                               <div className="space-y-6">
@@ -388,13 +453,22 @@ export default function MyOrders() {
                                     </div>
                                   )}
 
-                                  <div className="pt-3 border-t border-slate-100">
-                                    <button onClick={() => generateInvoice(order)} className="w-full py-3.5 bg-slate-900 text-white text-sm font-bold rounded-xl shadow-md hover:bg-slate-800 active:scale-95 transition-all flex items-center justify-center gap-2">
-                                      <FileDown size={16} /> Download Invoice PDF
-                                    </button>
-                                  </div>
+                                  {/* 🚀 FIXED: Only shows Invoice/Receipt if Delivered */}
+                                  {order.status === 'delivered' && (
+                                    <div className="pt-3 border-t border-slate-100 flex flex-col gap-2">
+                                      {order.payment_status === 'paid' ? (
+                                        <button onClick={() => generatePDF(order, 'receipt')} className="w-full py-3 bg-emerald-600 border border-emerald-600 text-white text-sm font-bold rounded-xl shadow-md hover:bg-emerald-700 active:scale-95 transition-all flex items-center justify-center gap-2">
+                                          <CheckCircle2 size={16} /> Download Receipt
+                                        </button>
+                                      ) : (
+                                        <button onClick={() => generatePDF(order, 'invoice')} className="w-full py-3 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center justify-center gap-2">
+                                          <FileDown size={16} className="text-slate-400" /> Download Invoice
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
-                                {(order.status === 'ready_for_delivery' || order.status === 'shipped' || order.status === 'out_for_delivery' || order.status === 'delivered') && order.driver_name && (
+                                {(order.status === 'ready_for_delivery' || order.status === 'shipped' || order.status === 'delivered') && order.driver_name && (
                                   <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                     <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
                                       <Truck size={16} className="text-slate-400" /> Dispatch Info
@@ -405,13 +479,12 @@ export default function MyOrders() {
                                         <p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p>
                                       </div>
                                       
-                                      <div>
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p>
-                                        <p className={`font-medium flex items-center gap-1.5 ${displayDriverPhone ? 'text-slate-600' : 'text-slate-400 italic'}`}>
-                                          <Phone size={14} className={displayDriverPhone ? 'text-slate-400' : 'text-slate-300'}/> 
-                                          {displayDriverPhone || 'Not provided'}
-                                        </p>
-                                      </div>
+                                      {displayDriverPhone && (
+                                        <div>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p>
+                                          <p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p>
+                                        </div>
+                                      )}
 
                                       <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p>
