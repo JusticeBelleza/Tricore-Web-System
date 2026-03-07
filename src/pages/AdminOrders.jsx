@@ -15,8 +15,10 @@ export default function AdminOrders() {
   const [fleetVehicles, setFleetVehicles] = useState([]);
   const [drivers, setDrivers] = useState([]); 
   const [loading, setLoading] = useState(true);
+  
+  // Interactive Filters
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  const [activeTab, setActiveTab] = useState('all'); 
   
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [confirmAction, setConfirmAction] = useState({ show: false, title: '', message: '', onConfirm: null });
@@ -24,7 +26,6 @@ export default function AdminOrders() {
   
   const [assigningOrder, setAssigningOrder] = useState(null);
   const [driverName, setDriverName] = useState('');
-  const [driverPhone, setDriverPhone] = useState('');
   const [vehicleName, setVehicleName] = useState('');
   const [vehicleType, setVehicleType] = useState('Cargo Van');
   const [vehicleLicense, setVehicleLicense] = useState('');
@@ -113,9 +114,8 @@ export default function AdminOrders() {
 
   const openAssignModal = (order) => {
     const rawName = order.driver_name || '';
-    const cleanName = rawName.split(' | ')[0]; // Strip legacy format
+    const cleanName = rawName.split(' | ')[0]; 
     setDriverName(cleanName);
-    setDriverPhone('');
     setVehicleName(order.vehicle_name || '');
     setVehicleType(order.vehicle_type || 'Cargo Van');
     setVehicleLicense(order.vehicle_license || '');
@@ -140,8 +140,12 @@ export default function AdminOrders() {
     e.preventDefault();
     if (!assigningOrder) return;
     try {
+      const assignedDriverObj = drivers.find(d => d.full_name === driverName);
+      const driverPhone = assignedDriverObj?.contact_number || '';
+      const finalDriverName = driverPhone ? `${driverName} | ${driverPhone}` : driverName;
+
       const updates = { 
-        driver_name: driverName || null, 
+        driver_name: finalDriverName || null, 
         vehicle_name: vehicleName || null, 
         vehicle_license: vehicleLicense || null,
         status: 'shipped' 
@@ -157,7 +161,6 @@ export default function AdminOrders() {
     }
   };
 
-  // --- SAFE IMAGE LOADER FOR jsPDF ---
   const getBase64ImageFromUrl = (imageUrl) => {
     return new Promise((resolve) => {
       const img = new Image();
@@ -176,13 +179,11 @@ export default function AdminOrders() {
     });
   };
 
-  // --- INVOICE GENERATOR ---
   const generateInvoice = async (order) => {
     const doc = new jsPDF();
     const orderNum = order.id.substring(0, 8).toUpperCase();
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-    // 1. Fetch and Stamp Transparent Logo
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
     if (logoData) {
       const imgWidth = 45; 
@@ -193,7 +194,6 @@ export default function AdminOrders() {
       doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
     }
     
-    // Order Info
     doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
     doc.text("INVOICE", 140, 18);
     
@@ -205,7 +205,6 @@ export default function AdminOrders() {
     const isB2B = !!order.company_id;
     const agencyName = order.companies?.name || '';
 
-    // --- EXACT LOGIC: Agency = Bill To, Patient = Ship To ---
     const shipName = order.shipping_name || (isB2B ? 'Patient' : 'Retail Customer');
     const shipAddress = order.shipping_address || 'No Address Provided';
     const shipCityState = [order.shipping_city, order.shipping_state, order.shipping_zip].filter(Boolean).join(' ');
@@ -237,17 +236,10 @@ export default function AdminOrders() {
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    const tableRows = order.order_items?.map(item => {
-      const productName = item.product_variants?.products?.name || item.product_variants?.name || 'Item';
-      const variantName = item.product_variants?.name || 'N/A';
-      const sku = item.product_variants?.sku || 'N/A';
-      return [
-        `${productName}\nVariant: ${variantName}\nSKU: ${sku}`,
-        item.quantity_variants, 
-        `$${Number(item.unit_price || 0).toFixed(2)}`, 
-        `$${Number(item.line_total || 0).toFixed(2)}`
-      ];
-    }) || [];
+    const tableRows = order.order_items?.map(item => [
+      `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.products?.base_sku || item.product_variants?.sku || 'N/A'}`,
+      item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}`
+    ]) || [];
 
     autoTable(doc, {
       startY: maxAddressY + 10,
@@ -266,7 +258,6 @@ export default function AdminOrders() {
     doc.setFont("helvetica", "bold");
     doc.text("Grand Total:", 140, finalY + 30); doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
 
-    // Footer
     const pageHeight = doc.internal.pageSize.height;
     doc.setFontSize(9); doc.setFont("helvetica", "bold");
     doc.text("Thank you for your business!", 105, pageHeight - 30, { align: "center" });
@@ -280,47 +271,58 @@ export default function AdminOrders() {
   };
 
   const getDisplayName = (order) => {
-    if (order.companies?.name) {
-      return order.companies.name;
-    }
+    if (order.companies?.name) return order.companies.name;
     return order.shipping_name || 'Retail Customer';
   };
 
+  // 🚀 DUE ORDERS BADGE CALCULATION (Within 5 days or overdue)
+  const dueOrdersCount = orders.filter(o => {
+    if (o.payment_method !== 'net_30' || o.payment_status !== 'unpaid') return false;
+    const dueDate = new Date(o.created_at);
+    dueDate.setDate(dueDate.getDate() + 30);
+    const diffDays = (dueDate - new Date()) / (1000 * 60 * 60 * 24);
+    return diffDays <= 5;
+  }).length;
+
   const filteredOrders = orders.filter(o => {
     const matchesSearch = o.id.toLowerCase().includes(searchTerm.toLowerCase()) || (o.companies?.name || o.shipping_name || '').toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = statusFilter ? o.status === statusFilter : true;
-    return matchesSearch && matchesStatus;
+    
+    let matchesTab = true;
+    if (activeTab === 'pending') matchesTab = o.status === 'pending';
+    if (activeTab === 'processing') matchesTab = o.status === 'processing';
+    if (activeTab === 'dispatch') matchesTab = o.status === 'ready_for_delivery' || o.status === 'shipped';
+    if (activeTab === 'completed') matchesTab = o.status === 'delivered';
+    if (activeTab === 'cancelled') matchesTab = o.status === 'cancelled';
+    
+    // 🚀 NEW TAB FILTER: Due within 5 days or Overdue
+    if (activeTab === 'due') {
+      if (o.payment_method !== 'net_30' || o.payment_status !== 'unpaid') {
+        matchesTab = false;
+      } else {
+        const dueDate = new Date(o.created_at);
+        dueDate.setDate(dueDate.getDate() + 30);
+        const diffDays = (dueDate - new Date()) / (1000 * 60 * 60 * 24);
+        matchesTab = diffDays <= 5;
+      }
+    }
+    
+    return matchesSearch && matchesTab;
   });
 
   const getStatusBadge = (status) => {
-    const styles = {
-      pending: 'bg-yellow-50 text-yellow-700 border-yellow-200',
-      processing: 'bg-blue-50 text-blue-700 border-blue-200',
-      ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200',
-      shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200',
-      delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-      cancelled: 'bg-red-50 text-red-700 border-red-200'
-    };
-    const icons = {
-      pending: <Clock size={12}/>, processing: <Package size={12}/>, ready_for_delivery: <PackageCheck size={12}/>,
-      shipped: <Truck size={12}/>, delivered: <CheckCircle2 size={12}/>, cancelled: <XCircle size={12}/>
-    };
-    return (
-      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center gap-1.5 w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>
-        {icons[status]} {status.replace(/_/g, ' ')}
-      </span>
-    );
+    const styles = { pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', processing: 'bg-blue-50 text-blue-700 border-blue-200', ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', cancelled: 'bg-red-50 text-red-700 border-red-200' };
+    const icons = { pending: <Clock size={12}/>, processing: <Package size={12}/>, ready_for_delivery: <PackageCheck size={12}/>, shipped: <Truck size={12}/>, delivered: <CheckCircle2 size={12}/>, cancelled: <XCircle size={12}/> };
+    return (<span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center gap-1.5 w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{icons[status]} {status.replace(/_/g, ' ')}</span>);
   };
 
   const getPaymentBadge = (paymentStatus) => {
     if (paymentStatus === 'paid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-600 border border-emerald-200 shadow-sm">Paid</span>;
-    return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-50 text-amber-600 border border-amber-200 shadow-sm">Unpaid</span>;
+    return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200 shadow-sm">Unpaid</span>;
   };
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12 relative">
       
-      {/* --- HEADER --- */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 pb-2">
         <div className="flex items-center gap-4">
           <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md">
@@ -333,35 +335,42 @@ export default function AdminOrders() {
         </div>
       </div>
 
-      {/* --- FILTERS --- */}
-      <div className="flex flex-col sm:flex-row gap-3 bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
-        <div className="relative flex-1">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input type="text" placeholder="Search Order ID, Customer, or Company..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" />
+      <div className="flex flex-col xl:flex-row gap-4 justify-between items-start xl:items-center bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full xl:w-auto overflow-x-auto shrink-0">
+          <button onClick={() => setActiveTab('all')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'all' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}>
+            All
+          </button>
+          <button onClick={() => setActiveTab('pending')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'pending' ? 'bg-red-500 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>
+            {orders.filter(o=>o.status==='pending').length > 0 && <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>}
+            Pending ({orders.filter(o=>o.status==='pending').length})
+          </button>
+          <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-600 hover:bg-blue-50'}`}>
+            Processing ({orders.filter(o=>o.status==='processing').length})
+          </button>
+          <button onClick={() => setActiveTab('dispatch')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'dispatch' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>
+            Dispatch ({orders.filter(o=>['ready_for_delivery', 'shipped'].includes(o.status)).length})
+          </button>
+          <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>
+            Completed
+          </button>
+          
+          {/* 🚀 NEW PAYMENTS DUE TAB */}
+          <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>
+            {dueOrdersCount > 0 && <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>}
+            Payments Due ({dueOrdersCount})
+          </button>
         </div>
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full sm:w-56 px-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm transition-all cursor-pointer font-bold text-slate-700">
-          <option value="">All Statuses</option>
-          <option value="pending">Pending Review</option>
-          <option value="processing">In Warehouse</option>
-          <option value="ready_for_delivery">Ready for Delivery</option>
-          <option value="shipped">Shipped</option>
-          <option value="delivered">Delivered</option>
-          <option value="cancelled">Cancelled</option>
-        </select>
+
+        <div className="relative w-full xl:w-64 shrink-0">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+          <input type="text" placeholder="Search ID or Customer..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" />
+        </div>
       </div>
 
-      {/* --- ORDER TABLE --- */}
       {loading ? (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
-          {[1,2,3,4,5].map(n => (
-            <div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse">
-              <div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div>
-              <div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div>
-              <div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div>
-              <div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div>
-            </div>
-          ))}
+          {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div></div>))}
         </div>
       ) : filteredOrders.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm mt-6">
@@ -400,7 +409,6 @@ export default function AdminOrders() {
                 const shipAddress = order.shipping_address || 'No shipping address provided';
                 const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
 
-                // 🚀 SMART PARSER: Handles both old "Name | Phone" and new "Name Only" database entries
                 const rawDriverName = order.driver_name || '';
                 const driverParts = rawDriverName.split(' | ');
                 const displayDriverName = driverParts[0];
@@ -411,16 +419,27 @@ export default function AdminOrders() {
                   displayDriverPhone = assignedDriverObj?.contact_number || '';
                 }
 
-                // Calculate Net 30 Due Date
+                // 🚀 SMART DUE DATE BADGES (Overdue vs Due Soon)
                 const isNet30 = order.payment_method === 'net_30';
-                const placedDate = new Date(order.created_at);
-                const dueDate = new Date(placedDate);
-                dueDate.setDate(dueDate.getDate() + 30);
-                const isOverdue = isNet30 && order.payment_status === 'unpaid' && new Date() > dueDate;
+                let isOverdue = false;
+                let isDueSoon = false;
+                let dueDateDisplay = '';
+
+                if (isNet30) {
+                  const placedDate = new Date(order.created_at);
+                  const dueDate = new Date(placedDate);
+                  dueDate.setDate(dueDate.getDate() + 30);
+                  dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+                  
+                  const diffDays = (dueDate - new Date()) / (1000 * 60 * 60 * 24);
+                  if (order.payment_status === 'unpaid') {
+                    if (diffDays < 0) isOverdue = true;
+                    else if (diffDays <= 5) isDueSoon = true;
+                  }
+                }
 
                 return (
                   <React.Fragment key={order.id}>
-                    {/* --- MAIN ROW --- */}
                     <tr 
                       onClick={() => toggleOrderDetails(order.id)}
                       className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-900' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}
@@ -452,7 +471,12 @@ export default function AdminOrders() {
                       <td className="px-6 py-4">
                         <div className="flex flex-col items-start gap-1">
                           <p className="font-extrabold text-slate-900 text-base">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
-                          {getPaymentBadge(order.payment_status)}
+                          <div className="flex items-center gap-2">
+                            {getPaymentBadge(order.payment_status)}
+                            {/* 🚀 Visual Warning Badges for Net-30 Status */}
+                            {isOverdue && <span className="text-[9px] font-bold text-red-600 uppercase tracking-widest flex items-center gap-1"><AlertCircle size={10} /> Overdue</span>}
+                            {isDueSoon && <span className="text-[9px] font-bold text-amber-600 uppercase tracking-widest flex items-center gap-1"><Clock size={10} /> Due Soon</span>}
+                          </div>
                         </div>
                       </td>
 
@@ -467,20 +491,17 @@ export default function AdminOrders() {
                       </td>
                     </tr>
 
-                    {/* --- EXPANDED DETAILS DRAWER --- */}
                     {isExpanded && (
                       <tr className="bg-slate-50 shadow-inner">
                         <td colSpan="6" className="p-0 border-b border-slate-200">
                           <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
                             
-                            {/* Drawer Header */}
                             <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 mb-6 border-b border-slate-200 pb-4">
                               <div>
                                 <h3 className="text-xl font-bold text-slate-900 tracking-tight">Order Management Panel</h3>
                                 <p className="text-sm text-slate-500 font-medium">Review details and process fulfillment</p>
                               </div>
                               <div className="flex flex-wrap gap-2">
-                                {/* Admin Actions based on Status */}
                                 {order.status === 'pending' && (
                                   <>
                                     <button onClick={() => handleStatusChangeClick(order.id, 'cancelled')} className="px-5 py-2 bg-white border border-red-200 text-red-600 text-sm font-bold rounded-xl shadow-sm hover:bg-red-50 active:scale-95 transition-all">Reject</button>
@@ -491,7 +512,6 @@ export default function AdminOrders() {
                                   <button onClick={() => openAssignModal(order)} className="px-5 py-2 bg-blue-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-blue-700 active:scale-95 transition-all flex items-center gap-2"><Truck size={16} /> Dispatch Driver</button>
                                 )}
                                 
-                                {/* Delivered Actions */}
                                 {order.status === 'delivered' && (
                                   <>
                                     <button onClick={() => generateInvoice(order)} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2">
@@ -508,11 +528,8 @@ export default function AdminOrders() {
                             </div>
 
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                              
-                              {/* Left & Center: Info & Items */}
                               <div className="lg:col-span-2 space-y-6">
                                 
-                                {/* Addresses */}
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                   <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                                     <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Building size={14}/> Bill To</h4>
@@ -541,7 +558,6 @@ export default function AdminOrders() {
                                   </div>
                                 </div>
 
-                                {/* Items Table */}
                                 <div className="space-y-3">
                                   <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
                                     <FileText size={16} className="text-slate-400" /> Order Items
@@ -576,9 +592,7 @@ export default function AdminOrders() {
                                 </div>
                               </div>
 
-                              {/* Right: Financials & Dispatch */}
                               <div className="space-y-4">
-                                {/* Summary Box */}
                                 <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                   <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
                                     <DollarSign size={16} className="text-slate-400" /> Summary
@@ -602,18 +616,16 @@ export default function AdminOrders() {
                                     {getPaymentBadge(order.payment_status)}
                                   </div>
 
-                                  {/* Dynamic Due Date Display */}
                                   {isNet30 && (
                                     <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
                                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Net 30 Due Date</span>
-                                      <span className={`text-xs font-bold px-2 py-0.5 rounded ${isOverdue ? 'bg-red-100 text-red-700 border border-red-200 shadow-sm' : 'text-slate-700 bg-slate-100 border border-slate-200'}`}>
-                                        {dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                                      <span className={`text-xs font-bold px-2 py-0.5 rounded ${isOverdue ? 'bg-red-100 text-red-700 border border-red-200 shadow-sm' : isDueSoon ? 'bg-amber-100 text-amber-700 border border-amber-200 shadow-sm' : 'text-slate-700 bg-slate-100 border border-slate-200'}`}>
+                                        {dueDateDisplay}
                                       </span>
                                     </div>
                                   )}
                                 </div>
 
-                                {/* Dispatch Box (If assigned) */}
                                 {(order.status === 'ready_for_delivery' || order.status === 'shipped' || order.status === 'delivered') && order.driver_name && (
                                   <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                     <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">

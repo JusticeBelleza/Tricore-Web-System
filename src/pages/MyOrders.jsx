@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { 
   Package, Receipt, ChevronDown, Calendar, Hash, 
-  CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone
+  CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -26,6 +26,7 @@ export default function MyOrders() {
   const fetchMyOrders = async () => {
     setLoading(true);
     try {
+      // REMOVED updated_at to prevent the Supabase 400 Error
       let query = supabase
         .from('orders')
         .select(`
@@ -82,7 +83,6 @@ export default function MyOrders() {
     return null;
   };
 
-  // --- SAFE IMAGE LOADER FOR jsPDF ---
   const getBase64ImageFromUrl = (imageUrl) => {
     return new Promise((resolve) => {
       const img = new Image();
@@ -101,13 +101,11 @@ export default function MyOrders() {
     });
   };
 
-  // --- DYNAMIC INVOICE PDF GENERATOR ---
   const generateInvoice = async (order) => {
     const doc = new jsPDF();
     const orderNum = order.id.substring(0, 8).toUpperCase();
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-    // 1. Fetch and Stamp Transparent Logo
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
     if (logoData) {
       const imgWidth = 45; 
@@ -118,7 +116,6 @@ export default function MyOrders() {
       doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
     }
     
-    // Order Info
     doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
     doc.text("INVOICE", 140, 18);
     
@@ -130,7 +127,6 @@ export default function MyOrders() {
     const isB2B = !!order.company_id;
     const agencyName = order.companies?.name || '';
 
-    // --- LOGIC: Agency = Bill To, Patient = Ship To ---
     const shipName = order.shipping_name || (isB2B ? 'Patient' : profile?.full_name || 'Retail Customer');
     const shipAddress = order.shipping_address || 'No Address Provided';
     const shipCityState = [order.shipping_city, order.shipping_state, order.shipping_zip].filter(Boolean).join(' ');
@@ -191,7 +187,6 @@ export default function MyOrders() {
     doc.setFont("helvetica", "bold");
     doc.text("Grand Total:", 140, finalY + 30); doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
 
-    // Footer
     const pageHeight = doc.internal.pageSize.height;
     doc.setFontSize(9); doc.setFont("helvetica", "bold");
     doc.text("Thank you for your business!", 105, pageHeight - 30, { align: "center" });
@@ -206,8 +201,6 @@ export default function MyOrders() {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto pb-12">
-      
-      {/* Header */}
       <div className="flex items-center gap-4 pb-2">
         <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md">
           <Receipt size={28} strokeWidth={1.5} />
@@ -257,20 +250,32 @@ export default function MyOrders() {
                 const isExpanded = expandedOrderId === order.id;
                 const shortId = order.id.split('-')[0].toUpperCase();
 
-                // 🚀 SMART PARSER: Handles extracting driver info
+                // 🚀 SMART PARSER
                 const rawDriverName = order.driver_name || '';
-                const driverParts = rawDriverName.split(' | ');
-                const displayDriverName = driverParts[0];
+                const driverParts = rawDriverName.split('|').map(s => s.trim());
+                const displayDriverName = driverParts[0] || '';
                 let displayDriverPhone = driverParts[1] || '';
 
                 if (!displayDriverPhone && displayDriverName) {
-                  const assignedDriverObj = drivers.find(d => d.full_name === displayDriverName);
+                  const assignedDriverObj = drivers.find(d => (d.full_name || '').toLowerCase() === displayDriverName.toLowerCase());
                   displayDriverPhone = assignedDriverObj?.contact_number || '';
+                }
+
+                // 🚀 DUE DATE CALCULATION (Fallback to created_at + 30 days)
+                const isNet30 = order.payment_method === 'net_30';
+                let dueDateDisplay = '';
+                let isOverdue = false;
+
+                if (isNet30) {
+                  const baseDate = new Date(order.created_at);
+                  const dueDate = new Date(baseDate);
+                  dueDate.setDate(dueDate.getDate() + 30);
+                  dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+                  isOverdue = order.payment_status === 'unpaid' && new Date() > dueDate;
                 }
                 
                 return (
                   <React.Fragment key={order.id}>
-                    {/* --- MAIN ROW --- */}
                     <tr 
                       onClick={() => toggleOrderDetails(order.id)} 
                       className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-800' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}
@@ -286,16 +291,13 @@ export default function MyOrders() {
                           </div>
                         </div>
                       </td>
-
                       <td className="px-6 py-4">
                         <p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> Date</p>
                       </td>
-
                       <td className="px-6 py-4">
                         <p className="font-extrabold text-slate-900 text-base">${order.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
                       </td>
-
                       <td className="px-6 py-4">
                         <div className="flex flex-col items-start gap-1">
                           {getPaymentStatusBadge(order.payment_status)}
@@ -304,33 +306,31 @@ export default function MyOrders() {
                           </span>
                         </div>
                       </td>
-
                       <td className="px-6 py-4">
-                        {getStatusBadge(order.status)}
+                        <div className="flex flex-col items-start gap-1">
+                          {getStatusBadge(order.status)}
+                          {isOverdue && (
+                            <span className="text-[10px] font-bold text-red-600 uppercase tracking-widest flex items-center gap-1 mt-1">
+                              <AlertCircle size={10} /> Overdue
+                            </span>
+                          )}
+                        </div>
                       </td>
-
                       <td className="px-6 py-4 text-right">
                         <button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}>
                           <ChevronDown size={20} />
                         </button>
                       </td>
                     </tr>
-
-                    {/* --- EXPANDED DETAILS DRAWER --- */}
                     {isExpanded && (
                       <tr className="bg-slate-50 shadow-inner">
                         <td colSpan="6" className="p-0 border-b border-slate-200">
                           <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                              
-                              {/* Left: Line Items */}
                               <div className="lg:col-span-2 space-y-4">
-                                <div className="flex justify-between items-center mb-2">
-                                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
-                                    <FileText size={16} className="text-slate-400" /> Order Items
-                                  </h4>
-                                </div>
-                                
+                                <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
+                                  <FileText size={16} className="text-slate-400" /> Order Items
+                                </h4>
                                 <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
                                   <table className="w-full text-left text-sm whitespace-normal">
                                     <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest">
@@ -359,28 +359,34 @@ export default function MyOrders() {
                                   </table>
                                 </div>
                               </div>
-
-                              {/* Right: Financials & Delivery */}
                               <div className="space-y-6">
-                                
-                                {/* Summary Box */}
                                 <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                   <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
                                     <DollarSign size={16} className="text-slate-400" /> Summary
                                   </h4>
-
                                   <div className="space-y-3 text-sm font-medium">
                                     <div className="flex justify-between text-slate-500"><span>Subtotal</span><span className="text-slate-900">${order.subtotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                     <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${order.shipping_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                     <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${order.tax_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
-                                    
                                     <div className="h-px w-full bg-slate-200/60 my-2"></div>
-                                    
                                     <div className="flex justify-between items-end">
                                       <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
                                       <span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${order.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
                                     </div>
                                   </div>
+
+                                  {isNet30 && (
+                                    <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
+                                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Due Date</span>
+                                      <span className={`text-xs font-bold px-2 py-1 rounded shadow-sm border ${
+                                        isOverdue 
+                                          ? 'bg-red-50 text-red-700 border-red-200' 
+                                          : order.status === 'delivered' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-600 border-slate-200'
+                                      }`}>
+                                        {dueDateDisplay}
+                                      </span>
+                                    </div>
+                                  )}
 
                                   <div className="pt-3 border-t border-slate-100">
                                     <button onClick={() => generateInvoice(order)} className="w-full py-3.5 bg-slate-900 text-white text-sm font-bold rounded-xl shadow-md hover:bg-slate-800 active:scale-95 transition-all flex items-center justify-center gap-2">
@@ -388,24 +394,25 @@ export default function MyOrders() {
                                     </button>
                                   </div>
                                 </div>
-
-                                {/* Dispatch Box (If assigned) */}
                                 {(order.status === 'ready_for_delivery' || order.status === 'shipped' || order.status === 'out_for_delivery' || order.status === 'delivered') && order.driver_name && (
                                   <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                     <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
-                                      <Truck size={16} className="text-slate-400" /> Delivery Details
+                                      <Truck size={16} className="text-slate-400" /> Dispatch Info
                                     </h4>
                                     <div className="space-y-3 text-sm">
                                       <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p>
                                         <p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p>
                                       </div>
-                                      {displayDriverPhone && (
-                                        <div>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p>
-                                          <p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p>
-                                        </div>
-                                      )}
+                                      
+                                      <div>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p>
+                                        <p className={`font-medium flex items-center gap-1.5 ${displayDriverPhone ? 'text-slate-600' : 'text-slate-400 italic'}`}>
+                                          <Phone size={14} className={displayDriverPhone ? 'text-slate-400' : 'text-slate-300'}/> 
+                                          {displayDriverPhone || 'Not provided'}
+                                        </p>
+                                      </div>
+
                                       <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p>
                                         <p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p>
@@ -419,8 +426,6 @@ export default function MyOrders() {
                                     </div>
                                   </div>
                                 )}
-
-                                {/* Proof of Delivery (Only if Delivered) */}
                                 {order.status === 'delivered' && (order.photo_url || order.signature_url) && (
                                   <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
                                     <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-4">
@@ -447,7 +452,6 @@ export default function MyOrders() {
                                     </div>
                                   </div>
                                 )}
-
                               </div>
                             </div>
                           </div>

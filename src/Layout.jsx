@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from './lib/AuthContext';
+import { supabase } from './lib/supabase';
 import { 
   LayoutDashboard, Package, ShoppingCart, Truck, Warehouse, 
   Users, BarChart3, ClipboardList, LogOut, User, Menu, X, Car
@@ -11,6 +12,57 @@ export default function Layout() {
   const navigate = useNavigate();
   const { profile, signOut } = useAuth();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // --- Real-time Badge States ---
+  const [pendingCount, setPendingCount] = useState(0);
+  const [overdueCount, setOverdueCount] = useState(0);
+
+  useEffect(() => {
+    if (!profile) return;
+    
+    const fetchBadges = async () => {
+      // Admins get badge for Pending Orders
+      if (profile.role === 'admin') {
+        const { count } = await supabase
+          .from('orders')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', 'pending');
+        setPendingCount(count || 0);
+      } 
+      // Agencies get badge for Overdue Net-30 Invoices
+      else if (profile.role === 'b2b' && profile.company_id) {
+        const { data } = await supabase
+          .from('orders')
+          .select('created_at, status')
+          .eq('company_id', profile.company_id)
+          .eq('payment_status', 'unpaid')
+          .eq('payment_method', 'net_30');
+
+        if (data) {
+          const now = new Date();
+          let overdue = 0;
+          data.forEach(o => {
+            if (o.status === 'delivered') {
+              const baseDate = new Date(o.created_at);
+              const dueDate = new Date(baseDate);
+              dueDate.setDate(dueDate.getDate() + 30);
+              if (now > dueDate) overdue++;
+            }
+          });
+          setOverdueCount(overdue);
+        }
+      }
+    };
+
+    fetchBadges();
+    
+    // Subscribe to real-time order updates so the badge changes instantly
+    const sub = supabase.channel('badge_updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchBadges)
+      .subscribe();
+
+    return () => supabase.removeChannel(sub);
+  }, [profile]);
 
   const handleLogout = async () => {
     try {
@@ -51,14 +103,16 @@ export default function Layout() {
         
         {/* Brand Header */}
         <div className="h-16 flex items-center justify-between px-6 border-b border-slate-200 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-slate-900 rounded-md flex items-center justify-center shrink-0 shadow-sm">
-              <span className="text-white font-bold text-lg leading-none">T</span>
-            </div>
-            <span className="font-semibold text-lg tracking-tight text-slate-900">Tricore</span>
+          <div className="flex items-center">
+            {/* 🚀 LOGO ENLARGED & SHADOW REMOVED */}
+            <img 
+              src="/images/tricore-logo2.png" 
+              alt="TriCore Logo" 
+              className="h-15 w-auto object-contain" 
+            />
           </div>
           {/* Close button for mobile */}
-          <button onClick={closeMobileMenu} className="lg:hidden text-slate-400 hover:text-slate-900 p-1 bg-slate-100 rounded-md">
+          <button onClick={closeMobileMenu} className="lg:hidden text-slate-400 hover:text-slate-900 p-1 bg-slate-100 rounded-md transition-colors">
             <X size={20} />
           </button>
         </div>
@@ -77,7 +131,14 @@ export default function Layout() {
                   <Package size={18} /> Catalog
                 </Link>
                 <Link to="/orders" onClick={closeMobileMenu} className={navItemClass('/orders')}>
-                  <ShoppingCart size={18} /> My Orders
+                  <ShoppingCart size={18} /> 
+                  <span className="flex-1">My Orders</span>
+                  {/* B2B Overdue Badge */}
+                  {overdueCount > 0 && (
+                    <span className="ml-auto bg-red-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full animate-pulse shadow-sm">
+                      {overdueCount} Due
+                    </span>
+                  )}
                 </Link>
               </>
             )}
@@ -114,10 +175,16 @@ export default function Layout() {
                   <Package size={18} /> Manage Products
                 </Link>
                 <Link to="/admin/orders" onClick={closeMobileMenu} className={navItemClass('/admin/orders')}>
-                  <ShoppingCart size={18} /> All Orders
+                  <ShoppingCart size={18} /> 
+                  <span className="flex-1">All Orders</span>
+                  {/* Admin Pending Orders Badge */}
+                  {pendingCount > 0 && (
+                    <span className="ml-auto bg-red-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full animate-pulse shadow-sm">
+                      {pendingCount} New
+                    </span>
+                  )}
                 </Link>
                 
-                {/* NEW FLEET MANAGEMENT LINK ADDED HERE */}
                 <Link to="/fleet" onClick={closeMobileMenu} className={navItemClass('/fleet')}>
                   <Car size={18} /> Fleet Management
                 </Link>
@@ -132,7 +199,6 @@ export default function Layout() {
             )}
           </div>
         </nav>
-
 
         {/* User Profile Footer */}
         <div className="p-4 border-t border-slate-200 shrink-0 bg-slate-50/50">
@@ -162,7 +228,7 @@ export default function Layout() {
       {/* Main Content Area */}
       <main className="flex-1 lg:ml-64 flex flex-col min-w-0 min-h-screen">
         
-        {/* Responsive Header */}
+        {/* Responsive Mobile Top Header */}
         <header className="h-16 bg-white/80 backdrop-blur-md border-b border-slate-200 flex items-center px-4 sm:px-8 sticky top-0 z-30 shrink-0">
           <button 
             onClick={() => setIsMobileMenuOpen(true)} 
@@ -170,7 +236,15 @@ export default function Layout() {
           >
             <Menu size={24} />
           </button>
-          <h1 className="text-lg font-bold text-slate-900 capitalize tracking-tight">
+          <div className="flex items-center gap-3 lg:hidden">
+            {/* Mobile Header Logo Enlarged & Shadow Removed */}
+            <img 
+              src="/images/tricore-logo2.png" 
+              alt="TriCore Logo" 
+              className="h-10 w-auto object-contain" 
+            />
+          </div>
+          <h1 className="text-lg font-bold text-slate-900 capitalize tracking-tight ml-auto lg:ml-0">
             {location.pathname.split('/').pop()?.replace('-', ' ') || 'Dashboard'}
           </h1>
         </header>
