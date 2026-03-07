@@ -112,9 +112,10 @@ export default function AdminOrders() {
   };
 
   const openAssignModal = (order) => {
-    const driverParts = (order.driver_name || '').split(' | ');
-    setDriverName(driverParts[0] || '');
-    setDriverPhone(driverParts[1] || '');
+    const rawName = order.driver_name || '';
+    const cleanName = rawName.split(' | ')[0]; // Strip legacy format
+    setDriverName(cleanName);
+    setDriverPhone('');
     setVehicleName(order.vehicle_name || '');
     setVehicleType(order.vehicle_type || 'Cargo Van');
     setVehicleLicense(order.vehicle_license || '');
@@ -139,9 +140,8 @@ export default function AdminOrders() {
     e.preventDefault();
     if (!assigningOrder) return;
     try {
-      const finalDriverName = driverName + (driverPhone ? ` | ${driverPhone}` : '');
       const updates = { 
-        driver_name: finalDriverName || null, 
+        driver_name: driverName || null, 
         vehicle_name: vehicleName || null, 
         vehicle_license: vehicleLicense || null,
         status: 'shipped' 
@@ -157,61 +157,100 @@ export default function AdminOrders() {
     }
   };
 
-  const generateInvoice = (order) => {
+  // --- SAFE IMAGE LOADER FOR jsPDF ---
+  const getBase64ImageFromUrl = (imageUrl) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "Anonymous";
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const dataURL = canvas.toDataURL("image/png");
+        resolve({ dataURL, width: img.width, height: img.height });
+      };
+      img.onerror = () => resolve(null);
+      img.src = imageUrl;
+    });
+  };
+
+  // --- INVOICE GENERATOR ---
+  const generateInvoice = async (order) => {
     const doc = new jsPDF();
     const orderNum = order.id.substring(0, 8).toUpperCase();
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-    doc.setFontSize(22); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
-    doc.text("INVOICE", 14, 22);
+    // 1. Fetch and Stamp Transparent Logo
+    const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
+    if (logoData) {
+      const imgWidth = 45; 
+      const imgHeight = (logoData.height * imgWidth) / logoData.width; 
+      doc.addImage(logoData.dataURL, 'PNG', 14, 12, imgWidth, imgHeight); 
+    } else {
+      doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
+      doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
+    }
+    
+    // Order Info
+    doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
+    doc.text("INVOICE", 140, 18);
     
     doc.setFontSize(10); doc.setFont("helvetica", "normal");
-    doc.text("TriCore MEDICAL SUPPLY", 14, 30);
-    doc.text("2169 Harbor St, Pittsburg CA 94565", 14, 35);
-    
-    doc.setFont("helvetica", "bold"); doc.text(`Invoice #: INV-${orderNum}`, 140, 22);
-    doc.setFont("helvetica", "normal"); doc.text(`Date: ${datePlaced}`, 140, 28);
+    doc.setFont("helvetica", "bold"); doc.text(`Invoice #: INV-${orderNum}`, 140, 24);
+    doc.setFont("helvetica", "normal"); doc.text(`Date: ${datePlaced}`, 140, 29);
     doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34);
+
+    const isB2B = !!order.company_id;
+    const agencyName = order.companies?.name || '';
+
+    // --- EXACT LOGIC: Agency = Bill To, Patient = Ship To ---
+    const shipName = order.shipping_name || (isB2B ? 'Patient' : 'Retail Customer');
+    const shipAddress = order.shipping_address || 'No Address Provided';
+    const shipCityState = [order.shipping_city, order.shipping_state, order.shipping_zip].filter(Boolean).join(' ');
+
+    const billName = isB2B ? agencyName : shipName;
+    const billAddress = isB2B ? (order.companies?.address || 'No Address Provided') : shipAddress;
+    const billCityState = isB2B 
+      ? [order.companies?.city, order.companies?.state, order.companies?.zip].filter(Boolean).join(' ') 
+      : shipCityState;
 
     doc.setFont("helvetica", "bold");
     doc.text("BILL TO:", 14, 50); doc.text("SHIP TO:", 110, 50);
+    
     doc.setFont("helvetica", "normal");
-
-    const billName = order.companies?.name || order.shipping_name || 'Retail Customer';
-    const billEmail = order.companies?.email || order.user_profiles?.email || '';
-    const billPhone = order.companies?.phone || order.user_profiles?.contact_number || '';
-    const billAddress = order.companies?.address || 'N/A';
-    const billCityState = order.companies ? `${order.companies.city || ''}, ${order.companies.state || ''} ${order.companies.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '') : '';
-
-    const shipName = order.shipping_name || billName;
-    const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
-    const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
-    const shipAddress = order.shipping_address || 'N/A';
-    const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-
     let currentYBill = 56;
+    doc.setFont("helvetica", "bold");
     doc.text(billName, 14, currentYBill); currentYBill += 5;
-    if (billEmail) { doc.text(billEmail, 14, currentYBill); currentYBill += 5; }
-    if (billPhone) { doc.text(billPhone, 14, currentYBill); currentYBill += 5; }
-    doc.text(billAddress, 14, currentYBill); currentYBill += 5;
+    doc.setFont("helvetica", "normal");
+    if (billAddress !== 'N/A') { doc.text(billAddress, 14, currentYBill); currentYBill += 5; }
     if (billCityState) { doc.text(billCityState, 14, currentYBill); currentYBill += 5; }
 
     let currentYShip = 56;
+    doc.setFont("helvetica", "bold");
     doc.text(shipName, 110, currentYShip); currentYShip += 5;
-    if (shipEmail) { doc.text(shipEmail, 110, currentYShip); currentYShip += 5; }
-    if (shipPhone) { doc.text(shipPhone, 110, currentYShip); currentYShip += 5; }
-    doc.text(shipAddress, 110, currentYShip); currentYShip += 5;
+    doc.setFont("helvetica", "normal");
+    if (isB2B && agencyName) { doc.text(`c/o ${agencyName}`, 110, currentYShip); currentYShip += 5; }
+    if (shipAddress !== 'N/A') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
     if (shipCityState) { doc.text(shipCityState, 110, currentYShip); currentYShip += 5; }
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    const tableRows = order.order_items?.map(item => [
-      `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.products?.base_sku || item.product_variants?.sku || 'N/A'}`,
-      item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}`
-    ]) || [];
+    const tableRows = order.order_items?.map(item => {
+      const productName = item.product_variants?.products?.name || item.product_variants?.name || 'Item';
+      const variantName = item.product_variants?.name || 'N/A';
+      const sku = item.product_variants?.sku || 'N/A';
+      return [
+        `${productName}\nVariant: ${variantName}\nSKU: ${sku}`,
+        item.quantity_variants, 
+        `$${Number(item.unit_price || 0).toFixed(2)}`, 
+        `$${Number(item.line_total || 0).toFixed(2)}`
+      ];
+    }) || [];
 
     autoTable(doc, {
-      startY: maxAddressY + 5,
+      startY: maxAddressY + 10,
       head: [["DESCRIPTION", "QTY", "UNIT PRICE", "TOTAL"]],
       body: tableRows,
       theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
@@ -227,9 +266,15 @@ export default function AdminOrders() {
     doc.setFont("helvetica", "bold");
     doc.text("Grand Total:", 140, finalY + 30); doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
 
+    // Footer
     const pageHeight = doc.internal.pageSize.height;
-    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(100, 100, 100);
-    doc.text("Thank you for your business!", 105, pageHeight - 20, { align: "center" });
+    doc.setFontSize(9); doc.setFont("helvetica", "bold");
+    doc.text("Thank you for your business!", 105, pageHeight - 30, { align: "center" });
+    doc.setFont("helvetica", "normal");
+    doc.text("TRICORE MEDICAL SUPPLY", 105, pageHeight - 24, { align: "center" });
+    doc.text("2169 Harbor St, Pittsburg CA 94565, United States", 105, pageHeight - 19, { align: "center" });
+    doc.text("info@tricoremedicalsupply.com", 105, pageHeight - 14, { align: "center" });
+    doc.text("www.tricoremedicalsupply.com", 105, pageHeight - 9, { align: "center" });
 
     doc.save(`Invoice_${orderNum}.pdf`);
   };
@@ -355,9 +400,16 @@ export default function AdminOrders() {
                 const shipAddress = order.shipping_address || 'No shipping address provided';
                 const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
 
-                const driverParts = (order.driver_name || '').split(' | ');
+                // 🚀 SMART PARSER: Handles both old "Name | Phone" and new "Name Only" database entries
+                const rawDriverName = order.driver_name || '';
+                const driverParts = rawDriverName.split(' | ');
                 const displayDriverName = driverParts[0];
-                const displayDriverPhone = driverParts[1] || '';
+                let displayDriverPhone = driverParts[1] || '';
+
+                if (!displayDriverPhone && displayDriverName) {
+                  const assignedDriverObj = drivers.find(d => d.full_name === displayDriverName);
+                  displayDriverPhone = assignedDriverObj?.contact_number || '';
+                }
 
                 // Calculate Net 30 Due Date
                 const isNet30 = order.payment_method === 'net_30';
@@ -575,12 +627,12 @@ export default function AdminOrders() {
                                       {displayDriverPhone && (
                                         <div>
                                           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p>
-                                          <p className="font-medium text-slate-700 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p>
+                                          <p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p>
                                         </div>
                                       )}
                                       <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p>
-                                        <p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name}</p>
+                                        <p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p>
                                       </div>
                                       {order.vehicle_license && (
                                         <div>
@@ -621,8 +673,6 @@ export default function AdminOrders() {
                   <User className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                   <select required value={driverName} onChange={(e) => {
                       setDriverName(e.target.value);
-                      const d = drivers.find(drv => drv.full_name === e.target.value);
-                      setDriverPhone(d?.contact_number || '');
                     }} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold cursor-pointer appearance-none transition-all">
                     <option value="" disabled>-- Select a Driver from Staff Directory --</option>
                     {drivers.map(d => (<option key={d.id} value={d.full_name}>{d.full_name}</option>))}

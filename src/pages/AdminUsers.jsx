@@ -28,6 +28,7 @@ export default function AdminUsers() {
   const [showAddRetailModal, setShowAddRetailModal] = useState(false);
   const [showEditAgencyModal, setShowEditAgencyModal] = useState(false);
   const [creditLimitModal, setCreditLimitModal] = useState({ show: false, companyId: null, companyName: '', limit: '' });
+  const [shippingFeeModal, setShippingFeeModal] = useState({ show: false, companyId: null, companyName: '', fee: '' });
   
   // Pricing Modal States
   const [showPricingModal, setShowPricingModal] = useState(false);
@@ -48,7 +49,7 @@ export default function AdminUsers() {
 
   // Forms
   const [staffForm, setStaffForm] = useState({ full_name: '', email: '', contact_number: '', role: 'Warehouse', password: '', confirm_password: '' });
-  const [b2bForm, setB2bForm] = useState({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '' });
+  const [b2bForm, setB2bForm] = useState({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '', shipping_fee: '' });
   const [retailForm, setRetailForm] = useState({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '', password: '', confirm_password: '' });
   const [editAgencyForm, setEditAgencyForm] = useState({ userId: '', companyId: '', company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_phone: '' });
 
@@ -94,14 +95,14 @@ export default function AdminUsers() {
         return a.full_name?.localeCompare(b.full_name);
       });
 
-      // 🚀 FIXED: Group B2B users by Agency so sub-admins don't clutter the table
+      // Group B2B users by Agency so sub-admins don't clutter the table
       const b2bProfiles = profiles.filter(p => p.role?.toLowerCase() === 'b2b');
       const uniqueB2bMap = new Map();
       
       b2bProfiles.forEach(p => {
         const compId = p.companies?.id;
         if (!compId) {
-          uniqueB2bMap.set(p.id, p); // Keep orphans just in case
+          uniqueB2bMap.set(p.id, p); 
         } else {
           if (!uniqueB2bMap.has(compId)) {
             uniqueB2bMap.set(compId, p);
@@ -199,8 +200,10 @@ export default function AdminUsers() {
     setConfirmAction({ show: false }); setIsSubmitting(true);
     try {
       const rawLimit = Number(confirmAction.data.credit_limit.replace(/,/g, '')) || 0; 
+      const rawShippingFee = Number(confirmAction.data.shipping_fee.replace(/,/g, '')) || 0; 
+      
       const { data: company, error: companyError } = await supabase.from('companies').insert([{
-        name: confirmAction.data.company_name, address: confirmAction.data.address, city: confirmAction.data.city, state: confirmAction.data.state, zip: confirmAction.data.zip, phone: confirmAction.data.admin_phone, email: confirmAction.data.admin_email, account_type: 'B2B', credit_limit: rawLimit
+        name: confirmAction.data.company_name, address: confirmAction.data.address, city: confirmAction.data.city, state: confirmAction.data.state, zip: confirmAction.data.zip, phone: confirmAction.data.admin_phone, email: confirmAction.data.admin_email, account_type: 'B2B', credit_limit: rawLimit, shipping_fee: rawShippingFee
       }]).select().single();
       if (companyError) throw companyError;
 
@@ -208,7 +211,7 @@ export default function AdminUsers() {
       const { error: authError } = await tempSupabase.auth.signUp({ email: confirmAction.data.admin_email, password: confirmAction.data.password, options: { data: { full_name: confirmAction.data.admin_name, role: 'b2b', contact_number: confirmAction.data.admin_phone, company_id: company.id } } });
       if (authError) throw authError;
 
-      setTimeout(() => { fetchUsers(); setShowAddB2bModal(false); setB2bForm({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '' }); showToast('Agency account created successfully!'); setIsSubmitting(false); }, 1500);
+      setTimeout(() => { fetchUsers(); setShowAddB2bModal(false); setB2bForm({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '', shipping_fee: '' }); showToast('Agency account created successfully!'); setIsSubmitting(false); }, 1500);
     } catch (error) { showToast(error.message, true); setIsSubmitting(false); }
   };
 
@@ -251,6 +254,17 @@ export default function AdminUsers() {
       if (error) throw error;
       setB2bList(prev => prev.map(u => { if (u.companies?.id === creditLimitModal.companyId) { return { ...u, companies: { ...u.companies, credit_limit: newLimit } }; } return u; }));
       showToast('Credit limit updated successfully!'); setCreditLimitModal({ show: false, companyId: null, companyName: '', limit: '' });
+    } catch (err) { showToast('Failed to update: ' + err.message, true); } finally { setIsSubmitting(false); }
+  };
+
+  const handleSaveShippingFee = async (e) => {
+    e.preventDefault(); setIsSubmitting(true);
+    try {
+      const newFee = Number(shippingFeeModal.fee.replace(/,/g, '')); 
+      const { error } = await supabase.from('companies').update({ shipping_fee: newFee }).eq('id', shippingFeeModal.companyId);
+      if (error) throw error;
+      setB2bList(prev => prev.map(u => { if (u.companies?.id === shippingFeeModal.companyId) { return { ...u, companies: { ...u.companies, shipping_fee: newFee } }; } return u; }));
+      showToast('Shipping fee updated successfully!'); setShippingFeeModal({ show: false, companyId: null, companyName: '', fee: '' });
     } catch (err) { showToast('Failed to update: ' + err.message, true); } finally { setIsSubmitting(false); }
   };
 
@@ -577,6 +591,7 @@ export default function AdminUsers() {
                             <>
                               <button onClick={() => { setActiveMenuId(null); openPricingModal(user.companies); }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-3"><DollarSign size={16} className="text-slate-400" /> Manage Pricing</button>
                               <button onClick={() => { setActiveMenuId(null); setCreditLimitModal({ show: true, companyId: user.companies.id, companyName: user.companies.name, limit: formatNumberInput((user.companies.credit_limit || 0).toString()) }); }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-3"><Wallet size={16} className="text-slate-400" /> Edit Credit Limit</button>
+                              <button onClick={() => { setActiveMenuId(null); setShippingFeeModal({ show: true, companyId: user.companies.id, companyName: user.companies.name, fee: formatNumberInput((user.companies.shipping_fee || 0).toString()) }); }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-3"><Truck size={16} className="text-slate-400" /> Edit Shipping Fee</button>
                               <button onClick={() => { setActiveMenuId(null); setEditAgencyForm({ userId: user.id, companyId: user.companies.id, company_name: user.companies.name, address: user.companies.address || '', city: user.companies.city || '', state: user.companies.state || '', zip: user.companies.zip || '', admin_name: user.full_name || '', admin_phone: user.contact_number || '' }); setShowEditAgencyModal(true); }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-3"><Edit size={16} className="text-slate-400" /> Edit Agency Profile</button>
                               <div className="h-px w-full bg-slate-100 my-1"></div>
                             </>
@@ -701,11 +716,20 @@ export default function AdminUsers() {
                     <div className="col-span-1"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">ZIP Code</label><input type="text" required value={b2bForm.zip} onChange={e => setB2bForm({...b2bForm, zip: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div>
                   </div>
 
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Initial Credit Limit ($)</label>
-                    <div className="relative">
-                      <DollarSign className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                      <input type="text" placeholder="Leave blank for $0 (No Credit)" value={b2bForm.credit_limit} onChange={e => setB2bForm({...b2bForm, credit_limit: formatNumberInput(e.target.value)})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-900 transition-all" />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Initial Credit Limit ($)</label>
+                      <div className="relative">
+                        <DollarSign className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                        <input type="text" placeholder="Leave blank for $0 (No Credit)" value={b2bForm.credit_limit} onChange={e => setB2bForm({...b2bForm, credit_limit: formatNumberInput(e.target.value)})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-900 transition-all" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Default Shipping Fee ($)</label>
+                      <div className="relative">
+                        <DollarSign className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                        <input type="text" placeholder="Leave blank for $0 (Free Shipping)" value={b2bForm.shipping_fee} onChange={e => setB2bForm({...b2bForm, shipping_fee: formatNumberInput(e.target.value)})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-900 transition-all" />
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -782,6 +806,34 @@ export default function AdminUsers() {
               <div className="mt-8 flex gap-3">
                 <button type="button" onClick={() => setCreditLimitModal({ show: false, companyId: null, companyName: '', limit: '' })} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button>
                 <button type="submit" disabled={isSubmitting} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all">{isSubmitting ? 'Saving...' : 'Save Limit'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- EDIT SHIPPING FEE MODAL --- */}
+      {shippingFeeModal.show && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm border border-slate-100 overflow-hidden">
+            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <h3 className="text-lg font-bold text-slate-900 tracking-tight">Update Shipping Fee</h3>
+              <button onClick={() => setShippingFeeModal({ show: false, companyId: null, companyName: '', fee: '' })} className="p-1 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
+            </div>
+            <form onSubmit={handleSaveShippingFee} className="p-6">
+              <p className="text-sm text-slate-500 mb-5">Adjust the flat shipping rate for <span className="font-bold text-slate-900">{shippingFeeModal.companyName}</span>.</p>
+              
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Shipping Fee ($)</label>
+                <div className="relative">
+                  <DollarSign className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input type="text" required value={shippingFeeModal.fee} onChange={e => setShippingFeeModal({...shippingFeeModal, fee: formatNumberInput(e.target.value)})} className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-lg font-bold text-slate-900 shadow-sm transition-all" autoFocus />
+                </div>
+              </div>
+
+              <div className="mt-8 flex gap-3">
+                <button type="button" onClick={() => setShippingFeeModal({ show: false, companyId: null, companyName: '', fee: '' })} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button>
+                <button type="submit" disabled={isSubmitting} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all">{isSubmitting ? 'Saving...' : 'Save Fee'}</button>
               </div>
             </form>
           </div>

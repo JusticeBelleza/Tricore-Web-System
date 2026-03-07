@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { 
   Package, Receipt, ChevronDown, Calendar, Hash, 
-  CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown
+  CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -13,6 +13,7 @@ export default function MyOrders() {
   const { profile } = useAuth();
   const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
+  const [drivers, setDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
 
@@ -44,9 +45,14 @@ export default function MyOrders() {
         query = query.eq('user_id', profile.id);
       }
 
-      const { data, error } = await query;
-      if (error) throw error;
-      setOrders(data || []);
+      const [ordersRes, driversRes] = await Promise.all([
+        query,
+        supabase.from('user_profiles').select('full_name, contact_number').eq('role', 'driver')
+      ]);
+
+      if (ordersRes.error) throw ordersRes.error;
+      setOrders(ordersRes.data || []);
+      setDrivers(driversRes.data || []);
     } catch (error) {
       console.error('Error fetching orders:', error.message);
     } finally {
@@ -76,96 +82,124 @@ export default function MyOrders() {
     return null;
   };
 
+  // --- SAFE IMAGE LOADER FOR jsPDF ---
+  const getBase64ImageFromUrl = (imageUrl) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "Anonymous";
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const dataURL = canvas.toDataURL("image/png");
+        resolve({ dataURL, width: img.width, height: img.height });
+      };
+      img.onerror = () => resolve(null);
+      img.src = imageUrl;
+    });
+  };
+
   // --- DYNAMIC INVOICE PDF GENERATOR ---
-  const generateInvoice = (order) => {
+  const generateInvoice = async (order) => {
     const doc = new jsPDF();
     const orderNum = order.id.substring(0, 8).toUpperCase();
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-    // Header
-    doc.setFontSize(22);
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(15, 23, 42); 
-    doc.text("INVOICE", 14, 22);
+    // 1. Fetch and Stamp Transparent Logo
+    const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
+    if (logoData) {
+      const imgWidth = 45; 
+      const imgHeight = (logoData.height * imgWidth) / logoData.width; 
+      doc.addImage(logoData.dataURL, 'PNG', 14, 12, imgWidth, imgHeight); 
+    } else {
+      doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
+      doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
+    }
     
-    doc.setFontSize(10);
-    doc.setFont("helvetica", "normal");
-    doc.text("TriCore MEDICAL SUPPLY", 14, 30);
-    doc.text("2169 Harbor St, Pittsburg CA 94565", 14, 35);
+    // Order Info
+    doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
+    doc.text("INVOICE", 140, 18);
     
-    // Order Details Box
-    doc.setFont("helvetica", "bold");
-    doc.text(`Invoice #: INV-${orderNum}`, 140, 22);
-    doc.setFont("helvetica", "normal");
-    doc.text(`Date: ${datePlaced}`, 140, 28);
+    doc.setFontSize(10); doc.setFont("helvetica", "normal");
+    doc.setFont("helvetica", "bold"); doc.text(`Invoice #: INV-${orderNum}`, 140, 24);
+    doc.setFont("helvetica", "normal"); doc.text(`Date: ${datePlaced}`, 140, 29);
     doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34);
 
-    // Addresses
+    const isB2B = !!order.company_id;
+    const agencyName = order.companies?.name || '';
+
+    // --- LOGIC: Agency = Bill To, Patient = Ship To ---
+    const shipName = order.shipping_name || (isB2B ? 'Patient' : profile?.full_name || 'Retail Customer');
+    const shipAddress = order.shipping_address || 'No Address Provided';
+    const shipCityState = [order.shipping_city, order.shipping_state, order.shipping_zip].filter(Boolean).join(' ');
+
+    const billName = isB2B ? agencyName : shipName;
+    const billAddress = isB2B ? (order.companies?.address || 'No Address Provided') : shipAddress;
+    const billCityState = isB2B 
+      ? [order.companies?.city, order.companies?.state, order.companies?.zip].filter(Boolean).join(' ') 
+      : shipCityState;
+
     doc.setFont("helvetica", "bold");
-    doc.text("BILL TO:", 14, 50);
-    doc.text("SHIP TO:", 110, 50);
-
-    doc.setFont("helvetica", "normal");
-    const billName = order.companies?.name || profile?.full_name || 'Retail Customer';
-    const billAddress = order.companies?.address || 'N/A';
-    const billCityState = order.companies ? `${order.companies.city || ''}, ${order.companies.state || ''} ${order.companies.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '') : '';
+    doc.text("BILL TO:", 14, 50); doc.text("SHIP TO:", 110, 50);
     
-    const shipName = order.shipping_name || billName;
-    const shipAddress = order.shipping_address || 'N/A';
-    const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
+    doc.setFont("helvetica", "normal");
+    let currentYBill = 56;
+    doc.setFont("helvetica", "bold");
+    doc.text(billName, 14, currentYBill); currentYBill += 5;
+    doc.setFont("helvetica", "normal");
+    if (billAddress !== 'N/A') { doc.text(billAddress, 14, currentYBill); currentYBill += 5; }
+    if (billCityState) { doc.text(billCityState, 14, currentYBill); currentYBill += 5; }
 
-    doc.text(billName, 14, 56);
-    doc.text(billAddress, 14, 61);
-    if (billCityState) doc.text(billCityState, 14, 66);
+    let currentYShip = 56;
+    doc.setFont("helvetica", "bold");
+    doc.text(shipName, 110, currentYShip); currentYShip += 5;
+    doc.setFont("helvetica", "normal");
+    if (isB2B && agencyName) { doc.text(`c/o ${agencyName}`, 110, currentYShip); currentYShip += 5; }
+    if (shipAddress !== 'N/A') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
+    if (shipCityState) { doc.text(shipCityState, 110, currentYShip); currentYShip += 5; }
 
-    doc.text(shipName, 110, 56);
-    doc.text(shipAddress, 110, 61);
-    if (shipCityState) doc.text(shipCityState, 110, 66);
+    const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    // Items Table
-    const tableRows = order.order_items?.map(item => [
-      `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.products?.base_sku || item.product_variants?.sku || 'N/A'}`,
-      item.quantity_variants,
-      `$${Number(item.unit_price || 0).toFixed(2)}`,
-      `$${Number(item.line_total || 0).toFixed(2)}`
-    ]) || [];
+    const tableRows = order.order_items?.map(item => {
+      const productName = item.product_variants?.products?.name || item.product_variants?.name || 'Item';
+      const variantName = item.product_variants?.name || 'N/A';
+      const sku = item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A';
+      return [
+        `${productName}\nVariant: ${variantName}\nSKU: ${sku}`,
+        item.quantity_variants, 
+        `$${Number(item.unit_price || 0).toFixed(2)}`, 
+        `$${Number(item.line_total || 0).toFixed(2)}`
+      ];
+    }) || [];
 
     autoTable(doc, {
-      startY: 75,
+      startY: maxAddressY + 10,
       head: [["DESCRIPTION", "QTY", "UNIT PRICE", "TOTAL"]],
       body: tableRows,
-      theme: 'striped',
-      headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
-      styles: { fontSize: 10, cellPadding: 5 },
-      columnStyles: {
-        0: { cellWidth: 100 },
-        1: { halign: 'center' },
-        2: { halign: 'right' },
-        3: { halign: 'right' }
-      }
+      theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
+      styles: { fontSize: 10, cellPadding: 5 }, columnStyles: { 0: { cellWidth: 100 }, 1: { halign: 'center' }, 2: { halign: 'right' }, 3: { halign: 'right' } }
     });
 
-    const finalY = doc.lastAutoTable.finalY || 80;
-
-    // Totals
+    const finalY = doc.lastAutoTable.finalY || maxAddressY + 10;
     doc.setFont("helvetica", "normal");
-    doc.text("Subtotal:", 140, finalY + 10);
-    doc.text(`$${Number(order.subtotal || 0).toFixed(2)}`, 180, finalY + 10, { align: 'right' });
-    doc.text("Shipping:", 140, finalY + 16);
-    doc.text(`$${Number(order.shipping_amount || 0).toFixed(2)}`, 180, finalY + 16, { align: 'right' });
-    doc.text("Tax:", 140, finalY + 22);
-    doc.text(`$${Number(order.tax_amount || 0).toFixed(2)}`, 180, finalY + 22, { align: 'right' });
+    doc.text("Subtotal:", 140, finalY + 10); doc.text(`$${Number(order.subtotal || 0).toFixed(2)}`, 180, finalY + 10, { align: 'right' });
+    doc.text("Shipping:", 140, finalY + 16); doc.text(`$${Number(order.shipping_amount || 0).toFixed(2)}`, 180, finalY + 16, { align: 'right' });
+    doc.text("Tax:", 140, finalY + 22); doc.text(`$${Number(order.tax_amount || 0).toFixed(2)}`, 180, finalY + 22, { align: 'right' });
     
     doc.setFont("helvetica", "bold");
-    doc.text("Grand Total:", 140, finalY + 30);
-    doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
+    doc.text("Grand Total:", 140, finalY + 30); doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
 
     // Footer
     const pageHeight = doc.internal.pageSize.height;
+    doc.setFontSize(9); doc.setFont("helvetica", "bold");
+    doc.text("Thank you for your business!", 105, pageHeight - 30, { align: "center" });
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
-    doc.setTextColor(100, 100, 100);
-    doc.text("Thank you for your business!", 105, pageHeight - 20, { align: "center" });
+    doc.text("TRICORE MEDICAL SUPPLY", 105, pageHeight - 24, { align: "center" });
+    doc.text("2169 Harbor St, Pittsburg CA 94565, United States", 105, pageHeight - 19, { align: "center" });
+    doc.text("info@tricoremedicalsupply.com", 105, pageHeight - 14, { align: "center" });
+    doc.text("www.tricoremedicalsupply.com", 105, pageHeight - 9, { align: "center" });
 
     doc.save(`Invoice_${orderNum}.pdf`);
   };
@@ -222,6 +256,17 @@ export default function MyOrders() {
               {orders.map((order) => {
                 const isExpanded = expandedOrderId === order.id;
                 const shortId = order.id.split('-')[0].toUpperCase();
+
+                // 🚀 SMART PARSER: Handles extracting driver info
+                const rawDriverName = order.driver_name || '';
+                const driverParts = rawDriverName.split(' | ');
+                const displayDriverName = driverParts[0];
+                let displayDriverPhone = driverParts[1] || '';
+
+                if (!displayDriverPhone && displayDriverName) {
+                  const assignedDriverObj = drivers.find(d => d.full_name === displayDriverName);
+                  displayDriverPhone = assignedDriverObj?.contact_number || '';
+                }
                 
                 return (
                   <React.Fragment key={order.id}>
@@ -351,9 +396,26 @@ export default function MyOrders() {
                                       <Truck size={16} className="text-slate-400" /> Delivery Details
                                     </h4>
                                     <div className="space-y-3 text-sm">
-                                      <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p><p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {order.driver_name}</p></div>
-                                      <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p><p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p></div>
-                                      {order.vehicle_license && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p><p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p></div>}
+                                      <div>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p>
+                                        <p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p>
+                                      </div>
+                                      {displayDriverPhone && (
+                                        <div>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p>
+                                          <p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p>
+                                        </div>
+                                      )}
+                                      <div>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p>
+                                        <p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p>
+                                      </div>
+                                      {order.vehicle_license && (
+                                        <div>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p>
+                                          <p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p>
+                                        </div>
+                                      )}
                                     </div>
                                   </div>
                                 )}
