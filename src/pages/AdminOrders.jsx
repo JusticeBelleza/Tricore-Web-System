@@ -88,7 +88,6 @@ export default function AdminOrders() {
     }
   };
 
-  // --- MARK AS PAID LOGIC ---
   const handleMarkAsPaid = (orderId) => {
     setConfirmAction({
       show: true,
@@ -235,7 +234,6 @@ export default function AdminOrders() {
     doc.save(`Invoice_${orderNum}.pdf`);
   };
 
-  // 🚀 FIXED: Defined getDisplayName to prevent the rendering crash!
   const getDisplayName = (order) => {
     if (order.companies?.name) {
       return order.companies.name;
@@ -573,10 +571,23 @@ export default function AdminOrders() {
                                       <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p>
                                         <p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p>
-                                        {displayDriverPhone && <p className="font-medium text-slate-600 flex items-center gap-1.5 mt-1"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p>}
                                       </div>
-                                      <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p><p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name}</p></div>
-                                      {order.vehicle_license && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p><p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p></div>}
+                                      {displayDriverPhone && (
+                                        <div>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p>
+                                          <p className="font-medium text-slate-700 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p>
+                                        </div>
+                                      )}
+                                      <div>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p>
+                                        <p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name}</p>
+                                      </div>
+                                      {order.vehicle_license && (
+                                        <div>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p>
+                                          <p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p>
+                                        </div>
+                                      )}
                                     </div>
                                   </div>
                                 )}
