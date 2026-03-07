@@ -1,28 +1,42 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext'; // NEW: We pull the logged in driver!
-import { Search, MapPin, Truck, CheckCircle2, Navigation, PackageCheck, User, Car, Hash } from 'lucide-react';
+import { useAuth } from '../lib/AuthContext';
+import { 
+  MapPin, Phone, User, Package, CheckCircle2, 
+  Camera, PenTool, X, UploadCloud, Truck, Navigation
+} from 'lucide-react';
 
 export default function DriverRoutes() {
-  const { profile } = useAuth(); // NEW: Get the currently logged in profile
-  
+  const { profile } = useAuth();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [activeTab, setActiveTab] = useState('ready_for_delivery'); 
+  
+  const [activeOrder, setActiveOrder] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [photoFile, setPhotoFile] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const canvasRef = useRef(null);
 
   useEffect(() => {
-    // Only fetch if profile exists to prevent fetching the wrong data
-    if (profile) fetchDriverOrders();
-  }, [profile]);
+    if (profile?.id) {
+      fetchMyRoutes();
+    }
+  }, [profile?.id]);
 
-  const fetchDriverOrders = async () => {
+  const fetchMyRoutes = async () => {
     setLoading(true);
     try {
       const { data, error } = await supabase
         .from('orders')
-        .select(`*, companies ( name, address, city, state, zip )`)
-        .in('status', ['ready_for_delivery', 'shipped'])
+        .select(`
+          *,
+          companies ( name, address, city, state, zip, phone ),
+          agency_patients ( contact_number ),
+          user_profiles ( contact_number )
+        `)
+        .in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery'])
+        .ilike('driver_name', `${profile.full_name}%`) 
         .order('created_at', { ascending: false });
 
       if (error) throw error;
@@ -34,101 +48,275 @@ export default function DriverRoutes() {
     }
   };
 
-  const getDisplayName = (order) => {
-    if (order.companies?.name) return order.patient_name ? `${order.companies.name} - ${order.patient_name}` : order.companies.name;
-    return order.customer_name || 'Retail Customer';
-  };
-
-  const acceptDelivery = async (orderId) => {
-    if(!window.confirm("Start route? This will mark the order as Out For Delivery.")) return;
-    try {
-      const { error } = await supabase.from('orders').update({ status: 'shipped' }).eq('id', orderId);
-      if (error) throw error;
-      setOrders(orders.map(o => o.id === orderId ? { ...o, status: 'shipped' } : o));
-    } catch (error) {
-      alert('Failed to start route.');
+  const handlePhotoCapture = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setPhotoFile(file);
+      const previewUrl = URL.createObjectURL(file);
+      setPhotoPreview(previewUrl);
     }
   };
 
-  // NEW: Filters out orders NOT assigned to the currently logged in driver
-  const displayedOrders = orders.filter(o => {
-    const isMyRoute = o.driver_name === profile?.full_name; // Strict security filter
-    const isCorrectTab = o.status === activeTab;
-    const matchesSearch = o.id.toLowerCase().includes(searchTerm.toLowerCase()) || getDisplayName(o).toLowerCase().includes(searchTerm.toLowerCase());
-    
-    return isMyRoute && isCorrectTab && matchesSearch;
-  });
+  useEffect(() => {
+    if (!activeOrder || !canvasRef.current) return;
 
-  if (loading) return <div className="text-slate-500 font-medium">Loading routes...</div>;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+
+    canvas.width = canvas.offsetWidth * 2; 
+    canvas.height = canvas.offsetHeight * 2;
+    ctx.scale(2, 2); 
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#0f172a'; 
+
+    let isDrawing = false;
+
+    const getPos = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.touches && e.touches.length > 0 ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches && e.touches.length > 0 ? e.touches[0].clientY : e.clientY;
+      return { x: clientX - rect.left, y: clientY - rect.top };
+    };
+
+    const startPos = (e) => {
+      e.preventDefault(); 
+      isDrawing = true;
+      const pos = getPos(e);
+      ctx.beginPath();
+      ctx.moveTo(pos.x, pos.y);
+    };
+
+    const movePos = (e) => {
+      e.preventDefault(); 
+      if (!isDrawing) return;
+      const pos = getPos(e);
+      ctx.lineTo(pos.x, pos.y);
+      ctx.stroke();
+    };
+
+    const stopPos = (e) => {
+      e.preventDefault();
+      isDrawing = false;
+    };
+
+    canvas.addEventListener('mousedown', startPos, { passive: false });
+    canvas.addEventListener('mousemove', movePos, { passive: false });
+    canvas.addEventListener('mouseup', stopPos, { passive: false });
+    canvas.addEventListener('mouseleave', stopPos, { passive: false });
+    canvas.addEventListener('touchstart', startPos, { passive: false });
+    canvas.addEventListener('touchmove', movePos, { passive: false });
+    canvas.addEventListener('touchend', stopPos, { passive: false });
+    canvas.addEventListener('touchcancel', stopPos, { passive: false });
+
+    return () => {
+      canvas.removeEventListener('mousedown', startPos);
+      canvas.removeEventListener('mousemove', movePos);
+      canvas.removeEventListener('mouseup', stopPos);
+      canvas.removeEventListener('mouseleave', stopPos);
+      canvas.removeEventListener('touchstart', startPos);
+      canvas.removeEventListener('touchmove', movePos);
+      canvas.removeEventListener('touchend', stopPos);
+      canvas.removeEventListener('touchcancel', stopPos);
+    };
+  }, [activeOrder]);
+
+  const clearSignature = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  };
+
+  const submitDelivery = async () => {
+    const canvas = canvasRef.current;
+    const blank = document.createElement('canvas');
+    blank.width = canvas.width;
+    blank.height = canvas.height;
+    if (canvas.toDataURL() === blank.toDataURL()) {
+      alert('Please have the customer sign to confirm delivery.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      let photoUrlStr = null;
+      let signatureUrlStr = null;
+      const uniquePrefix = `${Date.now()}-${activeOrder.id}`;
+
+      if (photoFile) {
+        const photoPath = `pod-photos/${uniquePrefix}.jpg`;
+        const { error: photoErr } = await supabase.storage.from('delivery-proofs').upload(photoPath, photoFile);
+        if (photoErr) throw photoErr;
+        photoUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(photoPath).data.publicUrl;
+      }
+
+      const signatureBlob = await (await fetch(canvas.toDataURL('image/png'))).blob();
+      const sigPath = `pod-signatures/${uniquePrefix}.png`;
+      const { error: sigErr } = await supabase.storage.from('delivery-proofs').upload(sigPath, signatureBlob);
+      if (sigErr) throw sigErr;
+      signatureUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(sigPath).data.publicUrl;
+
+      // 🚀 UPDATED: Saves the exact timestamp to updated_at
+      const { error: updateErr } = await supabase.from('orders').update({
+        status: 'delivered',
+        photo_url: photoUrlStr,
+        signature_url: signatureUrlStr,
+        updated_at: new Date().toISOString()
+      }).eq('id', activeOrder.id);
+
+      if (updateErr) throw updateErr;
+
+      setOrders(orders.filter(o => o.id !== activeOrder.id));
+      window.dispatchEvent(new Event('orderStatusChanged'));
+      closeModal();
+      
+    } catch (error) {
+      console.error('Delivery Error:', error.message);
+      alert('Failed to upload delivery proof. Check your connection and try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const closeModal = () => {
+    setActiveOrder(null);
+    setPhotoFile(null);
+    setPhotoPreview(null);
+  };
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto pb-12">
-      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 pb-2">
-        <div><h2 className="text-3xl font-bold text-slate-900 tracking-tight">My Routes</h2><p className="text-sm text-slate-500 mt-2">View your assigned boxes and begin deliveries.</p></div>
+    <div className="max-w-3xl mx-auto space-y-6 pb-24">
+      <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-lg relative overflow-hidden">
+        <div className="relative z-10">
+          <h2 className="text-2xl font-bold tracking-tight">Active Route</h2>
+          <p className="text-slate-300 text-sm mt-1 font-medium">{orders.length} deliveries pending</p>
+        </div>
+        <Truck className="absolute -right-4 -bottom-4 text-white/5" size={120} strokeWidth={1} />
       </div>
 
-      <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
-        <div className="flex gap-2 p-1 bg-slate-50 rounded-xl border border-slate-100 w-full md:w-auto">
-          <button onClick={() => setActiveTab('ready_for_delivery')} className={`flex-1 md:flex-none px-6 py-2.5 text-sm font-bold rounded-lg transition-all ${activeTab === 'ready_for_delivery' ? 'bg-white text-blue-700 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}>Available ({orders.filter(o => o.status === 'ready_for_delivery' && o.driver_name === profile?.full_name).length})</button>
-          <button onClick={() => setActiveTab('shipped')} className={`flex-1 md:flex-none px-6 py-2.5 text-sm font-bold rounded-lg transition-all ${activeTab === 'shipped' ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}>En Route ({orders.filter(o => o.status === 'shipped' && o.driver_name === profile?.full_name).length})</button>
+      {loading ? (
+        <div className="space-y-4">
+          {[1,2,3].map(n => <div key={n} className="h-32 bg-slate-100 animate-pulse rounded-2xl"></div>)}
         </div>
-        <div className="relative w-full md:w-80">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input type="text" placeholder="Search Route or Name..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 outline-none text-sm font-medium transition-all" />
-        </div>
-      </div>
-
-      {displayedOrders.length === 0 ? (
-        <div className="p-16 text-center bg-white rounded-3xl border border-slate-100 shadow-sm mt-6">
-          <Navigation size={48} strokeWidth={1.5} className="mx-auto text-slate-300 mb-4" />
-          <h3 className="text-lg font-bold text-slate-900 mb-1">No Routes Assigned</h3>
-          <p className="text-slate-500 text-sm">Wait for dispatch to assign you a delivery.</p>
+      ) : orders.length === 0 ? (
+        <div className="text-center bg-white p-12 rounded-3xl border border-slate-200 shadow-sm mt-6">
+          <div className="w-16 h-16 bg-emerald-50 text-emerald-500 rounded-full flex items-center justify-center mx-auto mb-4">
+            <CheckCircle2 size={32} />
+          </div>
+          <h3 className="text-xl font-bold text-slate-900 mb-2">Route Complete!</h3>
+          <p className="text-slate-500 text-sm">You have no pending deliveries assigned to you.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
-          {displayedOrders.map(order => {
-            let address = "No Address Provided";
-            if (order.companies && order.companies.address) {
-              address = `${order.companies.address}, ${order.companies.city || ''} ${order.companies.state || ''} ${order.companies.zip || ''}`;
-            }
-            
+        <div className="space-y-4">
+          {orders.map(order => {
+            const isB2B = !!order.company_id;
+            const shipName = order.shipping_name || (isB2B ? order.companies?.name : 'Retail Customer');
+            const shipAddress = order.shipping_address || 'No shipping address provided';
+            const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
+            const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
+            const shortId = order.id.split('-')[0].toUpperCase();
+
+            const fullAddress = `${shipAddress}, ${shipCityState}`;
+            const directionsLink = `http://googleusercontent.com/maps.google.com/8{encodeURIComponent(fullAddress)}`;
+
             return (
-              <div key={order.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-all p-6 flex flex-col">
+              <div key={order.id} className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm active:scale-[0.98] transition-transform">
                 <div className="flex justify-between items-start mb-4">
                   <div>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Order #{order.id.substring(0, 8).toUpperCase()}</p>
-                    <h3 className="text-lg font-bold text-slate-900 leading-tight">{getDisplayName(order)}</h3>
+                    <span className="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg text-[10px] uppercase tracking-widest font-bold">#{shortId}</span>
+                    <h3 className="text-lg font-bold text-slate-900 mt-2 leading-tight">{shipName}</h3>
                   </div>
-                  {activeTab === 'ready_for_delivery' ? <span className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center text-blue-600 border border-blue-100"><PackageCheck size={16}/></span> : <span className="w-8 h-8 rounded-full bg-green-50 flex items-center justify-center text-green-600 border border-green-100"><CheckCircle2 size={16}/></span>}
-                </div>
-                
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 mb-4 flex gap-3">
-                  <MapPin size={18} className="text-slate-400 shrink-0 mt-0.5" />
-                  <p className="text-sm font-medium text-slate-700 leading-relaxed">{address}</p>
                 </div>
 
-                <div className="mb-6 space-y-2 border-t border-slate-100 pt-4">
-                  <p className="text-xs text-slate-500 flex items-center justify-between">
-                    <span className="flex items-center gap-2"><User size={14} className="text-slate-400"/> <span className="font-semibold text-slate-700">{order.driver_name || 'Assigned to You'}</span></span>
-                    <span className="font-mono text-slate-400">Driver</span>
-                  </p>
-                  
-                  <div className="bg-slate-50 rounded-lg p-3 space-y-2 border border-slate-100">
-                    <div className="flex justify-between items-start gap-2">
-                      <p className="text-xs font-semibold text-slate-700 flex items-center gap-2"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Vehicle'} ({order.vehicle_type || 'Type'})</p>
-                      <p className="text-[10px] font-mono font-bold text-slate-600 tracking-wider bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-sm">{order.vehicle_license || 'NO-PLATE'}</p>
+                <div className="space-y-2 mb-6">
+                  <div className="flex items-start gap-2.5 text-sm font-medium text-slate-600">
+                    <MapPin size={16} className="text-slate-400 mt-0.5 shrink-0"/>
+                    <div>
+                      <p>{shipAddress}</p>
+                      <p>{shipCityState}</p>
                     </div>
                   </div>
+                  {shipPhone && (
+                    <div className="flex items-center gap-2.5 text-sm font-medium text-slate-600">
+                      <Phone size={16} className="text-slate-400 shrink-0"/>
+                      <a href={`tel:${shipPhone}`} className="text-blue-600 underline underline-offset-2">{shipPhone}</a>
+                    </div>
+                  )}
                 </div>
 
-                {activeTab === 'ready_for_delivery' ? (
-                  <button onClick={() => acceptDelivery(order.id)} className="mt-auto w-full py-4 rounded-xl text-sm font-bold bg-slate-900 text-white hover:bg-slate-800 transition-all shadow-md flex items-center justify-center gap-2"><Truck size={18} /> Accept & Start Route</button>
-                ) : (
-                  <button disabled className="mt-auto w-full py-3 rounded-xl text-sm font-bold bg-slate-50 text-slate-400 border border-slate-200 cursor-not-allowed flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Out for Delivery</button>
-                )}
+                <div className="flex gap-3 mt-2">
+                  <a 
+                    href={directionsLink} 
+                    target="_blank" 
+                    rel="noreferrer" 
+                    className="flex-1 py-3.5 bg-blue-600 text-white text-sm font-bold rounded-xl shadow-md hover:bg-blue-700 active:scale-95 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Navigation size={18} /> Directions
+                  </a>
+                  <button 
+                    onClick={() => setActiveOrder(order)}
+                    className="flex-1 py-3.5 bg-slate-900 text-white text-sm font-bold rounded-xl shadow-md hover:bg-slate-800 active:bg-slate-950 transition-all flex items-center justify-center gap-2"
+                  >
+                    <CheckCircle2 size={18} /> Complete
+                  </button>
+                </div>
               </div>
             );
           })}
+        </div>
+      )}
+
+      {activeOrder && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white w-full sm:max-w-md h-[90vh] sm:h-auto sm:max-h-[90vh] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col animate-in slide-in-from-bottom-10">
+            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center shrink-0">
+              <h3 className="text-lg font-bold text-slate-900 tracking-tight">Proof of Delivery</h3>
+              <button onClick={closeModal} className="p-2 text-slate-400 hover:text-slate-900 bg-slate-50 rounded-full active:scale-95"><X size={20} /></button>
+            </div>
+
+            <div className="p-6 overflow-y-auto flex-1 space-y-6">
+              <div className="space-y-3">
+                <label className="flex items-center gap-2 text-sm font-bold text-slate-900 uppercase tracking-wider">
+                  <Camera size={16} className="text-blue-600" /> 1. Take Photo (Optional)
+                </label>
+                {photoPreview ? (
+                  <div className="relative w-full h-48 rounded-xl overflow-hidden border-2 border-slate-200 shadow-sm">
+                    <img src={photoPreview} alt="Preview" className="w-full h-full object-cover" />
+                    <button onClick={() => { setPhotoPreview(null); setPhotoFile(null); }} className="absolute top-2 right-2 p-2 bg-slate-900/50 backdrop-blur text-white rounded-full"><X size={14}/></button>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <input type="file" accept="image/*" capture="environment" onChange={handlePhotoCapture} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+                    <div className="w-full h-24 border-2 border-dashed border-slate-300 rounded-xl bg-slate-50 flex flex-col items-center justify-center text-slate-500 gap-1 transition-colors hover:border-slate-400 hover:bg-slate-100">
+                      <Camera size={24} />
+                      <span className="text-xs font-bold uppercase tracking-widest">Tap to Open Camera</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="h-px w-full bg-slate-100"></div>
+
+              <div className="space-y-3">
+                <div className="flex justify-between items-end">
+                  <label className="flex items-center gap-2 text-sm font-bold text-slate-900 uppercase tracking-wider">
+                    <PenTool size={16} className="text-purple-600" /> 2. Customer Signature
+                  </label>
+                  <button onClick={clearSignature} className="text-xs font-bold text-slate-400 hover:text-slate-900 underline underline-offset-2">Clear</button>
+                </div>
+                <div className="relative w-full h-48 border-2 border-slate-200 rounded-xl bg-slate-50 overflow-hidden shadow-inner">
+                  <canvas ref={canvasRef} className="absolute inset-0 w-full h-full cursor-crosshair" style={{ touchAction: 'none' }} />
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 border-t border-slate-100 bg-slate-50 rounded-b-3xl shrink-0">
+              <button onClick={submitDelivery} disabled={isSubmitting} className="w-full py-4 bg-emerald-600 text-white text-base font-bold rounded-xl shadow-md hover:bg-emerald-700 active:scale-95 transition-all flex justify-center items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed">
+                {isSubmitting ? <span className="animate-pulse flex items-center gap-2">Uploading Data...</span> : <><UploadCloud size={20} /> Mark as Delivered</>}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

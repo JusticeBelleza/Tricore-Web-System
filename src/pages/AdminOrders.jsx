@@ -16,7 +16,6 @@ export default function AdminOrders() {
   const [drivers, setDrivers] = useState([]); 
   const [loading, setLoading] = useState(true);
   
-  // Interactive Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState('all'); 
   
@@ -33,13 +32,26 @@ export default function AdminOrders() {
   useEffect(() => {
     if (profile?.id) {
       fetchOrdersFleetAndDrivers();
+
+      const sub = supabase.channel('admin_orders_channel')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+          fetchOrdersFleetAndDrivers(); 
+        })
+        .subscribe();
+
+      window.addEventListener('orderStatusChanged', fetchOrdersFleetAndDrivers);
+
+      return () => {
+        supabase.removeChannel(sub);
+        window.removeEventListener('orderStatusChanged', fetchOrdersFleetAndDrivers);
+      };
     }
   }, [profile?.id]);
 
   const fetchOrdersFleetAndDrivers = async () => {
-    setLoading(true);
     try {
       const [ordersRes, fleetRes, driversRes] = await Promise.all([
+        // 🚀 UPDATED: Fetching the updated_at column to use for sorting
         supabase.from('orders').select(`
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
@@ -55,7 +67,6 @@ export default function AdminOrders() {
       setOrders(ordersRes.data || []);
       setFleetVehicles(fleetRes.data || []);
       setDrivers(driversRes.data || []);
-
     } catch (error) {
       console.error('Error fetching data:', error.message);
     } finally {
@@ -64,6 +75,21 @@ export default function AdminOrders() {
   };
 
   const toggleOrderDetails = (orderId) => setExpandedOrderId(expandedOrderId === orderId ? null : orderId);
+
+  const executeOrderStatusUpdate = async (orderId, newStatus) => {
+    try {
+      const { error } = await supabase.from('orders').update({ 
+        status: newStatus,
+        updated_at: new Date().toISOString() 
+      }).eq('id', orderId);
+      
+      if (error) throw error;
+      setNotification({ show: true, isError: false, message: newStatus === 'processing' ? 'Order sent to warehouse.' : 'Order rejected.' });
+      window.dispatchEvent(new Event('orderStatusChanged'));
+    } catch (error) {
+      setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` });
+    }
+  };
 
   const handleStatusChangeClick = (orderId, newStatus) => {
     const isAccepting = newStatus === 'processing';
@@ -78,16 +104,17 @@ export default function AdminOrders() {
     });
   };
 
-  const executeOrderStatusUpdate = async (orderId, newStatus) => {
+  const executeMarkAsPaid = async (orderId) => {
     try {
-      const { error } = await supabase.from('orders').update({ status: newStatus }).eq('id', orderId);
+      const { error } = await supabase.from('orders').update({ 
+        payment_status: 'paid',
+        updated_at: new Date().toISOString() 
+      }).eq('id', orderId);
       if (error) throw error;
-      setOrders(orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
-      setNotification({ show: true, isError: false, message: newStatus === 'processing' ? 'Order sent to warehouse.' : 'Order rejected.' });
-      
+      setNotification({ show: true, isError: false, message: 'Order successfully marked as Paid!' });
       window.dispatchEvent(new Event('orderStatusChanged'));
     } catch (error) {
-      setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` });
+      setNotification({ show: true, isError: true, message: `Failed to update payment status: ${error.message}` });
     }
   };
 
@@ -101,19 +128,6 @@ export default function AdminOrders() {
         executeMarkAsPaid(orderId);
       }
     });
-  };
-
-  const executeMarkAsPaid = async (orderId) => {
-    try {
-      const { error } = await supabase.from('orders').update({ payment_status: 'paid' }).eq('id', orderId);
-      if (error) throw error;
-      setOrders(orders.map(o => o.id === orderId ? { ...o, payment_status: 'paid' } : o));
-      setNotification({ show: true, isError: false, message: 'Order successfully marked as Paid!' });
-      
-      window.dispatchEvent(new Event('orderStatusChanged'));
-    } catch (error) {
-      setNotification({ show: true, isError: true, message: `Failed to update payment status: ${error.message}` });
-    }
   };
 
   const openAssignModal = (order) => {
@@ -152,15 +166,15 @@ export default function AdminOrders() {
         driver_name: finalDriverName || null, 
         vehicle_name: vehicleName || null, 
         vehicle_license: vehicleLicense || null,
-        status: 'shipped' 
+        status: 'shipped',
+        updated_at: new Date().toISOString()
       };
+      
       const { error } = await supabase.from('orders').update(updates).eq('id', assigningOrder.id);
       if (error) throw error;
       
-      setOrders(orders.map(o => o.id === assigningOrder.id ? { ...o, ...updates } : o));
       setAssigningOrder(null); setExpandedOrderId(null); 
       setNotification({ show: true, isError: false, message: 'Driver assigned and order shipped successfully!' });
-      
       window.dispatchEvent(new Event('orderStatusChanged'));
     } catch (error) {
       setNotification({ show: true, isError: true, message: `Failed to dispatch: ${error.message}` });
@@ -177,8 +191,7 @@ export default function AdminOrders() {
         canvas.height = img.height;
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0);
-        const dataURL = canvas.toDataURL("image/png");
-        resolve({ dataURL, width: img.width, height: img.height });
+        resolve({ dataURL: canvas.toDataURL("image/png"), width: img.width, height: img.height });
       };
       img.onerror = () => resolve(null);
       img.src = imageUrl;
@@ -322,6 +335,16 @@ export default function AdminOrders() {
     return matchesSearch && matchesTab;
   });
 
+  // 🚀 UPDATED: Forces the Completed and Dispatch tabs to sort by exact update time
+  const sortedOrders = [...filteredOrders].sort((a, b) => {
+    if (activeTab === 'completed' || activeTab === 'dispatch') {
+      const timeA = a.updated_at ? new Date(a.updated_at).getTime() : new Date(a.created_at).getTime();
+      const timeB = b.updated_at ? new Date(b.updated_at).getTime() : new Date(b.created_at).getTime();
+      return timeB - timeA;
+    }
+    return 0; // Default relies on Supabase 'created_at' sort
+  });
+
   const getStatusBadge = (status) => {
     const styles = { pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', processing: 'bg-blue-50 text-blue-700 border-blue-200', ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', cancelled: 'bg-red-50 text-red-700 border-red-200' };
     const icons = { pending: <Clock size={12}/>, processing: <Package size={12}/>, ready_for_delivery: <PackageCheck size={12}/>, shipped: <Truck size={12}/>, delivered: <CheckCircle2 size={12}/>, cancelled: <XCircle size={12}/> };
@@ -382,7 +405,7 @@ export default function AdminOrders() {
           <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
           {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div></div>))}
         </div>
-      ) : filteredOrders.length === 0 ? (
+      ) : sortedOrders.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm mt-6">
           <Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" />
           <h3 className="text-xl font-bold text-slate-900 mb-2 tracking-tight">No orders found</h3>
@@ -402,7 +425,7 @@ export default function AdminOrders() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredOrders.map(order => {
+              {sortedOrders.map(order => {
                 const isExpanded = expandedOrderId === order.id;
                 const isB2B = !!order.company_id;
                 const shortId = order.id.substring(0, 8).toUpperCase();
@@ -663,6 +686,33 @@ export default function AdminOrders() {
                                     </div>
                                   </div>
                                 )}
+                                
+                                {order.status === 'delivered' && (order.photo_url || order.signature_url) && (
+                                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
+                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
+                                      <Truck size={16} className="text-slate-400" /> Proof of Delivery
+                                    </h4>
+                                    <div className="grid grid-cols-2 gap-3">
+                                      {order.photo_url && (
+                                        <div>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Photo</p>
+                                          <a href={order.photo_url} target="_blank" rel="noreferrer" className="block relative group rounded-xl overflow-hidden border border-slate-200 shadow-sm">
+                                            <img src={order.photo_url} alt="Delivery Proof" className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300" />
+                                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors"></div>
+                                          </a>
+                                        </div>
+                                      )}
+                                      {order.signature_url && (
+                                        <div>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Signature</p>
+                                          <a href={order.signature_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-slate-200 bg-white p-2 hover:border-slate-300 transition-colors shadow-sm">
+                                            <img src={order.signature_url} alt="Signature" className="w-full h-20 object-contain mix-blend-multiply" />
+                                          </a>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -677,7 +727,6 @@ export default function AdminOrders() {
         </div>
       )}
 
-      {/* --- ASSIGN DRIVER MODAL --- */}
       {assigningOrder && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg flex flex-col border border-slate-100 overflow-hidden">
@@ -727,7 +776,6 @@ export default function AdminOrders() {
         </div>
       )}
 
-      {/* --- CONFIRMATION MODAL --- */}
       {confirmAction.show && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
@@ -744,7 +792,6 @@ export default function AdminOrders() {
         </div>
       )}
 
-      {/* --- MODERN TOAST NOTIFICATION --- */}
       {notification.show && (
         <div className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-[120] flex items-center gap-3 bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-300">
           <div className={`p-1.5 rounded-full ${notification.isError ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
@@ -753,6 +800,7 @@ export default function AdminOrders() {
           <p className="text-sm font-medium pr-2">{notification.message}</p>
         </div>
       )}
+
     </div>
   );
 }

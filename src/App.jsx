@@ -14,6 +14,7 @@ import Dashboard from './pages/Dashboard';
 import Reports from './pages/Reports';
 import FleetManagement from './pages/FleetManagement';
 import AgencyDashboard from './pages/AgencyDashboard';
+import DispatchMonitor from './pages/DispatchMonitor';
 
 import Products from './pages/Products';
 import PurchaseOrders from './pages/PurchaseOrders';
@@ -99,6 +100,7 @@ export default function App() {
           <Route path="admin/users" element={<AdminUsers />} />
           <Route path="admin/reports" element={<Reports />} />
           <Route path="/fleet" element={<FleetManagement />} />
+          <Route path="/dispatch" element={<DispatchMonitor />} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -4,7 +4,7 @@ import { useAuth } from './lib/AuthContext';
 import { supabase } from './lib/supabase';
 import { 
   LayoutDashboard, Package, ShoppingCart, Truck, Warehouse, 
-  Users, BarChart3, ClipboardList, LogOut, User, Menu, X, Car
+  Users, BarChart3, ClipboardList, LogOut, User, Menu, X, Car, Navigation
 } from "lucide-react"; 
 
 export default function Layout() {
@@ -17,18 +17,37 @@ export default function Layout() {
   const [pendingCount, setPendingCount] = useState(0);
   const [overdueCount, setOverdueCount] = useState(0);
   const [processingCount, setProcessingCount] = useState(0);
+  const [deliveredTodayCount, setDeliveredTodayCount] = useState(0); 
 
   useEffect(() => {
     if (!profile) return;
     
     const fetchBadges = async () => {
-      // 1. Admins get badge for Pending Orders
+      // 1. Admins get badge for Pending Orders & Unread Deliveries
       if (profile.role === 'admin') {
-        const { count } = await supabase
+        const { count: pCount } = await supabase
           .from('orders')
           .select('*', { count: 'exact', head: true })
           .eq('status', 'pending');
-        setPendingCount(count || 0);
+        setPendingCount(pCount || 0);
+
+        // 🚀 SMART CLEARING LOGIC: Only count deliveries AFTER the last time they viewed the tab today.
+        const today = new Date();
+        today.setHours(0, 0, 0, 0); 
+        let compareTime = today.toISOString();
+
+        const lastViewed = localStorage.getItem('lastViewedDelivered');
+        if (lastViewed && new Date(lastViewed) > today) {
+          compareTime = lastViewed;
+        }
+
+        const { count: dCount } = await supabase
+          .from('orders')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', 'delivered')
+          .gt('updated_at', compareTime);
+          
+        setDeliveredTodayCount(dCount || 0);
       } 
       
       // 2. Admins & Warehouse Staff get badge for Processing Orders (Pick & Pack)
@@ -67,17 +86,18 @@ export default function Layout() {
 
     fetchBadges();
     
-    // Listen to Supabase DB updates (Cross-device syncing)
     const sub = supabase.channel('badge_updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchBadges)
       .subscribe();
 
-    // 🚀 NEW: Listen for INSTANT local UI updates (Same-tab syncing)
     window.addEventListener('orderStatusChanged', fetchBadges);
+    // 🚀 NEW: Listen for when the Admin reads the POD tab
+    window.addEventListener('podViewed', fetchBadges);
 
     return () => {
       supabase.removeChannel(sub);
       window.removeEventListener('orderStatusChanged', fetchBadges);
+      window.removeEventListener('podViewed', fetchBadges);
     };
   }, [profile]);
 
@@ -104,7 +124,6 @@ export default function Layout() {
   return (
     <div className="min-h-screen flex bg-slate-50 font-sans">
       
-      {/* Mobile Overlay Backdrop */}
       {isMobileMenuOpen && (
         <div 
           className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-40 lg:hidden animate-in fade-in duration-200"
@@ -112,13 +131,11 @@ export default function Layout() {
         />
       )}
 
-      {/* Sidebar (Responsive) */}
       <aside className={`
         fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 flex flex-col transition-transform duration-300 ease-in-out
         lg:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}
       `}>
         
-        {/* Brand Header */}
         <div className="h-16 flex items-center justify-between px-4 border-b border-slate-200 shrink-0">
           <div className="flex-1 flex justify-center items-center h-full pt-1">
             <img 
@@ -132,7 +149,6 @@ export default function Layout() {
           </button>
         </div>
 
-        {/* Navigation Links */}
         <nav className="flex-1 px-4 py-6 overflow-y-auto">
           <div className="space-y-1">
             <p className="px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Main Menu</p>
@@ -186,7 +202,7 @@ export default function Layout() {
               </>
             )}
             
-            {(profile?.role === 'admin' || profile?.role === 'driver') && (
+            {profile?.role === 'driver' && (
               <Link to="/driver" onClick={closeMobileMenu} className={navItemClass('/driver')}>
                 <Truck size={18} /> My Routes
               </Link>
@@ -212,6 +228,19 @@ export default function Layout() {
                     </div>
                   )}
                 </Link>
+
+                <Link to="/dispatch" onClick={closeMobileMenu} className={navItemClass('/dispatch')}>
+                  <Navigation size={18} /> 
+                  <span className="flex-1">Dispatch & POD</span>
+                  {deliveredTodayCount > 0 && (
+                    <div className="relative flex items-center justify-center ml-auto">
+                      <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 animate-ping"></span>
+                      <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-emerald-500 rounded-full shadow-sm">
+                        {deliveredTodayCount} New
+                      </span>
+                    </div>
+                  )}
+                </Link>
                 
                 <Link to="/fleet" onClick={closeMobileMenu} className={navItemClass('/fleet')}>
                   <Car size={18} /> Fleet Management
@@ -228,7 +257,6 @@ export default function Layout() {
           </div>
         </nav>
 
-        {/* User Profile Footer */}
         <div className="p-4 border-t border-slate-200 shrink-0 bg-slate-50/50">
           <div className="flex items-center gap-3 px-2 mb-4">
             <div className="w-9 h-9 rounded-full bg-slate-200 border border-slate-300 flex items-center justify-center text-sm font-semibold text-slate-700 shrink-0 uppercase shadow-inner">
@@ -253,10 +281,7 @@ export default function Layout() {
 
       </aside>
 
-      {/* Main Content Area */}
       <main className="flex-1 lg:ml-64 flex flex-col min-w-0 min-h-screen">
-        
-        {/* Responsive Mobile Top Header */}
         <header className="h-16 bg-white/80 backdrop-blur-md border-b border-slate-200 flex items-center px-4 sm:px-8 sticky top-0 z-30 shrink-0">
           <button 
             onClick={() => setIsMobileMenuOpen(true)} 
