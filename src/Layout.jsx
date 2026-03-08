@@ -23,34 +23,32 @@ export default function Layout() {
     if (!profile) return;
     
     const fetchBadges = async () => {
-      // 1. Admins get badge for Pending Orders & Unread Deliveries
+      // 1. Admins get badge for Pending Orders (Only if NEW since last checked)
       if (profile.role === 'admin') {
+        const lastViewedPending = localStorage.getItem('lastViewedPending') || new Date(0).toISOString();
         const { count: pCount } = await supabase
           .from('orders')
           .select('*', { count: 'exact', head: true })
-          .eq('status', 'pending');
+          .eq('status', 'pending')
+          .gt('created_at', lastViewedPending); 
         setPendingCount(pCount || 0);
 
-        // 🚀 SMART CLEARING LOGIC: Only count deliveries AFTER the last time they viewed the tab today.
+        // Calculate "Delivered Today"
         const today = new Date();
         today.setHours(0, 0, 0, 0); 
         let compareTime = today.toISOString();
-
         const lastViewed = localStorage.getItem('lastViewedDelivered');
-        if (lastViewed && new Date(lastViewed) > today) {
-          compareTime = lastViewed;
-        }
+        if (lastViewed && new Date(lastViewed) > today) compareTime = lastViewed;
 
         const { count: dCount } = await supabase
           .from('orders')
           .select('*', { count: 'exact', head: true })
           .eq('status', 'delivered')
           .gt('updated_at', compareTime);
-          
         setDeliveredTodayCount(dCount || 0);
       } 
       
-      // 2. Admins & Warehouse Staff get badge for Processing Orders (Pick & Pack)
+      // 2. Admins & Warehouse Staff get badge for Processing Orders
       if (profile.role === 'admin' || profile.role === 'warehouse') {
         const { count } = await supabase
           .from('orders')
@@ -59,28 +57,20 @@ export default function Layout() {
         setProcessingCount(count || 0);
       }
 
-      // 3. Agencies get badge for Overdue Net-30 Invoices
+      // 3. Agencies get badge for Net-30 Invoices (ONLY 5 days before due)
       if (profile.role === 'b2b' && profile.company_id) {
-        const { data } = await supabase
+        const threshold = new Date();
+        threshold.setDate(threshold.getDate() - 25); 
+        
+        const { count } = await supabase
           .from('orders')
-          .select('created_at, status')
+          .select('*', { count: 'exact', head: true })
           .eq('company_id', profile.company_id)
           .eq('payment_status', 'unpaid')
-          .eq('payment_method', 'net_30');
+          .eq('payment_method', 'net_30')
+          .lte('created_at', threshold.toISOString());
 
-        if (data) {
-          const now = new Date();
-          let overdue = 0;
-          data.forEach(o => {
-            if (o.status === 'delivered') {
-              const baseDate = new Date(o.created_at);
-              const dueDate = new Date(baseDate);
-              dueDate.setDate(dueDate.getDate() + 30);
-              if (now > dueDate) overdue++;
-            }
-          });
-          setOverdueCount(overdue);
-        }
+        setOverdueCount(count || 0);
       }
     };
 
@@ -91,13 +81,14 @@ export default function Layout() {
       .subscribe();
 
     window.addEventListener('orderStatusChanged', fetchBadges);
-    // 🚀 NEW: Listen for when the Admin reads the POD tab
     window.addEventListener('podViewed', fetchBadges);
+    window.addEventListener('pendingViewed', fetchBadges);
 
     return () => {
       supabase.removeChannel(sub);
       window.removeEventListener('orderStatusChanged', fetchBadges);
       window.removeEventListener('podViewed', fetchBadges);
+      window.removeEventListener('pendingViewed', fetchBadges);
     };
   }, [profile]);
 
@@ -151,109 +142,118 @@ export default function Layout() {
 
         <nav className="flex-1 px-4 py-6 overflow-y-auto">
           <div className="space-y-1">
-            <p className="px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Main Menu</p>
-            <Link to="/dashboard" onClick={closeMobileMenu} className={navItemClass('/dashboard')}>
-              <LayoutDashboard size={18} /> Dashboard
-            </Link>
             
-            {isCustomer && (
+            {/* 🚀 EXCLUSIVE DRIVER MENU */}
+            {profile?.role === 'driver' ? (
               <>
-                <Link to="/catalog" onClick={closeMobileMenu} className={navItemClass('/catalog')}>
-                  <Package size={18} /> Catalog
-                </Link>
-                <Link to="/orders" onClick={closeMobileMenu} className={navItemClass('/orders')}>
-                  <ShoppingCart size={18} /> 
-                  <span className="flex-1">My Orders</span>
-                  {overdueCount > 0 && (
-                    <div className="relative flex items-center justify-center ml-auto">
-                      <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
-                      <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
-                        {overdueCount} Due
-                      </span>
-                    </div>
-                  )}
+                <p className="px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Driver Menu</p>
+                <Link to="/driver" onClick={closeMobileMenu} className={navItemClass('/driver')}>
+                  <Truck size={18} /> My Routes
                 </Link>
               </>
-            )}
-            
-            {(profile?.role === 'admin' || profile?.role === 'warehouse' || profile?.role === 'driver') && (
-              <div className="pt-4 pb-2">
-                <p className="px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Operations</p>
-              </div>
-            )}
-            
-            {(profile?.role === 'admin' || profile?.role === 'warehouse') && (
+            ) : (
+              /* --- EVERYONE ELSE'S MENU --- */
               <>
-                <Link to="/warehouse" onClick={closeMobileMenu} className={navItemClass('/warehouse')}>
-                  <Warehouse size={18} /> 
-                  <span className="flex-1">Pick & Pack</span>
-                  {processingCount > 0 && (
-                    <div className="relative flex items-center justify-center ml-auto">
-                      <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
-                      <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
-                        {processingCount} New
-                      </span>
-                    </div>
-                  )}
-                </Link>
-                <Link to="/purchase-orders" onClick={closeMobileMenu} className={navItemClass('/purchase-orders')}>
-                  <ClipboardList size={18} /> Purchase Orders
-                </Link>
-              </>
-            )}
-            
-            {profile?.role === 'driver' && (
-              <Link to="/driver" onClick={closeMobileMenu} className={navItemClass('/driver')}>
-                <Truck size={18} /> My Routes
-              </Link>
-            )}
-
-            {profile?.role === 'admin' && (
-              <>
-                <div className="pt-4 pb-2">
-                  <p className="px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Administration</p>
-                </div>
-                <Link to="/admin/products" onClick={closeMobileMenu} className={navItemClass('/admin/products')}>
-                  <Package size={18} /> Manage Products
-                </Link>
-                <Link to="/admin/orders" onClick={closeMobileMenu} className={navItemClass('/admin/orders')}>
-                  <ShoppingCart size={18} /> 
-                  <span className="flex-1">All Orders</span>
-                  {pendingCount > 0 && (
-                    <div className="relative flex items-center justify-center ml-auto">
-                      <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
-                      <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
-                        {pendingCount} New
-                      </span>
-                    </div>
-                  )}
-                </Link>
-
-                <Link to="/dispatch" onClick={closeMobileMenu} className={navItemClass('/dispatch')}>
-                  <Navigation size={18} /> 
-                  <span className="flex-1">Dispatch & POD</span>
-                  {deliveredTodayCount > 0 && (
-                    <div className="relative flex items-center justify-center ml-auto">
-                      <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 animate-ping"></span>
-                      <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-emerald-500 rounded-full shadow-sm">
-                        {deliveredTodayCount} New
-                      </span>
-                    </div>
-                  )}
+                <p className="px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Main Menu</p>
+                <Link to="/dashboard" onClick={closeMobileMenu} className={navItemClass('/dashboard')}>
+                  <LayoutDashboard size={18} /> Dashboard
                 </Link>
                 
-                <Link to="/fleet" onClick={closeMobileMenu} className={navItemClass('/fleet')}>
-                  <Car size={18} /> Fleet Management
-                </Link>
+                {isCustomer && (
+                  <>
+                    <Link to="/catalog" onClick={closeMobileMenu} className={navItemClass('/catalog')}>
+                      <Package size={18} /> Catalog
+                    </Link>
+                    <Link to="/orders" onClick={closeMobileMenu} className={navItemClass('/orders')}>
+                      <ShoppingCart size={18} /> 
+                      <span className="flex-1">My Orders</span>
+                      {overdueCount > 0 && (
+                        <div className="relative flex items-center justify-center ml-auto">
+                          <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
+                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
+                            {overdueCount} Due
+                          </span>
+                        </div>
+                      )}
+                    </Link>
+                  </>
+                )}
+                
+                {(profile?.role === 'admin' || profile?.role === 'warehouse') && (
+                  <div className="pt-4 pb-2">
+                    <p className="px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Operations</p>
+                  </div>
+                )}
+                
+                {(profile?.role === 'admin' || profile?.role === 'warehouse') && (
+                  <>
+                    <Link to="/warehouse" onClick={closeMobileMenu} className={navItemClass('/warehouse')}>
+                      <Warehouse size={18} /> 
+                      <span className="flex-1">Pick & Pack</span>
+                      {processingCount > 0 && (
+                        <div className="relative flex items-center justify-center ml-auto">
+                          <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
+                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
+                            {processingCount} New
+                          </span>
+                        </div>
+                      )}
+                    </Link>
+                    <Link to="/purchase-orders" onClick={closeMobileMenu} className={navItemClass('/purchase-orders')}>
+                      <ClipboardList size={18} /> Purchase Orders
+                    </Link>
+                  </>
+                )}
 
-                <Link to="/admin/users" onClick={closeMobileMenu} className={navItemClass('/admin/users')}>
-                  <Users size={18} /> User Management
-                </Link>
-                <Link to="/admin/reports" onClick={closeMobileMenu} className={navItemClass('/admin/reports')}>
-                  <BarChart3 size={18} /> Reports
-                </Link>
+                {profile?.role === 'admin' && (
+                  <>
+                    <div className="pt-4 pb-2">
+                      <p className="px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Administration</p>
+                    </div>
+                    <Link to="/admin/products" onClick={closeMobileMenu} className={navItemClass('/admin/products')}>
+                      <Package size={18} /> Manage Products
+                    </Link>
+                    <Link to="/admin/orders" onClick={closeMobileMenu} className={navItemClass('/admin/orders')}>
+                      <ShoppingCart size={18} /> 
+                      <span className="flex-1">All Orders</span>
+                      {pendingCount > 0 && (
+                        <div className="relative flex items-center justify-center ml-auto">
+                          <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
+                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
+                            {pendingCount} New
+                          </span>
+                        </div>
+                      )}
+                    </Link>
+
+                    <Link to="/dispatch" onClick={closeMobileMenu} className={navItemClass('/dispatch')}>
+                      <Navigation size={18} /> 
+                      <span className="flex-1">Dispatch & POD</span>
+                      {deliveredTodayCount > 0 && (
+                        <div className="relative flex items-center justify-center ml-auto">
+                          <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 animate-ping"></span>
+                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-emerald-500 rounded-full shadow-sm">
+                            {deliveredTodayCount} New
+                          </span>
+                        </div>
+                      )}
+                    </Link>
+                    
+                    <Link to="/fleet" onClick={closeMobileMenu} className={navItemClass('/fleet')}>
+                      <Car size={18} /> Fleet Management
+                    </Link>
+
+                    <Link to="/admin/users" onClick={closeMobileMenu} className={navItemClass('/admin/users')}>
+                      <Users size={18} /> User Management
+                    </Link>
+                    <Link to="/admin/reports" onClick={closeMobileMenu} className={navItemClass('/admin/reports')}>
+                      <BarChart3 size={18} /> Reports
+                    </Link>
+                  </>
+                )}
               </>
             )}
+
           </div>
         </nav>
 
@@ -297,7 +297,7 @@ export default function Layout() {
             />
           </div>
           <h1 className="text-lg font-bold text-slate-900 capitalize tracking-tight ml-auto lg:ml-0">
-            {location.pathname.split('/').pop()?.replace('-', ' ') || 'Dashboard'}
+            {location.pathname.split('/').pop()?.replace('-', ' ') || 'My Routes'}
           </h1>
         </header>
 

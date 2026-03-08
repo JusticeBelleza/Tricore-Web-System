@@ -4,17 +4,27 @@ import {
   Bold, Italic, Underline, List, ListOrdered, AlignLeft, AlignCenter, AlignRight, 
   Upload, X, Plus, Image as ImageIcon, Download, FileUp, FileDown, CheckCircle2, 
   Eye, Pencil, Trash2, Search, ChevronRight, ChevronDown, Images, Trash, Check, 
-  PackageOpen, Layers, Tag, Box, Hash 
+  PackageOpen, Layers, Tag, Box, Hash, ChevronLeft, XCircle
 } from 'lucide-react';
 
 export default function Products() {
   const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
-  
-  // --- Professional Media Library States ---
+  const [exporting, setExporting] = useState(false);
+
+  // 🚀 SERVER-SIDE PAGINATION & SEARCH
+  const [page, setPage] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const pageSize = 20;
+  const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('');
+
+  // Media Library
   const [showMediaLibrary, setShowMediaLibrary] = useState(false);
   const [mediaLibraryFiles, setMediaLibraryFiles] = useState([]);
   const [loadingMedia, setLoadingMedia] = useState(false);
@@ -24,12 +34,7 @@ export default function Products() {
   const MEDIA_LIMIT = 30; 
   const [selectedMediaFiles, setSelectedMediaFiles] = useState([]); 
 
-  // Filter & UI States
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('');
   const [expandedRows, setExpandedRows] = useState({});
-
-  // App States
   const [editingId, setEditingId] = useState(null);
   const [viewingProduct, setViewingProduct] = useState(null);
   const [notification, setNotification] = useState({ show: false, title: '', message: '', isError: false });
@@ -45,7 +50,6 @@ export default function Products() {
   const [variants, setVariants] = useState([]);
   const [deletedVariantIds, setDeletedVariantIds] = useState([]); 
   
-  // Editor States
   const editorRef = useRef(null);
   const fileInputRef = useRef(null);
   const [activeFormats, setActiveFormats] = useState({
@@ -54,9 +58,26 @@ export default function Products() {
     alignLeft: false, alignCenter: false, alignRight: false
   });
 
+  // Debouncer
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+      setPage(0);
+    }, 500);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    setPage(0);
+  }, [selectedCategory]);
+
+  useEffect(() => {
+    fetchCategories();
+  }, []);
+
   useEffect(() => {
     fetchProducts();
-  }, []);
+  }, [debouncedSearch, selectedCategory, page]);
 
   useEffect(() => {
     if (showForm && editorRef.current) {
@@ -66,19 +87,49 @@ export default function Products() {
     }
   }, [showForm]); 
 
+  const fetchCategories = async () => {
+    try {
+      const { data } = await supabase.from('products').select('category').neq('category', null);
+      if (data) {
+        const unique = Array.from(new Set(data.map(d => d.category).filter(Boolean))).sort();
+        setCategories(unique);
+      }
+    } catch (error) {
+      console.error('Error fetching categories:', error);
+    }
+  };
+
   const fetchProducts = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('products')
-        .select(`
+      let query = supabase.from('products').select(`
           *,
           inventory ( base_units_on_hand, base_units_reserved ),
           product_variants ( id, name, multiplier, sku, price )
-        `)
-        .order('name');
+        `, { count: 'exact' });
+
+      if (debouncedSearch) {
+        // Search by Name or SKU
+        query = query.or(`name.ilike.%${debouncedSearch}%,base_sku.ilike.%${debouncedSearch}%`);
+      }
+
+      if (selectedCategory) {
+        query = query.eq('category', selectedCategory);
+      }
+
+      query = query.order('name');
+
+      // Pagination
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+      query = query.range(from, to);
+
+      const { data, count, error } = await query;
       if (error) throw error;
+      
       setProducts(data || []);
+      setTotalCount(count || 0);
+
     } catch (error) {
       console.error('Error fetching products:', error.message);
     } finally {
@@ -86,21 +137,7 @@ export default function Products() {
     }
   };
 
-  const categories = Array.from(new Set(products.map(p => p.category).filter(Boolean))).sort();
-
-  const filteredProducts = products.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          p.base_sku.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesCategory = selectedCategory ? p.category === selectedCategory : true;
-    return matchesSearch && matchesCategory;
-  });
-
-  const toggleRow = (id) => {
-    setExpandedRows(prev => ({
-      ...prev,
-      [id]: !prev[id]
-    }));
-  };
+  const toggleRow = (id) => setExpandedRows(prev => ({ ...prev, [id]: !prev[id] }));
 
   const showToast = (title, message, isError = false) => {
     setNotification({ show: true, title, message, isError });
@@ -116,17 +153,29 @@ export default function Products() {
     showToast('Template Downloaded', 'The CSV import template has been saved.');
   };
 
-  const exportCSV = () => {
-    const headers = ["Name", "Base SKU", "Category", "Manufacturer", "Retail Price", "Stock On Hand"];
-    const rows = filteredProducts.map(p => [
-      `"${p.name.replace(/"/g, '""')}"`, p.base_sku, `"${(p.category || '').replace(/"/g, '""')}"`,
-      `"${(p.manufacturer || '').replace(/"/g, '""')}"`, p.retail_base_price, p.inventory?.base_units_on_hand || 0
-    ]);
-    const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "tricore_products_export.csv"; a.click();
-    showToast('Export Successful', 'Your product catalog has been exported.');
+  // 🚀 REWRITTEN: Forces a full fetch to guarantee a complete CSV Export!
+  const exportCSV = async () => {
+    setExporting(true);
+    showToast('Exporting...', 'Gathering all catalog data for export.');
+    try {
+      const { data, error } = await supabase.from('products').select('*, inventory(base_units_on_hand)').order('name');
+      if (error) throw error;
+
+      const headers = ["Name", "Base SKU", "Category", "Manufacturer", "Retail Price", "Stock On Hand"];
+      const rows = data.map(p => [
+        `"${p.name.replace(/"/g, '""')}"`, p.base_sku, `"${(p.category || '').replace(/"/g, '""')}"`,
+        `"${(p.manufacturer || '').replace(/"/g, '""')}"`, p.retail_base_price, p.inventory?.base_units_on_hand || 0
+      ]);
+      const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+      const blob = new Blob([csvContent], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = "tricore_catalog_export.csv"; a.click();
+      showToast('Export Successful', `Exported ${data.length} products.`);
+    } catch (error) {
+      showToast('Export Failed', error.message, true);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const handleImport = async (e) => {
@@ -153,6 +202,7 @@ export default function Products() {
       }
       showToast('Import Complete', 'Products imported successfully!');
       fetchProducts();
+      fetchCategories(); // Refresh categories
     } catch (error) {
       showToast('Import Failed', 'Failed to parse CSV.', true);
     } finally {
@@ -184,7 +234,6 @@ export default function Products() {
     setShowForm(true);
   };
 
-  // --- MEDIA LIBRARY ---
   const loadMedia = async (offset = 0) => {
     setLoadingMedia(true);
     try {
@@ -231,21 +280,8 @@ export default function Products() {
   };
 
   const openMediaLibrary = () => { setSelectedMediaFiles([]); setShowMediaLibrary(true); loadMedia(0); };
-
-  const handleMediaClick = (file) => {
-    setSelectedMediaFiles(prev => {
-      const exists = prev.find(f => f.name === file.name);
-      if (exists) return prev.filter(f => f.name !== file.name);
-      return [...prev, file];
-    });
-  };
-
-  const handleAttachSelected = () => {
-    if (selectedMediaFiles.length === 0) return;
-    const newUrls = selectedMediaFiles.map(f => f.url);
-    setExistingPhotos(prev => [...new Set([...prev, ...newUrls])]);
-    setShowMediaLibrary(false); setSelectedMediaFiles([]);
-  };
+  const handleMediaClick = (file) => setSelectedMediaFiles(prev => prev.find(f => f.name === file.name) ? prev.filter(f => f.name !== file.name) : [...prev, file]);
+  const handleAttachSelected = () => { if (selectedMediaFiles.length > 0) setExistingPhotos(prev => [...new Set([...prev, ...selectedMediaFiles.map(f => f.url)])]); setShowMediaLibrary(false); setSelectedMediaFiles([]); };
 
   const confirmDeleteMedia = (filesToDelete) => {
     if (filesToDelete.length === 0) return;
@@ -283,7 +319,6 @@ export default function Products() {
   };
 
   const formatText = (command, value = null) => { document.execCommand(command, false, value); if (editorRef.current) editorRef.current.focus(); checkFormats(); };
-
   const handleEditorKeyDown = (e) => {
     if (e.key === 'Tab') {
       e.preventDefault(); 
@@ -293,7 +328,6 @@ export default function Products() {
       checkFormats();
     }
   };
-
   const handleEditorInput = () => { setFormData(prev => ({ ...prev, description: editorRef.current.innerHTML })); checkFormats(); };
 
   const handleFormSubmit = (e) => {
@@ -349,7 +383,9 @@ export default function Products() {
         if (variantError) throw new Error(variantError.message);
       }
 
-      setShowForm(false); fetchProducts();
+      setShowForm(false); 
+      fetchProducts();
+      fetchCategories();
       showToast(editingId ? 'Product Updated' : 'Product Created', 'Catalog has been successfully updated.');
     } catch (error) {
       showToast('Save Failed', error.message, true);
@@ -380,8 +416,6 @@ export default function Products() {
   const labelClass = "block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5";
   const getFormatClass = (isActive) => `p-1.5 rounded-lg transition-all ${isActive ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-200 hover:text-slate-900'}`;
 
-  if (loading) return <div className="text-slate-500 font-medium">Loading catalog...</div>;
-
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12 relative">
       
@@ -403,7 +437,7 @@ export default function Products() {
             <FileUp size={16} /> {importing ? '...' : 'Import'}
             <input type="file" accept=".csv" ref={fileInputRef} className="hidden" onChange={handleImport} disabled={importing} />
           </label>
-          <button onClick={() => setConfirmAction({ show: true, title: 'Export Catalog', message: 'Export all products?', onConfirm: () => { exportCSV(); setConfirmAction({show:false}) } })} className="flex-1 sm:flex-none px-4 py-2 bg-white text-slate-700 border border-slate-200 text-sm font-bold rounded-xl hover:bg-slate-50 hover:text-slate-900 active:scale-95 transition-all flex items-center justify-center gap-2 shadow-sm"><FileDown size={16} /> Export</button>
+          <button disabled={exporting} onClick={() => setConfirmAction({ show: true, title: 'Export Catalog', message: 'Export all products to a CSV file?', onConfirm: () => { exportCSV(); setConfirmAction({show:false}) } })} className="flex-1 sm:flex-none px-4 py-2 bg-white text-slate-700 border border-slate-200 text-sm font-bold rounded-xl hover:bg-slate-50 hover:text-slate-900 active:scale-95 transition-all flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"><FileDown size={16} /> Export</button>
           <button onClick={openCreateForm} className="w-full sm:w-auto px-5 py-2.5 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center justify-center gap-2"><Plus size={16} /> Add Product</button>
         </div>
       </div>
@@ -421,102 +455,123 @@ export default function Products() {
       </div>
 
       {/* Main Table */}
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden overflow-x-auto w-full mt-6">
-        <table className="w-full text-left text-sm whitespace-nowrap">
-          <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500">
-            <tr>
-              <th className="px-6 py-4 font-bold tracking-tight rounded-tl-3xl">Product Details</th>
-              <th className="px-6 py-4 font-bold tracking-tight">Category</th>
-              <th className="px-6 py-4 font-bold tracking-tight">Retail Price</th>
-              <th className="px-6 py-4 font-bold tracking-tight">Stock</th>
-              <th className="px-6 py-4 font-bold tracking-tight text-right rounded-tr-3xl">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {filteredProducts.map(product => {
-              const stock = product.inventory?.base_units_on_hand || 0;
-              const isExpanded = expandedRows[product.id];
-              
-              return (
-                <React.Fragment key={product.id}>
-                  {/* Main Product Row */}
-                  <tr className={`group transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-900' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-4">
-                        <button onClick={() => toggleRow(product.id)} className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-90' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`} title={isExpanded ? "Hide Variants" : "Show Variants"}>
-                          <ChevronRight size={18} />
-                        </button>
-                        {product.image_urls?.[0] ? (
-                          <img src={product.image_urls[0]} className="w-12 h-12 rounded-xl object-cover border border-slate-200 shadow-sm" alt="" />
-                        ) : (
-                          <div className="w-12 h-12 bg-slate-100 border border-slate-200 rounded-xl flex items-center justify-center shadow-sm"><ImageIcon size={20} className="text-slate-400"/></div>
-                        )}
-                        <div>
-                          <p className="font-bold text-slate-900 text-base">{product.name}</p>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1.5"><Hash size={12}/> {product.base_sku}</p>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 font-medium text-slate-700">{product.category || '—'}</td>
-                    <td className="px-6 py-4 font-extrabold text-slate-900">${Number(product.retail_base_price).toFixed(2)}</td>
-                    <td className="px-6 py-4">
-                      <span className={`px-2.5 py-1 rounded-lg text-[10px] uppercase tracking-widest font-bold shadow-sm border ${stock <= 10 ? 'bg-red-50 text-red-700 border-red-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
-                        {stock} {product.base_unit_name}s
-                      </span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center justify-end gap-2">
-                        <button onClick={() => setViewingProduct(product)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 active:scale-95 rounded-xl transition-all shadow-sm border border-transparent hover:border-blue-100" title="View Details"><Eye size={18} /></button>
-                        <button onClick={() => openEditForm(product)} className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 active:scale-95 rounded-xl transition-all shadow-sm border border-transparent hover:border-emerald-100" title="Edit Product"><Pencil size={18} /></button>
-                        <button onClick={() => handleDelete(product.id)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 active:scale-95 rounded-xl transition-all shadow-sm border border-transparent hover:border-red-100" title="Delete"><Trash2 size={18} /></button>
-                      </div>
-                    </td>
-                  </tr>
-
-                  {/* Expanded Variants Row */}
-                  {isExpanded && (
-                    <tr className="bg-slate-50 shadow-inner">
-                      <td colSpan="5" className="p-0 border-b border-slate-200">
-                        <div className="p-6 sm:p-8 pl-[84px] animate-in slide-in-from-top-2 fade-in duration-200">
-                          <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2"><Layers size={14}/> Product Variants & Pricing</h4>
-                          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm inline-block min-w-full lg:min-w-[60%]">
-                            <table className="w-full text-left text-sm">
-                              <thead className="bg-slate-50/80 border-b border-slate-200">
-                                <tr className="text-slate-500 text-[10px] uppercase tracking-widest">
-                                  <th className="px-5 py-3 font-bold">Packaging / Variant</th>
-                                  <th className="px-5 py-3 font-bold">SKU Identifier</th>
-                                  <th className="px-5 py-3 font-bold text-center">Base Multiplier</th>
-                                  <th className="px-5 py-3 font-bold text-right">Selling Price</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-100">
-                                {product.product_variants?.map(v => (
-                                  <tr key={v.id} className="hover:bg-slate-50/50 transition-colors">
-                                    <td className="px-5 py-4 font-bold text-slate-900 flex items-center gap-2"><Box size={14} className="text-slate-400"/> {v.name}</td>
-                                    <td className="px-5 py-4 font-mono text-xs font-medium text-slate-600">{v.sku}</td>
-                                    <td className="px-5 py-4 text-center"><span className="px-2.5 py-1 bg-slate-100 border border-slate-200 rounded-lg text-slate-700 font-bold shadow-sm">{v.multiplier}</span> <span className="text-slate-400 text-[10px] font-bold uppercase tracking-wider ml-1">{product.base_unit_name}s</span></td>
-                                    <td className="px-5 py-4 text-right font-extrabold text-slate-900 text-base">${Number(v.price).toFixed(2)}</td>
-                                  </tr>
-                                ))}
-                                {(!product.product_variants || product.product_variants.length === 0) && (
-                                  <tr><td colSpan="4" className="px-5 py-6 text-slate-400 italic text-center font-medium">No variants configured for this product.</td></tr>
-                                )}
-                              </tbody>
-                            </table>
+      {loading ? (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden mt-6">
+          <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
+          {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0 ml-auto"></div></div>))}
+        </div>
+      ) : (
+        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm mt-6 flex flex-col">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm whitespace-nowrap">
+              <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500">
+                <tr>
+                  <th className="px-6 py-4 font-bold tracking-tight rounded-tl-3xl">Product Details</th>
+                  <th className="px-6 py-4 font-bold tracking-tight">Category</th>
+                  <th className="px-6 py-4 font-bold tracking-tight">Retail Price</th>
+                  <th className="px-6 py-4 font-bold tracking-tight">Stock</th>
+                  <th className="px-6 py-4 font-bold tracking-tight text-right rounded-tr-3xl">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {products.map(product => {
+                  const stock = product.inventory?.base_units_on_hand || 0;
+                  const isExpanded = expandedRows[product.id];
+                  
+                  return (
+                    <React.Fragment key={product.id}>
+                      <tr className={`group transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-900' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-4">
+                            <button onClick={() => toggleRow(product.id)} className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-90' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`} title={isExpanded ? "Hide Variants" : "Show Variants"}>
+                              <ChevronRight size={18} />
+                            </button>
+                            {product.image_urls?.[0] ? (
+                              <img src={product.image_urls[0]} className="w-12 h-12 rounded-xl object-cover border border-slate-200 shadow-sm" alt="" />
+                            ) : (
+                              <div className="w-12 h-12 bg-slate-100 border border-slate-200 rounded-xl flex items-center justify-center shadow-sm"><ImageIcon size={20} className="text-slate-400"/></div>
+                            )}
+                            <div>
+                              <p className="font-bold text-slate-900 text-base">{product.name}</p>
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1.5"><Hash size={12}/> {product.base_sku}</p>
+                            </div>
                           </div>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
-              );
-            })}
-            {filteredProducts.length === 0 && (
-              <tr><td colSpan="5" className="px-6 py-16 text-center text-slate-500 font-medium">No products found matching your search criteria.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+                        </td>
+                        <td className="px-6 py-4 font-medium text-slate-700">{product.category || '—'}</td>
+                        <td className="px-6 py-4 font-extrabold text-slate-900">${Number(product.retail_base_price).toFixed(2)}</td>
+                        <td className="px-6 py-4">
+                          <span className={`px-2.5 py-1 rounded-lg text-[10px] uppercase tracking-widest font-bold shadow-sm border ${stock <= 10 ? 'bg-red-50 text-red-700 border-red-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                            {stock} {product.base_unit_name}s
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center justify-end gap-2">
+                            <button onClick={() => setViewingProduct(product)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 active:scale-95 rounded-xl transition-all shadow-sm border border-transparent hover:border-blue-100" title="View Details"><Eye size={18} /></button>
+                            <button onClick={() => openEditForm(product)} className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 active:scale-95 rounded-xl transition-all shadow-sm border border-transparent hover:border-emerald-100" title="Edit Product"><Pencil size={18} /></button>
+                            <button onClick={() => handleDelete(product.id)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 active:scale-95 rounded-xl transition-all shadow-sm border border-transparent hover:border-red-100" title="Delete"><Trash2 size={18} /></button>
+                          </div>
+                        </td>
+                      </tr>
+
+                      {isExpanded && (
+                        <tr className="bg-slate-50 shadow-inner">
+                          <td colSpan="5" className="p-0 border-b border-slate-200">
+                            <div className="p-6 sm:p-8 pl-[84px] animate-in slide-in-from-top-2 fade-in duration-200">
+                              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2"><Layers size={14}/> Product Variants & Pricing</h4>
+                              <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm inline-block min-w-full lg:min-w-[60%]">
+                                <table className="w-full text-left text-sm">
+                                  <thead className="bg-slate-50/80 border-b border-slate-200">
+                                    <tr className="text-slate-500 text-[10px] uppercase tracking-widest">
+                                      <th className="px-5 py-3 font-bold">Packaging / Variant</th>
+                                      <th className="px-5 py-3 font-bold">SKU Identifier</th>
+                                      <th className="px-5 py-3 font-bold text-center">Base Multiplier</th>
+                                      <th className="px-5 py-3 font-bold text-right">Selling Price</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100">
+                                    {product.product_variants?.map(v => (
+                                      <tr key={v.id} className="hover:bg-slate-50/50 transition-colors">
+                                        <td className="px-5 py-4 font-bold text-slate-900 flex items-center gap-2"><Box size={14} className="text-slate-400"/> {v.name}</td>
+                                        <td className="px-5 py-4 font-mono text-xs font-medium text-slate-600">{v.sku}</td>
+                                        <td className="px-5 py-4 text-center"><span className="px-2.5 py-1 bg-slate-100 border border-slate-200 rounded-lg text-slate-700 font-bold shadow-sm">{v.multiplier}</span> <span className="text-slate-400 text-[10px] font-bold uppercase tracking-wider ml-1">{product.base_unit_name}s</span></td>
+                                        <td className="px-5 py-4 text-right font-extrabold text-slate-900 text-base">${Number(v.price).toFixed(2)}</td>
+                                      </tr>
+                                    ))}
+                                    {(!product.product_variants || product.product_variants.length === 0) && (
+                                      <tr><td colSpan="4" className="px-5 py-6 text-slate-400 italic text-center font-medium">No variants configured for this product.</td></tr>
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+                {products.length === 0 && (
+                  <tr><td colSpan="5" className="px-6 py-16 text-center text-slate-500 font-medium">No products found matching your search criteria.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 🚀 PAGINATION CONTROLS */}
+          {totalCount > pageSize && (
+            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
+              <span className="text-sm font-medium text-slate-500">
+                Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> products
+              </span>
+              <div className="flex gap-2">
+                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={18} /></button>
+                <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalCount} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={18} /></button>
+              </div>
+            </div>
+          )}
+
+        </div>
+      )}
 
       {/* --- ADD / EDIT PRODUCT MODAL --- */}
       {showForm && (

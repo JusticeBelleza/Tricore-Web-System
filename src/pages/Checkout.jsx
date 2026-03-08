@@ -2,13 +2,17 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
-import { ArrowLeft, CheckCircle2, Package, CreditCard, Receipt, X, Building, MapPin, Search, User, Trash2, AlertCircle, ChevronDown, Mail, Phone } from 'lucide-react';
+import { 
+  ArrowLeft, CheckCircle2, Package, CreditCard, Receipt, 
+  X, Building, MapPin, Search, User, Trash2, AlertCircle, 
+  ChevronDown, Mail, Phone, Edit2, Save
+} from 'lucide-react';
 
 export default function Checkout() {
   const { profile } = useAuth();
   const navigate = useNavigate();
   
-  // --- FIXED: Shared Agency Cart Logic ---
+  // Shared Cart Logic
   const [cart, setCart] = useState([]);
   const [cartLoaded, setCartLoaded] = useState(false);
 
@@ -17,11 +21,8 @@ export default function Checkout() {
   useEffect(() => {
     if (profile?.id) {
       const savedCart = localStorage.getItem(cartKey);
-      if (savedCart) {
-        setCart(JSON.parse(savedCart));
-      } else {
-        setCart([]); // Clear if no cart
-      }
+      if (savedCart) setCart(JSON.parse(savedCart));
+      else setCart([]);
       setCartLoaded(true);
     }
   }, [profile?.id, cartKey]);
@@ -41,18 +42,53 @@ export default function Checkout() {
 
   const [itemToDelete, setItemToDelete] = useState(null);
 
+  // B2B specific states
   const [patients, setPatients] = useState([]);
   const [patientSearch, setPatientSearch] = useState('');
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef(null);
-
   const [financials, setFinancials] = useState({ limit: 0, outstanding: 0, available: 0 });
 
+  // 🚀 SEAMLESS RETAIL E-COMMERCE STATES
+  const [isEditingRetail, setIsEditingRetail] = useState(false);
+  const [saveToProfile, setSaveToProfile] = useState(true);
+  const [billingSameAsShipping, setBillingSameAsShipping] = useState(true);
+  
+  const [retailInfo, setRetailInfo] = useState({
+    full_name: '',
+    phone: '',
+    address: '',
+    city: '',
+    state: '',
+    zip: ''
+  });
+
+  const [billingInfo, setBillingInfo] = useState({
+    address: '',
+    city: '',
+    state: '',
+    zip: ''
+  });
+
+  // Initialize Retail Info from Profile automatically
   useEffect(() => {
-    if (isB2B) {
-      fetchB2BData();
+    if (!isB2B && profile) {
+      setRetailInfo({
+        full_name: profile.full_name || '',
+        phone: profile.contact_number || profile.phone || '',
+        address: profile.address || '',
+        city: profile.city || '',
+        state: profile.state || '',
+        zip: profile.zip || ''
+      });
+      // Auto-open edit mode if they have no address on file
+      if (!profile.address) setIsEditingRetail(true);
     }
+  }, [profile, isB2B]);
+
+  useEffect(() => {
+    if (isB2B) fetchB2BData();
   }, [isB2B, profile]);
 
   useEffect(() => {
@@ -71,13 +107,10 @@ export default function Checkout() {
         supabase.from('agency_patients').select('*').eq('agency_id', profile.company_id).order('full_name', { ascending: true }),
         supabase.from('orders').select('total_amount').eq('company_id', profile.company_id).eq('payment_status', 'unpaid')
       ]);
-
       setPatients(patientsRes.data || []);
-
       const limit = Number(profile?.companies?.credit_limit || 0);
       const outstanding = unpaidRes.data?.reduce((sum, order) => sum + Number(order.total_amount), 0) || 0;
       setFinancials({ limit, outstanding, available: limit - outstanding });
-      
     } catch (err) {
       console.error('Error fetching B2B data:', err);
     }
@@ -88,6 +121,22 @@ export default function Checkout() {
   const confirmRemoveFromCart = (index) => setItemToDelete(index);
   const executeRemoveFromCart = () => {
     if (itemToDelete !== null) { setCart(prevCart => prevCart.filter((_, index) => index !== itemToDelete)); setItemToDelete(null); }
+  };
+
+  // Validates the inline form before letting them proceed
+  const handleApplyAddress = () => {
+    if (!retailInfo.full_name || !retailInfo.address || !retailInfo.city || !retailInfo.state || !retailInfo.zip) {
+      setError('Please fill out all required shipping fields.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    if (!billingSameAsShipping && (!billingInfo.address || !billingInfo.city || !billingInfo.state || !billingInfo.zip)) {
+      setError('Please fill out all required billing address fields.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    setError('');
+    setIsEditingRetail(false); // Collapses the form into a clean card
   };
 
   const subtotal = cart.reduce((sum, item) => sum + item.line_total, 0);
@@ -101,25 +150,38 @@ export default function Checkout() {
   const handlePlaceOrder = async () => {
     if (cart.length === 0 || isCreditExceeded) return;
     
+    // Validations
     if (isB2B && !selectedPatient) {
       setError('Please select a patient for the shipping address.');
+      window.scrollTo({ top: 0, behavior: 'smooth' }); return;
+    }
+    if (!isB2B && (isEditingRetail || !retailInfo.address)) {
+      setError('Please confirm your shipping address before placing the order.');
       window.scrollTo({ top: 0, behavior: 'smooth' }); return;
     }
 
     setLoading(true); setError('');
 
     try {
+      // 1. Create the Order
       const { data: order, error: orderError } = await supabase.from('orders').insert({
-          user_id: profile.id, company_id: profile.company_id || null, patient_id: isB2B ? selectedPatient.id : null,
-          shipping_name: isB2B ? selectedPatient.full_name : profile.full_name, shipping_address: isB2B ? selectedPatient.address : profile.address,
-          shipping_city: isB2B ? selectedPatient.city : profile.city, shipping_state: isB2B ? selectedPatient.state : profile.state,
-          shipping_zip: isB2B ? selectedPatient.zip : profile.zip,
+          user_id: profile.id, 
+          company_id: profile.company_id || null, 
+          patient_id: isB2B ? selectedPatient.id : null,
+          
+          shipping_name: isB2B ? selectedPatient.full_name : retailInfo.full_name, 
+          shipping_address: isB2B ? selectedPatient.address : retailInfo.address,
+          shipping_city: isB2B ? selectedPatient.city : retailInfo.city, 
+          shipping_state: isB2B ? selectedPatient.state : retailInfo.state,
+          shipping_zip: isB2B ? selectedPatient.zip : retailInfo.zip,
+          
           status: 'pending', payment_method: paymentMethod, payment_status: 'unpaid',
           subtotal, tax_amount: taxAmount, shipping_amount: shippingFee, total_amount: totalAmount,
         }).select().single();
 
       if (orderError) throw orderError;
 
+      // 2. Insert Order Items
       const orderItems = cart.map(item => ({
         order_id: order.id, product_variant_id: item.variant_id, quantity_variants: item.quantity,
         total_base_units: item.quantity * (item.multiplier || 1), unit_price: item.unit_price, line_total: item.line_total
@@ -127,6 +189,18 @@ export default function Checkout() {
 
       const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
       if (itemsError) throw itemsError;
+
+      // 3. BACKGROUND UPDATE: Save to profile if checkbox was ticked
+      if (!isB2B && saveToProfile) {
+        await supabase.from('user_profiles').update({
+          full_name: retailInfo.full_name,
+          contact_number: retailInfo.phone,
+          address: retailInfo.address,
+          city: retailInfo.city,
+          state: retailInfo.state,
+          zip: retailInfo.zip
+        }).eq('id', profile.id);
+      }
 
       setShowSuccess(true);
     } catch (err) {
@@ -153,15 +227,18 @@ export default function Checkout() {
     );
   }
 
+  const inputClass = "w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 outline-none text-sm font-medium transition-all placeholder:text-slate-400";
+  const labelClass = "block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5";
+
   return (
-    <div className="max-w-5xl mx-auto space-y-8 pb-12">
+    <div className="max-w-5xl mx-auto space-y-8 pb-12 relative">
       <div className="flex flex-col sm:flex-row sm:items-center gap-4">
         <button onClick={() => navigate('/catalog')} className="flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-900 transition-colors w-fit"><ArrowLeft size={16} /> Back to Catalog</button>
         <div className="hidden sm:block w-px h-6 bg-slate-200 mx-2"></div>
         <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Secure Checkout</h2>
       </div>
 
-      {error && (<div className="p-4 bg-red-50 text-red-700 font-medium rounded-xl border border-red-100 text-sm flex items-center gap-3"><X size={18} /> {error}</div>)}
+      {error && (<div className="p-4 bg-red-50 text-red-700 font-medium rounded-xl border border-red-100 text-sm flex items-center gap-3 animate-in fade-in slide-in-from-top-2"><AlertCircle size={18} /> {error}</div>)}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         
@@ -182,17 +259,11 @@ export default function Checkout() {
                     <Building size={16} className="text-slate-400"/> {profile?.companies?.name || 'Your Agency'}
                   </p>
                   
-                  {/* Agency Contact Info */}
                   <div className="flex flex-col gap-1.5 text-xs text-slate-500">
-                    {profile?.companies?.email && (
-                      <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {profile.companies.email}</p>
-                    )}
-                    {(profile?.companies?.phone || profile?.contact_number) && (
-                      <p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {profile.companies.phone || profile.contact_number}</p>
-                    )}
+                    {profile?.companies?.email && (<p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {profile.companies.email}</p>)}
+                    {(profile?.companies?.phone || profile?.contact_number) && (<p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {profile.companies.phone || profile.contact_number}</p>)}
                   </div>
 
-                  {/* Agency Address */}
                   <div className="flex items-start gap-2">
                     <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
                     <div>
@@ -250,17 +321,11 @@ export default function Checkout() {
                       <User size={16} className="text-slate-400" /> {selectedPatient.full_name}
                     </p>
                     
-                    {/* Patient Contact Info */}
                     <div className="flex flex-col gap-1.5 text-xs text-slate-500">
-                      {selectedPatient.email && (
-                        <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {selectedPatient.email}</p>
-                      )}
-                      {(selectedPatient.phone || selectedPatient.contact_number) && (
-                        <p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {selectedPatient.phone || selectedPatient.contact_number}</p>
-                      )}
+                      {selectedPatient.email && (<p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {selectedPatient.email}</p>)}
+                      {(selectedPatient.phone || selectedPatient.contact_number) && (<p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {selectedPatient.phone || selectedPatient.contact_number}</p>)}
                     </div>
 
-                    {/* Patient Address */}
                     <div className="flex items-start gap-2">
                       <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
                       <div>
@@ -273,39 +338,140 @@ export default function Checkout() {
               </div>
             </div>
           ) : (
-            /* --- RETAIL CUSTOMER (SHIP & BILL) --- */
-            <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
-              <div className="flex items-center justify-between mb-3 pb-3 border-b border-slate-50">
+            /* --- 🚀 RETAIL CUSTOMER E-COMMERCE SHIPPING --- */
+            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+              <div className="flex items-center justify-between mb-4 pb-4 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <MapPin size={18} className="text-blue-500" />
-                  <h3 className="font-bold text-slate-900 text-sm tracking-wide uppercase">Shipping & Billing Address</h3>
+                  <MapPin size={20} className="text-blue-500" />
+                  <h3 className="font-bold text-slate-900 text-base tracking-wide">Shipping Details</h3>
                 </div>
+                {!isEditingRetail && (
+                  <button onClick={() => setIsEditingRetail(true)} className="flex items-center gap-1.5 text-sm font-bold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg transition-colors">
+                    <Edit2 size={14} /> Edit
+                  </button>
+                )}
               </div>
               
-              <div className="text-sm font-medium text-slate-600 space-y-3">
-                <p className="font-bold text-slate-900 text-base flex items-center gap-2">
-                  <User size={16} className="text-slate-400"/> {profile?.full_name}
-                </p>
-                
-                {/* Retail Contact Info */}
-                <div className="flex flex-col gap-1.5 text-xs text-slate-500">
-                  {profile?.email && (
-                    <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {profile.email}</p>
-                  )}
-                  {(profile?.contact_number || profile?.phone) && (
-                    <p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {profile.contact_number || profile.phone}</p>
-                  )}
-                </div>
+              {isEditingRetail ? (
+                <div className="space-y-5 animate-in fade-in">
+                  
+                  {/* Shipping Form */}
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className={labelClass}>Full Name <span className="text-red-500">*</span></label>
+                        <input type="text" value={retailInfo.full_name} onChange={e => setRetailInfo({...retailInfo, full_name: e.target.value})} className={inputClass} placeholder="John Doe" />
+                      </div>
+                      <div>
+                        <label className={labelClass}>Phone Number</label>
+                        <input type="tel" value={retailInfo.phone} onChange={e => setRetailInfo({...retailInfo, phone: e.target.value})} className={inputClass} placeholder="(555) 123-4567" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className={labelClass}>Street Address <span className="text-red-500">*</span></label>
+                      <input type="text" value={retailInfo.address} onChange={e => setRetailInfo({...retailInfo, address: e.target.value})} className={inputClass} placeholder="123 Main St, Apt 4B" />
+                    </div>
+                    <div className="grid grid-cols-6 gap-4">
+                      <div className="col-span-6 sm:col-span-3">
+                        <label className={labelClass}>City <span className="text-red-500">*</span></label>
+                        <input type="text" value={retailInfo.city} onChange={e => setRetailInfo({...retailInfo, city: e.target.value})} className={inputClass} placeholder="San Francisco" />
+                      </div>
+                      <div className="col-span-3 sm:col-span-1">
+                        <label className={labelClass}>State <span className="text-red-500">*</span></label>
+                        <input type="text" value={retailInfo.state} onChange={e => setRetailInfo({...retailInfo, state: e.target.value})} className={inputClass} placeholder="CA" />
+                      </div>
+                      <div className="col-span-3 sm:col-span-2">
+                        <label className={labelClass}>ZIP Code <span className="text-red-500">*</span></label>
+                        <input type="text" value={retailInfo.zip} onChange={e => setRetailInfo({...retailInfo, zip: e.target.value})} className={inputClass} placeholder="94105" />
+                      </div>
+                    </div>
+                  </div>
 
-                {/* Retail Address */}
-                <div className="flex items-start gap-2">
-                  <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
-                  <div>
-                    <p>{profile?.address || <span className="text-red-500 italic">No address on file. Please update your profile.</span>}</p>
-                    {(profile?.city || profile?.state) && (<p>{profile?.city}, {profile?.state} {profile?.zip}</p>)}
+                  {/* 🚀 NEW: Billing Address Checkbox Logic */}
+                  <div className="pt-2 border-t border-slate-100 flex flex-col gap-3">
+                    <label className="flex items-center gap-2.5 cursor-pointer group w-fit">
+                      <input 
+                        type="checkbox" 
+                        checked={billingSameAsShipping} 
+                        onChange={e => setBillingSameAsShipping(e.target.checked)} 
+                        className="w-4 h-4 text-blue-600 bg-slate-100 border-slate-300 rounded focus:ring-blue-500 cursor-pointer" 
+                      />
+                      <span className="text-sm font-bold text-slate-700 group-hover:text-slate-900 transition-colors">My billing address is the same as my shipping address</span>
+                    </label>
+
+                    {!billingSameAsShipping && (
+                      <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl space-y-4 animate-in fade-in slide-in-from-top-2">
+                        <div className="flex items-center gap-2 mb-2">
+                          <CreditCard size={16} className="text-slate-400" />
+                          <h4 className="text-sm font-bold text-slate-900">Billing Address</h4>
+                        </div>
+                        <div>
+                          <label className={labelClass}>Street Address <span className="text-red-500">*</span></label>
+                          <input type="text" value={billingInfo.address} onChange={e => setBillingInfo({...billingInfo, address: e.target.value})} className={`${inputClass} bg-white`} placeholder="Billing Street Address" />
+                        </div>
+                        <div className="grid grid-cols-6 gap-4">
+                          <div className="col-span-6 sm:col-span-3">
+                            <label className={labelClass}>City <span className="text-red-500">*</span></label>
+                            <input type="text" value={billingInfo.city} onChange={e => setBillingInfo({...billingInfo, city: e.target.value})} className={`${inputClass} bg-white`} placeholder="City" />
+                          </div>
+                          <div className="col-span-3 sm:col-span-1">
+                            <label className={labelClass}>State <span className="text-red-500">*</span></label>
+                            <input type="text" value={billingInfo.state} onChange={e => setBillingInfo({...billingInfo, state: e.target.value})} className={`${inputClass} bg-white`} placeholder="State" />
+                          </div>
+                          <div className="col-span-3 sm:col-span-2">
+                            <label className={labelClass}>ZIP <span className="text-red-500">*</span></label>
+                            <input type="text" value={billingInfo.zip} onChange={e => setBillingInfo({...billingInfo, zip: e.target.value})} className={`${inputClass} bg-white`} placeholder="ZIP Code" />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <label className="flex items-center gap-2.5 cursor-pointer group w-fit mt-1">
+                      <input 
+                        type="checkbox" 
+                        checked={saveToProfile} 
+                        onChange={e => setSaveToProfile(e.target.checked)} 
+                        className="w-4 h-4 text-blue-600 bg-slate-100 border-slate-300 rounded focus:ring-blue-500 cursor-pointer" 
+                      />
+                      <span className="text-sm font-medium text-slate-600 group-hover:text-slate-900 transition-colors">Save as default address for future orders</span>
+                    </label>
+                  </div>
+
+                  <div className="pt-4 flex justify-end gap-3">
+                    {profile?.address && (
+                      <button onClick={() => setIsEditingRetail(false)} className="px-5 py-2.5 text-sm font-bold text-slate-600 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors">Cancel</button>
+                    )}
+                    <button onClick={handleApplyAddress} className="px-8 py-3 text-sm font-bold text-white bg-slate-900 rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md w-full sm:w-auto">
+                      Use this Address
+                    </button>
                   </div>
                 </div>
-              </div>
+              ) : (
+                <div className="animate-in fade-in space-y-4">
+                  {/* Shipping Summary */}
+                  <div className="border border-slate-200 rounded-2xl p-5 flex justify-between items-start bg-slate-50/50 hover:border-slate-300 transition-colors group">
+                    <div className="space-y-1">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-1"><Package size={12}/> Ship To</p>
+                      <p className="font-bold text-slate-900 text-base">{retailInfo.full_name}</p>
+                      <p className="text-slate-600 text-sm leading-relaxed">{retailInfo.address}</p>
+                      <p className="text-slate-600 text-sm leading-relaxed">{retailInfo.city}, {retailInfo.state} {retailInfo.zip}</p>
+                      {retailInfo.phone && <p className="text-slate-500 text-sm mt-2">{retailInfo.phone}</p>}
+                    </div>
+                  </div>
+
+                  {/* Billing Summary (Only shows if different) */}
+                  {!billingSameAsShipping && (
+                    <div className="border border-slate-200 rounded-2xl p-5 flex justify-between items-start bg-slate-50/50 hover:border-slate-300 transition-colors group">
+                      <div className="space-y-1">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-1"><CreditCard size={12}/> Bill To</p>
+                        <p className="font-bold text-slate-900 text-sm">{retailInfo.full_name}</p>
+                        <p className="text-slate-600 text-sm leading-relaxed">{billingInfo.address}</p>
+                        <p className="text-slate-600 text-sm leading-relaxed">{billingInfo.city}, {billingInfo.state} {billingInfo.zip}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -323,7 +489,7 @@ export default function Checkout() {
         </div>
 
         {/* --- RIGHT COLUMN: Payment & Totals --- */}
-        <div className="lg:col-span-5 space-y-6 sticky top-8">
+        <div className="lg:col-span-5 space-y-6 sticky top-24">
           
           <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm space-y-6">
             
@@ -338,7 +504,6 @@ export default function Checkout() {
               </select>
             </div>
 
-            {/* --- DYNAMIC CREDIT BREAKDOWN --- */}
             {isB2B && paymentMethod === 'net_30' && (
               <div className={`p-4 rounded-xl border ${isCreditExceeded ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'} space-y-2 text-sm mt-4`}>
                 <div className="flex justify-between font-medium text-slate-500"><span>Credit Limit</span><span>${financials.limit.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
@@ -369,18 +534,23 @@ export default function Checkout() {
                 <p>Your order exceeds your available credit. Please pay previous invoices or change your billing method to Credit Card to proceed.</p>
               </div>
             ) : (
-              <button onClick={handlePlaceOrder} disabled={loading || (isB2B && !selectedPatient)} className={`w-full mt-6 py-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-md ${(isB2B && !selectedPatient) ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95 disabled:opacity-70'}`}>
+              <button 
+                onClick={handlePlaceOrder} 
+                disabled={loading || (isB2B && !selectedPatient) || (!isB2B && (isEditingRetail || !retailInfo.address))} 
+                className={`w-full mt-6 py-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-md ${((isB2B && !selectedPatient) || (!isB2B && (isEditingRetail || !retailInfo.address))) ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95 disabled:opacity-70'}`}
+              >
                 {loading ? 'Processing...' : (<><Receipt size={18} /> Place Order</>)}
               </button>
             )}
             
             {(isB2B && !selectedPatient) && (<p className="text-xs text-center text-red-500 font-bold animate-pulse">* Please select a patient to ship to</p>)}
+            {(!isB2B && isEditingRetail) && (<p className="text-xs text-center text-amber-500 font-bold animate-pulse">* Please confirm your shipping address above</p>)}
             <p className="text-xs text-center text-slate-400 font-medium pt-2">By placing this order, you agree to our purchasing terms.</p>
           </div>
         </div>
       </div>
 
-      {/* --- CONFIRMATION MODAL FOR DELETING CART ITEM --- */}
+      {/* MODALS */}
       {itemToDelete !== null && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center space-y-4 animate-in zoom-in-95 duration-200 border border-slate-100">
@@ -391,7 +561,6 @@ export default function Checkout() {
         </div>
       )}
 
-      {/* --- SUCCESS NOTIFICATION MODAL --- */}
       {showSuccess && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/40 backdrop-blur-md p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center space-y-4 animate-in zoom-in-95 duration-200 border border-slate-100">

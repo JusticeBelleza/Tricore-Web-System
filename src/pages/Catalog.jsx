@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
-import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet } from 'lucide-react';
+import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight } from 'lucide-react';
 
 function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVariantPrice, onClick }) {
   const [selectedProductId, setSelectedProductId] = useState(familyProducts[0].id);
@@ -96,25 +96,42 @@ export default function Catalog() {
   
   const [products, setProducts] = useState([]);
   const [variants, setVariants] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [pricingRules, setPricingRules] = useState([]);
   const [financials, setFinancials] = useState({ limit: 0, outstanding: 0, available: 0 });
   const [loading, setLoading] = useState(true);
   
-  // --- FIXED: Shared Agency Cart Logic ---
+  // 🚀 SERVER-SIDE PAGINATION & SEARCH STATE
+  const [page, setPage] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const pageSize = 24; // 24 is cleanly divisible by 2, 3, and 4 for responsive grids
+  const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('');
+  
   const [cart, setCart] = useState([]);
   const [cartLoaded, setCartLoaded] = useState(false);
 
-  // Use company_id if they are B2B, otherwise use their personal ID
   const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
+
+  // Debouncer
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+      setPage(0);
+    }, 500);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    setPage(0);
+  }, [selectedCategory]);
 
   useEffect(() => {
     if (profile?.id) {
       const savedCart = localStorage.getItem(cartKey);
-      if (savedCart) {
-        setCart(JSON.parse(savedCart));
-      } else {
-        setCart([]); 
-      }
+      if (savedCart) setCart(JSON.parse(savedCart));
+      else setCart([]); 
       setCartLoaded(true);
     }
   }, [profile?.id, cartKey]);
@@ -125,8 +142,6 @@ export default function Catalog() {
     }
   }, [cart, cartLoaded, profile?.id, cartKey]);
 
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('');
   const [viewingFamily, setViewingFamily] = useState(null); 
   const [toast, setToast] = useState({ show: false, message: '' });
   const [isAddingToCart, setIsAddingToCart] = useState(false);
@@ -135,24 +150,26 @@ export default function Catalog() {
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const [quantity, setQuantity] = useState(1);
 
+  // Fetch unique categories instantly
+  useEffect(() => {
+    const fetchCategories = async () => {
+      const { data } = await supabase.from('products').select('category').neq('category', null);
+      if (data) setCategories(Array.from(new Set(data.map(d => d.category).filter(Boolean))).sort());
+    };
+    fetchCategories();
+  }, []);
+
   useEffect(() => {
     fetchCatalogData();
-  }, [profile?.id, profile?.role, profile?.company_id]);
+  }, [profile?.id, profile?.role, profile?.company_id, debouncedSearch, selectedCategory, page]);
 
   const fetchCatalogData = async () => {
     setLoading(true);
     try {
-      const [productsRes, variantsRes] = await Promise.all([
-        supabase.from('products').select('*').order('name'),
-        supabase.from('product_variants').select('*').order('multiplier', { ascending: true })
-      ]);
-
-      if (productsRes.error) throw productsRes.error;
-      if (variantsRes.error) throw variantsRes.error;
-
       let rulesData = [];
       let calcFinancials = { limit: 0, outstanding: 0, available: 0 };
 
+      // Fetch Pricing Rules & Limits if B2B
       if (profile?.company_id && profile?.role?.toLowerCase() === 'b2b') {
         const [rulesRes, unpaidRes] = await Promise.all([
           supabase.from('pricing_rules').select('*').eq('company_id', profile.company_id),
@@ -167,8 +184,37 @@ export default function Catalog() {
         calcFinancials = { limit, outstanding, available: limit - outstanding };
       }
 
-      setProducts(productsRes.data || []);
-      setVariants(variantsRes.data || []);
+      // 🚀 SERVER-SIDE CATALOG QUERY (Joining Products + Variants instantly)
+      let query = supabase.from('products').select(`
+        *,
+        product_variants (*),
+        inventory (*)
+      `, { count: 'exact' });
+
+      if (debouncedSearch) {
+        query = query.or(`name.ilike.%${debouncedSearch}%,base_sku.ilike.%${debouncedSearch}%`);
+      }
+      
+      if (selectedCategory) {
+        query = query.eq('category', selectedCategory);
+      }
+
+      query = query.order('name');
+      
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+      query = query.range(from, to);
+
+      const { data, count, error } = await query;
+      if (error) throw error;
+
+      setProducts(data || []);
+      setTotalCount(count || 0);
+
+      // Extract variants from joined query
+      const fetchedVariants = (data || []).flatMap(p => p.product_variants || []);
+      setVariants(fetchedVariants);
+
       setPricingRules(rulesData || []);
       setFinancials(calcFinancials);
 
@@ -192,20 +238,10 @@ export default function Catalog() {
     return { originalPrice: variantRetail, finalPrice: finalPrice, isDiscounted: finalPrice < variantRetail };
   };
 
-  const categories = Array.from(new Set(products.map(p => p.category).filter(Boolean))).sort();
-
-  const filteredProducts = useMemo(() => {
-    return products.filter(p => {
-      const searchLower = searchTerm.toLowerCase();
-      const matchesSearch = p.name.toLowerCase().includes(searchLower) || p.base_sku.toLowerCase().includes(searchLower);
-      const matchesCategory = selectedCategory ? p.category === selectedCategory : true;
-      return matchesSearch && matchesCategory;
-    });
-  }, [products, searchTerm, selectedCategory]);
-
+  // 🚀 OPTIMIZED: Groups the already-filtered, paginated products directly.
   const groupedProducts = useMemo(() => {
     const groups = {};
-    filteredProducts.forEach(p => {
+    products.forEach(p => {
       const familyName = p.name.split(' - ')[0].trim();
       if (!groups[familyName]) groups[familyName] = [];
       groups[familyName].push(p);
@@ -230,7 +266,7 @@ export default function Catalog() {
       });
     });
     return Object.entries(groups);
-  }, [filteredProducts]);
+  }, [products]);
 
   const openProductModal = (familyName, familyProducts) => {
     const defaultProduct = familyProducts[0];
@@ -279,8 +315,6 @@ export default function Catalog() {
       setTimeout(() => { setToast({ show: false, message: '' }); }, 3000);
     }, 600); 
   };
-
-  if (loading) return <div className="text-slate-500 font-medium">Loading catalog...</div>;
 
   const activeProduct = viewingFamily ? viewingFamily.familyProducts.find(p => p.id === selectedProductId) : null;
   const activeVariants = activeProduct ? variants.filter(v => v.product_id === activeProduct.id) : [];
@@ -342,17 +376,41 @@ export default function Catalog() {
       </div>
 
       {/* Product Grid */}
-      {groupedProducts.length === 0 ? (
+      {loading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          {[1,2,3,4,5,6,7,8].map(n => (
+            <div key={n} className="bg-white rounded-2xl border border-slate-100 shadow-sm h-80 animate-pulse flex flex-col">
+              <div className="aspect-[4/3] bg-slate-100 w-full"></div>
+              <div className="p-5 flex-1 space-y-3"><div className="w-1/3 h-3 bg-slate-100 rounded"></div><div className="w-3/4 h-5 bg-slate-100 rounded"></div><div className="w-1/2 h-3 bg-slate-100 rounded"></div></div>
+            </div>
+          ))}
+        </div>
+      ) : groupedProducts.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-100 shadow-sm">
           <PackageOpen size={40} strokeWidth={1.5} className="mx-auto text-slate-300 mb-5" />
           <h3 className="text-lg font-bold text-slate-900 mb-2 tracking-tight">No products found</h3>
           <p className="text-slate-500 text-sm">Try adjusting your search or category filter.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-          {groupedProducts.map(([familyName, familyProducts]) => (
-            <ProductFamilyCard key={familyName} familyName={familyName} familyProducts={familyProducts} globalVariants={variants} getVariantPrice={getVariantPrice} onClick={() => openProductModal(familyName, familyProducts)} />
-          ))}
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {groupedProducts.map(([familyName, familyProducts]) => (
+              <ProductFamilyCard key={familyName} familyName={familyName} familyProducts={familyProducts} globalVariants={variants} getVariantPrice={getVariantPrice} onClick={() => openProductModal(familyName, familyProducts)} />
+            ))}
+          </div>
+          
+          {/* 🚀 PAGINATION CONTROLS */}
+          {totalCount > pageSize && (
+            <div className="flex items-center justify-between px-6 py-4 bg-white border border-slate-200 shadow-sm rounded-2xl mt-6">
+              <span className="text-sm font-medium text-slate-500">
+                Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> products
+              </span>
+              <div className="flex gap-2">
+                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={18} /></button>
+                <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalCount} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={18} /></button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

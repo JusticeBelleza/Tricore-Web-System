@@ -4,7 +4,8 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { 
   Package, Receipt, ChevronDown, Calendar, Hash, Building, MapPin, Mail,
-  CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2
+  CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2,
+  ChevronLeft, ChevronRight
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -17,11 +18,16 @@ export default function MyOrders() {
   const [loading, setLoading] = useState(true);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
 
+  // 🚀 SERVER-SIDE PAGINATION
+  const [page, setPage] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const pageSize = 20;
+
   useEffect(() => {
     if (profile?.company_id || profile?.id) {
       fetchMyOrders();
     }
-  }, [profile?.company_id, profile?.id]);
+  }, [profile?.company_id, profile?.id, page]);
 
   const fetchMyOrders = async () => {
     setLoading(true);
@@ -39,7 +45,7 @@ export default function MyOrders() {
             id, quantity_variants, unit_price, line_total,
             product_variants ( name, sku, products ( name, base_sku ) )
           )
-        `)
+        `, { count: 'exact' })
         .order('created_at', { ascending: false });
 
       if (profile?.company_id) {
@@ -48,14 +54,22 @@ export default function MyOrders() {
         query = query.eq('user_id', profile.id);
       }
 
+      // Pagination Logic
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+      query = query.range(from, to);
+
       const [ordersRes, driversRes] = await Promise.all([
         query,
         supabase.from('user_profiles').select('full_name, contact_number').eq('role', 'driver')
       ]);
 
       if (ordersRes.error) throw ordersRes.error;
+      
       setOrders(ordersRes.data || []);
+      setTotalCount(ordersRes.count || 0);
       setDrivers(driversRes.data || []);
+      
     } catch (error) {
       console.error('Error fetching orders:', error.message);
     } finally {
@@ -136,21 +150,21 @@ export default function MyOrders() {
 
     const isB2B = !!order.company_id || !!profile?.company_id;
 
-    // BILL TO logic
+    // 🚀 SMART BILL TO DATA
     const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || 'Retail Customer');
     const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
     const billCityState = isB2B 
       ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
       : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
-    const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || '');
+    const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '');
     const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || profile?.email || '');
 
-    // SHIP TO logic
+    // 🚀 SMART SHIP TO DATA (Ensures retail gets phone/email correctly)
     const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
     const shipAddress = order.shipping_address || 'No shipping address provided';
     const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-    const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
-    const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
+    const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
+    const shipEmail = order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
 
     doc.setFont("helvetica", "bold");
     doc.text("BILL TO:", 14, 50); 
@@ -171,7 +185,6 @@ export default function MyOrders() {
     doc.setFont("helvetica", "bold");
     doc.text(shipName, 110, currentYShip); currentYShip += 5;
     doc.setFont("helvetica", "normal");
-    // 🚀 FIXED: Removed the "c/o Company Name" line completely
     if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
     if (shipCityState) { doc.text(shipCityState, 110, currentYShip); currentYShip += 5; }
     if (shipPhone) { doc.text(`Phone: ${shipPhone}`, 110, currentYShip); currentYShip += 5; }
@@ -254,288 +267,327 @@ export default function MyOrders() {
           </button>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
-          <table className="w-full text-left text-sm whitespace-nowrap">
-            <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500">
-              <tr>
-                <th className="px-6 py-4 font-bold tracking-tight">Order Details</th>
-                <th className="px-6 py-4 font-bold tracking-tight">Date Placed</th>
-                <th className="px-6 py-4 font-bold tracking-tight">Total Amount</th>
-                <th className="px-6 py-4 font-bold tracking-tight">Payment</th>
-                <th className="px-6 py-4 font-bold tracking-tight">Fulfillment</th>
-                <th className="px-6 py-4 font-bold tracking-tight text-right"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {orders.map((order) => {
-                const isExpanded = expandedOrderId === order.id;
-                const shortId = order.id.split('-')[0].toUpperCase();
-                const isB2B = !!order.company_id || !!profile?.company_id;
+        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col mt-6">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm whitespace-nowrap">
+              <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500">
+                <tr>
+                  <th className="px-6 py-4 font-bold tracking-tight rounded-tl-3xl">Order Details</th>
+                  <th className="px-6 py-4 font-bold tracking-tight">Date Placed</th>
+                  <th className="px-6 py-4 font-bold tracking-tight">Total Amount</th>
+                  <th className="px-6 py-4 font-bold tracking-tight">Payment</th>
+                  <th className="px-6 py-4 font-bold tracking-tight">Fulfillment</th>
+                  <th className="px-6 py-4 font-bold tracking-tight text-right rounded-tr-3xl"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {orders.map((order) => {
+                  const isExpanded = expandedOrderId === order.id;
+                  const shortId = order.id.split('-')[0].toUpperCase();
+                  const isB2B = !!order.company_id || !!profile?.company_id;
 
-                const rawDriverName = order.driver_name || '';
-                const driverParts = rawDriverName.split('|').map(s => s.trim());
-                const displayDriverName = driverParts[0] || '';
-                let displayDriverPhone = driverParts[1] || '';
+                  const rawDriverName = order.driver_name || '';
+                  const driverParts = rawDriverName.split('|').map(s => s.trim());
+                  const displayDriverName = driverParts[0] || '';
+                  let displayDriverPhone = driverParts[1] || '';
 
-                if (!displayDriverPhone && displayDriverName) {
-                  const assignedDriverObj = drivers.find(d => (d.full_name || '').toLowerCase() === displayDriverName.toLowerCase());
-                  displayDriverPhone = assignedDriverObj?.contact_number || '';
-                }
+                  if (!displayDriverPhone && displayDriverName) {
+                    const assignedDriverObj = drivers.find(d => (d.full_name || '').toLowerCase() === displayDriverName.toLowerCase());
+                    displayDriverPhone = assignedDriverObj?.contact_number || '';
+                  }
 
-                const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || 'Retail Customer');
-                const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
-                const billCityState = isB2B 
-                  ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
-                  : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
-                const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || '');
-                const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || profile?.email || '');
+                  // 🚀 SMART UI DATA BINDING
+                  const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || 'Retail Customer');
+                  const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
+                  const billCityState = isB2B 
+                    ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
+                    : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
+                  const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '');
+                  const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || profile?.email || '');
 
-                const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
-                const shipAddress = order.shipping_address || 'No shipping address provided';
-                const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-                const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
-                const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
+                  const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
+                  const shipAddress = order.shipping_address || 'No shipping address provided';
+                  const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
+                  const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
+                  const shipEmail = order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
 
-                const isNet30 = order.payment_method === 'net_30';
-                let dueDateDisplay = '';
-                let isOverdue = false;
+                  const isNet30 = order.payment_method === 'net_30';
+                  let dueDateDisplay = '';
+                  let isOverdue = false;
 
-                if (isNet30) {
-                  const baseDate = new Date(order.created_at);
-                  const dueDate = new Date(baseDate);
-                  dueDate.setDate(dueDate.getDate() + 30);
-                  dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-                  isOverdue = order.payment_status === 'unpaid' && new Date() > dueDate;
-                }
-                
-                return (
-                  <React.Fragment key={order.id}>
-                    <tr 
-                      onClick={() => toggleOrderDetails(order.id)} 
-                      className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-800' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}
-                    >
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-4">
-                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border transition-colors shadow-sm ${isExpanded ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
-                            <Package size={18} />
-                          </div>
-                          <div>
-                            <p className="font-mono font-bold text-slate-900 text-sm tracking-tight">{shortId}</p>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Hash size={10}/> Order ID</p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> Date</p>
-                      </td>
-                      <td className="px-6 py-4">
-                        <p className="font-extrabold text-slate-900 text-base">${order.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex flex-col items-start gap-1">
-                          {getPaymentStatusBadge(order.payment_status)}
-                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
-                            <CreditCard size={10} /> {order.payment_method.replace(/_/g, ' ')}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex flex-col items-start gap-1">
-                          {getStatusBadge(order.status)}
-                          {isOverdue && (
-                            <span className="text-[10px] font-bold text-red-600 uppercase tracking-widest flex items-center gap-1 mt-1">
-                              <AlertCircle size={10} /> Overdue
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}>
-                          <ChevronDown size={20} />
-                        </button>
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr className="bg-slate-50 shadow-inner">
-                        <td colSpan="6" className="p-0 border-b border-slate-200">
-                          <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                              <div className="lg:col-span-2 space-y-6">
-                                
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Building size={14}/> Bill To</h4>
-                                    <p className="font-bold text-slate-900 text-base mb-2">{billName}</p>
-                                    <div className="space-y-2 text-sm font-medium text-slate-600">
-                                      {billEmail && <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {billEmail}</p>}
-                                      {billPhone && <p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {billPhone}</p>}
-                                      <div className="flex items-start gap-2">
-                                        <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
-                                        <div className="whitespace-normal leading-relaxed"><p>{billAddress}</p>{billCityState && <p>{billCityState}</p>}</div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                  
-                                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><MapPin size={14}/> Ship To</h4>
-                                    <p className="font-bold text-slate-900 text-base mb-2">{shipName}</p>
-                                    <div className="space-y-2 text-sm font-medium text-slate-600">
-                                      {shipEmail && <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {shipEmail}</p>}
-                                      {shipPhone && <p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {shipPhone}</p>}
-                                      <div className="flex items-start gap-2">
-                                        <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
-                                        <div className="whitespace-normal leading-relaxed"><p>{shipAddress}</p>{shipCityState && <p>{shipCityState}</p>}</div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-
-                                <div className="space-y-4">
-                                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
-                                    <FileText size={16} className="text-slate-400" /> Order Items
-                                  </h4>
-                                  <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
-                                    <table className="w-full text-left text-sm whitespace-normal">
-                                      <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest">
-                                        <tr>
-                                          <th className="px-5 py-3 font-bold w-full rounded-tl-2xl">Product</th>
-                                          <th className="px-5 py-3 font-bold text-center">Qty</th>
-                                          <th className="px-5 py-3 font-bold text-right rounded-tr-2xl">Total</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody className="divide-y divide-slate-100">
-                                        {order.order_items?.map((item) => (
-                                          <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
-                                            <td className="px-5 py-4">
-                                              <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name}</p>
-                                              <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku}</span></p>
-                                            </td>
-                                            <td className="px-5 py-4 text-center">
-                                              <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span>
-                                            </td>
-                                            <td className="px-5 py-4 text-right font-extrabold text-slate-900">
-                                              ${item.line_total.toLocaleString(undefined, {minimumFractionDigits: 2})}
-                                            </td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="space-y-6">
-                                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
-                                    <DollarSign size={16} className="text-slate-400" /> Summary
-                                  </h4>
-                                  <div className="space-y-3 text-sm font-medium">
-                                    <div className="flex justify-between text-slate-500"><span>Subtotal</span><span className="text-slate-900">${order.subtotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
-                                    <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${order.shipping_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
-                                    <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${order.tax_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
-                                    <div className="h-px w-full bg-slate-200/60 my-2"></div>
-                                    <div className="flex justify-between items-end">
-                                      <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
-                                      <span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${order.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
-                                    </div>
-                                  </div>
-
-                                  {isNet30 && (
-                                    <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
-                                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Due Date</span>
-                                      <span className={`text-xs font-bold px-2 py-1 rounded shadow-sm border ${
-                                        isOverdue 
-                                          ? 'bg-red-50 text-red-700 border-red-200' 
-                                          : order.status === 'delivered' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-600 border-slate-200'
-                                      }`}>
-                                        {dueDateDisplay}
-                                      </span>
-                                    </div>
-                                  )}
-
-                                  {/* 🚀 FIXED: Only shows Invoice/Receipt if Delivered */}
-                                  {order.status === 'delivered' && (
-                                    <div className="pt-3 border-t border-slate-100 flex flex-col gap-2">
-                                      {order.payment_status === 'paid' ? (
-                                        <button onClick={() => generatePDF(order, 'receipt')} className="w-full py-3 bg-emerald-600 border border-emerald-600 text-white text-sm font-bold rounded-xl shadow-md hover:bg-emerald-700 active:scale-95 transition-all flex items-center justify-center gap-2">
-                                          <CheckCircle2 size={16} /> Download Receipt
-                                        </button>
-                                      ) : (
-                                        <button onClick={() => generatePDF(order, 'invoice')} className="w-full py-3 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center justify-center gap-2">
-                                          <FileDown size={16} className="text-slate-400" /> Download Invoice
-                                        </button>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                                {(order.status === 'ready_for_delivery' || order.status === 'shipped' || order.status === 'delivered') && order.driver_name && (
-                                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
-                                      <Truck size={16} className="text-slate-400" /> Dispatch Info
-                                    </h4>
-                                    <div className="space-y-3 text-sm">
-                                      <div>
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p>
-                                        <p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p>
-                                      </div>
-                                      
-                                      {displayDriverPhone && (
-                                        <div>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p>
-                                          <p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p>
-                                        </div>
-                                      )}
-
-                                      <div>
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p>
-                                        <p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p>
-                                      </div>
-                                      {order.vehicle_license && (
-                                        <div>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p>
-                                          <p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p>
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                                {order.status === 'delivered' && (order.photo_url || order.signature_url) && (
-                                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-4">
-                                      <Truck size={16} className="text-slate-400" /> Proof of Delivery
-                                    </h4>
-                                    <div className="grid grid-cols-2 gap-3">
-                                      {order.photo_url && (
-                                        <div>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Photo</p>
-                                          <a href={order.photo_url} target="_blank" rel="noreferrer" className="block relative group rounded-xl overflow-hidden border border-slate-200 shadow-sm">
-                                            <img src={order.photo_url} alt="Delivery Proof" className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300" />
-                                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors"></div>
-                                          </a>
-                                        </div>
-                                      )}
-                                      {order.signature_url && (
-                                        <div>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Signature</p>
-                                          <a href={order.signature_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-slate-200 bg-white p-2 hover:border-slate-300 transition-colors shadow-sm">
-                                            <img src={order.signature_url} alt="Signature" className="w-full h-20 object-contain mix-blend-multiply" />
-                                          </a>
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
+                  if (isNet30) {
+                    const baseDate = new Date(order.created_at);
+                    const dueDate = new Date(baseDate);
+                    dueDate.setDate(dueDate.getDate() + 30);
+                    dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+                    isOverdue = order.payment_status === 'unpaid' && new Date() > dueDate;
+                  }
+                  
+                  return (
+                    <React.Fragment key={order.id}>
+                      <tr 
+                        onClick={() => toggleOrderDetails(order.id)} 
+                        className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-800' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}
+                      >
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-4">
+                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border transition-colors shadow-sm ${isExpanded ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                              <Package size={18} />
+                            </div>
+                            <div>
+                              <p className="font-mono font-bold text-slate-900 text-sm tracking-tight">{shortId}</p>
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Hash size={10}/> Order ID</p>
                             </div>
                           </div>
                         </td>
+                        <td className="px-6 py-4">
+                          <p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> Date</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <p className="font-extrabold text-slate-900 text-base">${order.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-col items-start gap-1">
+                            {getPaymentStatusBadge(order.payment_status)}
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
+                              <CreditCard size={10} /> {order.payment_method.replace(/_/g, ' ')}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-col items-start gap-1">
+                            {getStatusBadge(order.status)}
+                            {isOverdue && (
+                              <span className="text-[10px] font-bold text-red-600 uppercase tracking-widest flex items-center gap-1 mt-1">
+                                <AlertCircle size={10} /> Overdue
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}>
+                            <ChevronDown size={20} />
+                          </button>
+                        </td>
                       </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
+                      {isExpanded && (
+                        <tr className="bg-slate-50 shadow-inner">
+                          <td colSpan="6" className="p-0 border-b border-slate-200">
+                            <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
+                              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                                <div className="lg:col-span-2 space-y-6">
+                                  
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    {/* 🚀 COMPLETE BILL TO CARD */}
+                                    <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm group hover:border-slate-300 transition-colors">
+                                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><CreditCard size={14}/> Bill To</h4>
+                                      <p className="font-bold text-slate-900 text-base mb-2 flex items-center gap-2">
+                                        <User size={16} className="text-slate-400"/> {billName}
+                                      </p>
+                                      <div className="space-y-2 text-sm font-medium text-slate-600">
+                                        <div className="flex flex-col gap-1.5 text-xs text-slate-500">
+                                          {billEmail && <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {billEmail}</p>}
+                                          {billPhone && <p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {billPhone}</p>}
+                                        </div>
+                                        <div className="flex items-start gap-2 pt-2 border-t border-slate-100 mt-2">
+                                          <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
+                                          <div className="whitespace-normal leading-relaxed text-sm">
+                                            <p>{billAddress}</p>
+                                            {billCityState && <p>{billCityState}</p>}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                    
+                                    {/* 🚀 COMPLETE SHIP TO CARD */}
+                                    <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm group hover:border-slate-300 transition-colors">
+                                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Package size={14}/> Ship To</h4>
+                                      <p className="font-bold text-slate-900 text-base mb-2 flex items-center gap-2">
+                                        <User size={16} className="text-slate-400"/> {shipName}
+                                      </p>
+                                      <div className="space-y-2 text-sm font-medium text-slate-600">
+                                        <div className="flex flex-col gap-1.5 text-xs text-slate-500">
+                                          {shipEmail && <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {shipEmail}</p>}
+                                          {shipPhone && <p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {shipPhone}</p>}
+                                        </div>
+                                        <div className="flex items-start gap-2 pt-2 border-t border-slate-100 mt-2">
+                                          <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
+                                          <div className="whitespace-normal leading-relaxed text-sm">
+                                            <p>{shipAddress}</p>
+                                            {shipCityState && <p>{shipCityState}</p>}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="space-y-4">
+                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
+                                      <FileText size={16} className="text-slate-400" /> Order Items
+                                    </h4>
+                                    <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+                                      <table className="w-full text-left text-sm whitespace-normal">
+                                        <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest">
+                                          <tr>
+                                            <th className="px-5 py-3 font-bold w-full rounded-tl-2xl">Product</th>
+                                            <th className="px-5 py-3 font-bold text-center">Qty</th>
+                                            <th className="px-5 py-3 font-bold text-right rounded-tr-2xl">Total</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100">
+                                          {order.order_items?.map((item) => (
+                                            <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
+                                              <td className="px-5 py-4">
+                                                <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name}</p>
+                                                <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku}</span></p>
+                                              </td>
+                                              <td className="px-5 py-4 text-center">
+                                                <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span>
+                                              </td>
+                                              <td className="px-5 py-4 text-right font-extrabold text-slate-900">
+                                                ${item.line_total.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="space-y-6">
+                                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
+                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
+                                      <DollarSign size={16} className="text-slate-400" /> Summary
+                                    </h4>
+                                    <div className="space-y-3 text-sm font-medium">
+                                      <div className="flex justify-between text-slate-500"><span>Subtotal</span><span className="text-slate-900">${order.subtotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${order.shipping_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${order.tax_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
+                                      <div className="h-px w-full bg-slate-200/60 my-2"></div>
+                                      <div className="flex justify-between items-end">
+                                        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
+                                        <span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${order.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+                                      </div>
+                                    </div>
+
+                                    {isNet30 && (
+                                      <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
+                                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Due Date</span>
+                                        <span className={`text-xs font-bold px-2 py-1 rounded shadow-sm border ${
+                                          isOverdue 
+                                            ? 'bg-red-50 text-red-700 border-red-200' 
+                                            : order.status === 'delivered' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-600 border-slate-200'
+                                        }`}>
+                                          {dueDateDisplay}
+                                        </span>
+                                      </div>
+                                    )}
+
+                                    {order.status === 'delivered' && (
+                                      <div className="pt-3 border-t border-slate-100 flex flex-col gap-2">
+                                        {order.payment_status === 'paid' ? (
+                                          <button onClick={() => generatePDF(order, 'receipt')} className="w-full py-3 bg-emerald-600 border border-emerald-600 text-white text-sm font-bold rounded-xl shadow-md hover:bg-emerald-700 active:scale-95 transition-all flex items-center justify-center gap-2">
+                                            <CheckCircle2 size={16} /> Download Receipt
+                                          </button>
+                                        ) : (
+                                          <button onClick={() => generatePDF(order, 'invoice')} className="w-full py-3 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center justify-center gap-2">
+                                            <FileDown size={16} className="text-slate-400" /> Download Invoice
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                  
+                                  {(order.status === 'ready_for_delivery' || order.status === 'shipped' || order.status === 'delivered') && order.driver_name && (
+                                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
+                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
+                                        <Truck size={16} className="text-slate-400" /> Dispatch Info
+                                      </h4>
+                                      <div className="space-y-3 text-sm">
+                                        <div>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p>
+                                          <p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p>
+                                        </div>
+                                        
+                                        {displayDriverPhone && (
+                                          <div>
+                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p>
+                                            <p className="font-medium text-blue-600 flex items-center gap-1.5 hover:text-blue-700 transition-colors">
+                                              <Phone size={14} className="text-slate-400"/> 
+                                              <a href={`tel:${displayDriverPhone.replace(/[^0-9+]/g, '')}`} className="underline underline-offset-2">
+                                                {displayDriverPhone}
+                                              </a>
+                                            </p>
+                                          </div>
+                                        )}
+
+                                        <div>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p>
+                                          <p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p>
+                                        </div>
+                                        {order.vehicle_license && (
+                                          <div>
+                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p>
+                                            <p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {order.status === 'delivered' && (order.photo_url || order.signature_url) && (
+                                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-4">
+                                        <Truck size={16} className="text-slate-400" /> Proof of Delivery
+                                      </h4>
+                                      <div className="grid grid-cols-2 gap-3">
+                                        {order.photo_url && (
+                                          <div>
+                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Photo</p>
+                                            <a href={order.photo_url} target="_blank" rel="noreferrer" className="block relative group rounded-xl overflow-hidden border border-slate-200 shadow-sm">
+                                              <img src={order.photo_url} alt="Delivery Proof" className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300" />
+                                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors"></div>
+                                            </a>
+                                          </div>
+                                        )}
+                                        {order.signature_url && (
+                                          <div>
+                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Signature</p>
+                                            <a href={order.signature_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-slate-200 bg-white p-2 hover:border-slate-300 transition-colors shadow-sm">
+                                              <img src={order.signature_url} alt="Signature" className="w-full h-20 object-contain mix-blend-multiply" />
+                                            </a>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 🚀 PAGINATION CONTROLS */}
+          {totalCount > pageSize && (
+            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
+              <span className="text-sm font-medium text-slate-500">
+                Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> entries
+              </span>
+              <div className="flex gap-2">
+                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={18} /></button>
+                <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalCount} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={18} /></button>
+              </div>
+            </div>
+          )}
+
         </div>
       )}
     </div>

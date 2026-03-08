@@ -3,7 +3,8 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { 
   Search, Package, CheckCircle2, Truck, FileDown, 
-  CheckSquare, Square, Box, ChevronDown, Hash, Calendar, MapPin, Building, User, Phone, Mail, Car
+  CheckSquare, Square, Box, ChevronDown, Hash, Calendar, MapPin, Building, User, Phone, Mail, Car,
+  ChevronLeft, ChevronRight
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -13,38 +14,114 @@ export default function Warehouse() {
   const [orders, setOrders] = useState([]);
   const [drivers, setDrivers] = useState([]); 
   const [loading, setLoading] = useState(true);
+  
+  // 🚀 SERVER-SIDE PAGINATION & SEARCH
+  const [page, setPage] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const pageSize = 20;
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('processing'); 
   
+  // 🚀 HEAD COUNT LOGIC
+  const [tabCounts, setTabCounts] = useState({ processing: 0, completed: 0 });
+
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [pickedItems, setPickedItems] = useState({});
   const [confirmReady, setConfirmReady] = useState({ show: false, orderId: null });
 
+  // Debouncer
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+      setPage(0);
+    }, 500);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    setPage(0);
+    setExpandedOrderId(null);
+  }, [activeTab]);
+
   useEffect(() => {
     if (profile?.id) {
       fetchWarehouseOrders();
+      fetchTabCounts();
+
+      const sub = supabase.channel('warehouse_orders')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+          fetchWarehouseOrders();
+          fetchTabCounts();
+        }).subscribe();
+
+      const localUpdateHandler = () => {
+        fetchWarehouseOrders();
+        fetchTabCounts();
+      };
+      window.addEventListener('orderStatusChanged', localUpdateHandler);
+
+      return () => {
+        supabase.removeChannel(sub);
+        window.removeEventListener('orderStatusChanged', localUpdateHandler);
+      };
     }
-  }, [profile?.id]);
+  }, [profile?.id, activeTab, debouncedSearch, page]);
+
+  const fetchTabCounts = async () => {
+    try {
+      const [procReq, compReq] = await Promise.all([
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
+        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['ready_for_delivery', 'shipped'])
+      ]);
+      setTabCounts({
+        processing: procReq.count || 0,
+        completed: compReq.count || 0
+      });
+    } catch (error) {
+      console.error('Error counting tabs:', error);
+    }
+  };
 
   const fetchWarehouseOrders = async () => {
     setLoading(true);
     try {
-      const [ordersRes, driversRes] = await Promise.all([
-        supabase.from('orders').select(`
+      // 1. Fetch Drivers
+      const { data: driversData } = await supabase.from('user_profiles').select('full_name, contact_number').eq('role', 'driver');
+      setDrivers(driversData || []);
+
+      // 2. Build Server-Side Query
+      let query = supabase.from('orders').select(`
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( contact_number, email ),
           order_items ( id, quantity_variants, unit_price, line_total, product_variants ( name, sku, products ( name ) ) )
-        `)
-        .in('status', ['processing', 'ready_for_delivery', 'shipped']) 
-        .order('created_at', { ascending: false }),
-        supabase.from('user_profiles').select('full_name, contact_number').eq('role', 'driver')
-      ]);
+        `, { count: 'exact' });
 
-      if (ordersRes.error) throw ordersRes.error;
-      setOrders(ordersRes.data || []);
-      setDrivers(driversRes.data || []);
+      if (activeTab === 'processing') {
+        query = query.eq('status', 'processing');
+      } else {
+        query = query.in('status', ['ready_for_delivery', 'shipped']);
+      }
+
+      if (debouncedSearch) {
+        query = query.ilike('shipping_name', `%${debouncedSearch}%`);
+      }
+
+      query = query.order('created_at', { ascending: false });
+
+      // Apply Pagination
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+      query = query.range(from, to);
+
+      const { data, count, error } = await query;
+      if (error) throw error;
+      
+      setOrders(data || []);
+      setTotalCount(count || 0);
+
     } catch (error) {
       console.error('Error:', error.message);
     } finally {
@@ -76,18 +153,13 @@ export default function Warehouse() {
     try {
       const { error } = await supabase.from('orders').update({ status: 'ready_for_delivery' }).eq('id', orderId);
       if (error) throw error;
-      setOrders(orders.map(o => o.id === orderId ? { ...o, status: 'ready_for_delivery' } : o));
-      
-      // INSTANTLY UPDATE THE SIDEBAR BADGE
       window.dispatchEvent(new Event('orderStatusChanged'));
-
       if (activeTab === 'processing') {
         setExpandedOrderId(null);
       }
     } catch (error) { alert('Failed to mark as ready.'); }
   };
 
-  // --- 100% RELIABLE CANVAS IMAGE LOADER FOR jsPDF ---
   const getBase64ImageFromUrl = (imageUrl) => {
     return new Promise((resolve) => {
       const img = new Image();
@@ -98,25 +170,18 @@ export default function Warehouse() {
         canvas.height = img.height;
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0);
-        const dataURL = canvas.toDataURL("image/png");
-        resolve({ dataURL, width: img.width, height: img.height });
+        resolve({ dataURL: canvas.toDataURL("image/png"), width: img.width, height: img.height });
       };
-      img.onerror = () => {
-        console.error("Failed to load logo image.");
-        resolve(null);
-      };
+      img.onerror = () => resolve(null);
       img.src = imageUrl;
     });
   };
 
-  // --- REBUILT PACKING SLIP PDF GENERATOR (WITH COMPLETE INFO) ---
   const generatePackingSlip = async (order) => {
     const doc = new jsPDF();
     const orderNum = order.id.substring(0, 8).toUpperCase();
-    const dateObj = new Date(order.created_at);
-    const datePacked = dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    const datePacked = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-    // 1. Fetch and Stamp Logo
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
     if (logoData) {
       const imgWidth = 45; 
@@ -127,7 +192,6 @@ export default function Warehouse() {
       doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
     }
     
-    // Order Info (Top Right)
     doc.setFontSize(14); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42);
     doc.text("PACKING SLIP", 140, 18);
     doc.setFontSize(10); doc.setFont("helvetica", "normal");
@@ -136,7 +200,6 @@ export default function Warehouse() {
 
     const isB2B = !!order.company_id;
 
-    // --- COMPLETE LOGIC: Agency = Bill To, Patient = Ship To ---
     const billName = isB2B ? (order.companies?.name || 'Agency') : (order.shipping_name || 'Retail Customer');
     const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
     const billCityState = isB2B 
@@ -151,25 +214,19 @@ export default function Warehouse() {
     const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
     const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
 
-    // Render Addresses Header
     doc.setFontSize(10); doc.setFont("helvetica", "bold");
     doc.text("SHIP TO", 14, 45); 
     doc.text("BILL TO", 110, 45);
     
-    // Left side: SHIP TO (Patient)
     let currentYShip = 52;
     doc.setFont("helvetica", "bold");
     doc.text(shipName, 14, currentYShip); currentYShip += 5;
     doc.setFont("helvetica", "normal");
-    if (isB2B && order.companies?.name) {
-        doc.text(`c/o ${order.companies.name}`, 14, currentYShip); currentYShip += 5; 
-    }
     if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 14, currentYShip); currentYShip += 5; }
     if (shipCityState) { doc.text(shipCityState, 14, currentYShip); currentYShip += 5; }
     if (shipPhone) { doc.text(`Phone: ${shipPhone}`, 14, currentYShip); currentYShip += 5; }
     if (shipEmail) { doc.text(`Email: ${shipEmail}`, 14, currentYShip); currentYShip += 5; }
 
-    // Right side: BILL TO (Agency or Retail Customer)
     let currentYBill = 52;
     doc.setFont("helvetica", "bold");
     doc.text(billName, 110, currentYBill); currentYBill += 5;
@@ -181,18 +238,12 @@ export default function Warehouse() {
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    // Render Items Table
-    const tableRows = order.order_items.map(item => {
-      const productName = item.product_variants?.products?.name || item.product_variants?.name || 'Item';
-      const variantName = item.product_variants?.name || 'N/A';
-      const sku = item.product_variants?.sku || 'N/A';
-      return [
-        productName,
-        variantName,
-        sku,
-        `${item.quantity_variants} of ${item.quantity_variants}`
-      ];
-    });
+    const tableRows = order.order_items.map(item => [
+      item.product_variants?.products?.name || item.product_variants?.name || 'Item',
+      item.product_variants?.name || 'N/A',
+      item.product_variants?.sku || 'N/A',
+      `${item.quantity_variants} of ${item.quantity_variants}`
+    ]);
 
     autoTable(doc, {
       startY: maxAddressY + 10,
@@ -201,17 +252,11 @@ export default function Warehouse() {
       theme: 'striped', 
       headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9 },
       styles: { fontSize: 9, cellPadding: 6, textColor: [15, 23, 42] }, 
-      columnStyles: { 
-        0: { cellWidth: 'auto' }, 
-        1: { cellWidth: 45 },
-        2: { cellWidth: 35 },
-        3: { cellWidth: 25, halign: 'center', valign: 'middle', fontStyle: 'bold' } 
-      }
+      columnStyles: { 0: { cellWidth: 'auto' }, 1: { cellWidth: 45 }, 2: { cellWidth: 35 }, 3: { cellWidth: 25, halign: 'center', valign: 'middle', fontStyle: 'bold' } }
     });
 
     const finalY = doc.lastAutoTable.finalY || maxAddressY + 20;
     
-    // Signatures Area
     doc.setFont("helvetica", "bold");
     doc.text("Signed by:", 14, finalY + 20);
     doc.setFont("helvetica", "normal");
@@ -222,7 +267,6 @@ export default function Warehouse() {
     doc.setFont("helvetica", "normal");
     doc.text("________________________________________", 110, finalY + 30);
 
-    // Footer
     const pageHeight = doc.internal.pageSize.height;
     doc.setFontSize(9); doc.setFont("helvetica", "bold");
     doc.text("Thank you for shopping with us!", 105, pageHeight - 30, { align: "center" });
@@ -234,12 +278,6 @@ export default function Warehouse() {
 
     doc.save(`Packing_Slip_${orderNum}.pdf`);
   };
-
-  const displayedOrders = orders.filter(o => {
-    const isCorrectTab = activeTab === 'processing' ? o.status === 'processing' : (o.status === 'ready_for_delivery' || o.status === 'shipped');
-    const matchesSearch = o.id.toLowerCase().includes(searchTerm.toLowerCase()) || getDisplayName(o).toLowerCase().includes(searchTerm.toLowerCase());
-    return isCorrectTab && matchesSearch;
-  });
 
   const getStatusBadge = (status) => {
     if (status === 'processing') return <span className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-[10px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><Package size={12}/> To Pack</span>;
@@ -257,12 +295,12 @@ export default function Warehouse() {
 
       <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full md:w-auto overflow-x-auto shrink-0">
-          <button onClick={() => { setActiveTab('processing'); setExpandedOrderId(null); }} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><Package size={16}/> To Pack ({orders.filter(o=>o.status==='processing').length})</button>
-          <button onClick={() => { setActiveTab('completed'); setExpandedOrderId(null); }} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><CheckCircle2 size={16}/> Packed ({orders.filter(o=>o.status==='ready_for_delivery' || o.status === 'shipped').length})</button>
+          <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><Package size={16}/> To Pack ({tabCounts.processing})</button>
+          <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><CheckCircle2 size={16}/> Packed ({tabCounts.completed})</button>
         </div>
         <div className="relative w-full md:w-80 shrink-0">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input type="text" placeholder="Search Order ID or Name..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all shadow-sm" />
+          <input type="text" placeholder="Search Patient Name..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all shadow-sm" />
         </div>
       </div>
 
@@ -271,7 +309,7 @@ export default function Warehouse() {
           <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
           {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div></div>))}
         </div>
-      ) : displayedOrders.length === 0 ? (
+      ) : orders.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm mt-6">
           <Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" />
           <h3 className="text-xl font-bold text-slate-900 mb-2 tracking-tight">Queue is empty</h3>
@@ -291,24 +329,16 @@ export default function Warehouse() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {displayedOrders.map(order => {
+              {orders.map(order => {
                 const isExpanded = expandedOrderId === order.id;
                 const shortId = order.id.substring(0, 8).toUpperCase();
                 const isB2B = !!order.company_id;
                 const isOrderDone = order.status === 'ready_for_delivery' || order.status === 'shipped';
                 
-                const currentPickedCount = isOrderDone 
-                  ? (order.order_items?.length || 0) 
-                  : Object.values(pickedItems).filter(Boolean).length;
-                
+                const currentPickedCount = isOrderDone ? (order.order_items?.length || 0) : Object.values(pickedItems).filter(Boolean).length;
                 const allItemsPicked = order.order_items?.every(item => pickedItems[item.id]) || false;
                 
                 const billName = order.companies?.name || 'Retail Customer';
-                const billEmail = order.companies?.email || order.user_profiles?.email || '';
-                const billPhone = order.companies?.phone || order.user_profiles?.contact_number || '';
-                const billAddress = order.companies?.address || 'No billing address provided';
-                const billCityState = order.companies ? `${order.companies.city || ''}, ${order.companies.state || ''} ${order.companies.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '') : '';
-
                 const shipName = order.shipping_name || billName;
                 const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
                 const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
@@ -387,16 +417,8 @@ export default function Warehouse() {
                                   <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                     <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><Truck size={16} className="text-slate-400" /> Dispatch Info</h4>
                                     <div className="space-y-3 text-sm">
-                                      <div>
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p>
-                                        <p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p>
-                                      </div>
-                                      {displayDriverPhone && (
-                                        <div>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p>
-                                          <p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p>
-                                        </div>
-                                      )}
+                                      <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p><p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p></div>
+                                      {displayDriverPhone && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p><p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p></div>}
                                       <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p><p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p></div>
                                       {order.vehicle_license && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p><p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p></div>}
                                     </div>
@@ -418,6 +440,20 @@ export default function Warehouse() {
               })}
             </tbody>
           </table>
+
+          {/* 🚀 PAGINATION CONTROLS */}
+          {totalCount > pageSize && (
+            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
+              <span className="text-sm font-medium text-slate-500">
+                Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> entries
+              </span>
+              <div className="flex gap-2">
+                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={18} /></button>
+                <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalCount} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={18} /></button>
+              </div>
+            </div>
+          )}
+
         </div>
       )}
 
