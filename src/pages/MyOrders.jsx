@@ -5,7 +5,7 @@ import { useAuth } from '../lib/AuthContext';
 import { 
   Package, Receipt, ChevronDown, Calendar, Hash, Building, MapPin, Mail,
   CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, PackageCheck
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -18,7 +18,6 @@ export default function MyOrders() {
   const [loading, setLoading] = useState(true);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
 
-  // 🚀 SERVER-SIDE PAGINATION
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const pageSize = 20;
@@ -35,7 +34,7 @@ export default function MyOrders() {
       let query = supabase
         .from('orders')
         .select(`
-          id, status, created_at, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url,
+          id, status, created_at, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
           driver_name, vehicle_name, vehicle_license,
           shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, company_id,
           companies ( name, address, city, state, zip, phone, email ),
@@ -54,7 +53,6 @@ export default function MyOrders() {
         query = query.eq('user_id', profile.id);
       }
 
-      // Pagination Logic
       const from = page * pageSize;
       const to = from + pageSize - 1;
       query = query.range(from, to);
@@ -150,7 +148,6 @@ export default function MyOrders() {
 
     const isB2B = !!order.company_id || !!profile?.company_id;
 
-    // 🚀 SMART BILL TO DATA
     const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || 'Retail Customer');
     const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
     const billCityState = isB2B 
@@ -159,7 +156,6 @@ export default function MyOrders() {
     const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '');
     const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || profile?.email || '');
 
-    // 🚀 SMART SHIP TO DATA (Ensures retail gets phone/email correctly)
     const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
     const shipAddress = order.shipping_address || 'No shipping address provided';
     const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
@@ -296,7 +292,6 @@ export default function MyOrders() {
                     displayDriverPhone = assignedDriverObj?.contact_number || '';
                   }
 
-                  // 🚀 SMART UI DATA BINDING
                   const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || 'Retail Customer');
                   const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
                   const billCityState = isB2B 
@@ -379,7 +374,7 @@ export default function MyOrders() {
                                 <div className="lg:col-span-2 space-y-6">
                                   
                                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                    {/* 🚀 COMPLETE BILL TO CARD */}
+                                    {/* BILL TO CARD */}
                                     <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm group hover:border-slate-300 transition-colors">
                                       <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><CreditCard size={14}/> Bill To</h4>
                                       <p className="font-bold text-slate-900 text-base mb-2 flex items-center gap-2">
@@ -400,7 +395,7 @@ export default function MyOrders() {
                                       </div>
                                     </div>
                                     
-                                    {/* 🚀 COMPLETE SHIP TO CARD */}
+                                    {/* SHIP TO CARD */}
                                     <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm group hover:border-slate-300 transition-colors">
                                       <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Package size={14}/> Ship To</h4>
                                       <p className="font-bold text-slate-900 text-base mb-2 flex items-center gap-2">
@@ -422,7 +417,7 @@ export default function MyOrders() {
                                     </div>
                                   </div>
 
-                                  <div className="space-y-4">
+                                  <div className="space-y-3">
                                     <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
                                       <FileText size={16} className="text-slate-400" /> Order Items
                                     </h4>
@@ -455,6 +450,7 @@ export default function MyOrders() {
                                     </div>
                                   </div>
                                 </div>
+
                                 <div className="space-y-6">
                                   <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                     <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
@@ -469,6 +465,14 @@ export default function MyOrders() {
                                         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
                                         <span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${order.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
                                       </div>
+                                    </div>
+                                    
+                                    <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-medium text-slate-500">
+                                      <div className="flex items-center gap-2">
+                                        <CreditCard size={14} className="text-slate-400 shrink-0" />
+                                        <span className="font-bold text-slate-700 capitalize">{order.payment_method.replace('_', ' ')}</span>
+                                      </div>
+                                      {getPaymentStatusBadge(order.payment_status)}
                                     </div>
 
                                     {isNet30 && (
@@ -536,16 +540,28 @@ export default function MyOrders() {
                                     </div>
                                   )}
 
-                                  {order.status === 'delivered' && (order.photo_url || order.signature_url) && (
-                                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-4">
-                                        <Truck size={16} className="text-slate-400" /> Proof of Delivery
+                                  {/* 🚀 UPDATED PROOF OF DELIVERY COMPONENT WITH RECIPIENT NAME */}
+                                  {order.status === 'delivered' && (order.photo_url || order.signature_url || order.received_by) && (
+                                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
+                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
+                                        <PackageCheck size={16} className="text-slate-400" /> Proof of Delivery
                                       </h4>
+
+                                      {/* 🚀 NEW: Received By Section */}
+                                      {order.received_by && (
+                                        <div className="mb-4 p-3 bg-emerald-50 rounded-xl border border-emerald-100">
+                                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">Received By</p>
+                                          <p className="font-bold text-slate-900 flex items-center gap-2 text-sm">
+                                            <User size={14} className="text-emerald-500" /> {order.received_by}
+                                          </p>
+                                        </div>
+                                      )}
+
                                       <div className="grid grid-cols-2 gap-3">
                                         {order.photo_url && (
                                           <div>
                                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Photo</p>
-                                            <a href={order.photo_url} target="_blank" rel="noreferrer" className="block relative group rounded-xl overflow-hidden border border-slate-200 shadow-sm">
+                                            <a href={order.photo_url} target="_blank" rel="noreferrer" className="block relative group rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-slate-50">
                                               <img src={order.photo_url} alt="Delivery Proof" className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300" />
                                               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors"></div>
                                             </a>
@@ -555,7 +571,7 @@ export default function MyOrders() {
                                           <div>
                                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Signature</p>
                                             <a href={order.signature_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-slate-200 bg-white p-2 hover:border-slate-300 transition-colors shadow-sm">
-                                              <img src={order.signature_url} alt="Signature" className="w-full h-20 object-contain mix-blend-multiply" />
+                                              <img src={order.signature_url} alt="Customer Signature" className="w-full h-20 object-contain mix-blend-multiply" />
                                             </a>
                                           </div>
                                         )}

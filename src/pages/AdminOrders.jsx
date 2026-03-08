@@ -17,9 +17,10 @@ export default function AdminOrders() {
   const [drivers, setDrivers] = useState([]); 
   const [loading, setLoading] = useState(true);
   
+  // 🚀 SERVER-SIDE PAGINATION (Set to 10)
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
-  const pageSize = 20;
+  const pageSize = 10;
   
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -422,10 +423,8 @@ export default function AdminOrders() {
                   const isB2B = !!order.company_id;
                   const shortId = order.id.substring(0, 8).toUpperCase();
 
-                  // 🚀 BULLETPROOF USER PROFILE EXTRACTION
                   const up = Array.isArray(order.user_profiles) ? order.user_profiles[0] : order.user_profiles;
 
-                  // 🚀 SMART ADMIN UI RENDER LOGIC
                   const billName = isB2B ? (order.companies?.name || 'Agency') : (up?.full_name || order.shipping_name || 'Retail Customer');
                   const billEmail = isB2B ? (order.companies?.email) : (order.shipping_email || up?.email);
                   const billPhone = isB2B ? (order.companies?.phone) : (order.shipping_phone || up?.contact_number);
@@ -560,7 +559,7 @@ export default function AdminOrders() {
                                 <div className="lg:col-span-2 space-y-6">
                                   
                                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                    {/* 🚀 COMPLETE BILL TO CARD */}
+                                    {/* BILL TO CARD */}
                                     <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm group hover:border-slate-300 transition-colors">
                                       <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
                                         <CreditCard size={14}/> Bill To
@@ -591,7 +590,7 @@ export default function AdminOrders() {
                                       </div>
                                     </div>
                                     
-                                    {/* 🚀 COMPLETE SHIP TO CARD */}
+                                    {/* SHIP TO CARD */}
                                     <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm group hover:border-slate-300 transition-colors">
                                       <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
                                         <Package size={14}/> Ship To
@@ -721,11 +720,23 @@ export default function AdminOrders() {
                                     </div>
                                   )}
                                   
-                                  {order.status === 'delivered' && (order.photo_url || order.signature_url) && (
+                                  {/* 🚀 UPDATED PROOF OF DELIVERY CARD WITH RECIPIENT NAME */}
+                                  {order.status === 'delivered' && (order.photo_url || order.signature_url || order.received_by) && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                       <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
-                                        <Truck size={16} className="text-slate-400" /> Proof of Delivery
+                                        <PackageCheck size={16} className="text-slate-400" /> Proof of Delivery
                                       </h4>
+
+                                      {/* 🚀 NEW: Received By Section */}
+                                      {order.received_by && (
+                                        <div className="mb-4 p-3 bg-emerald-50 rounded-xl border border-emerald-100">
+                                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">Received By</p>
+                                          <p className="font-bold text-slate-900 flex items-center gap-2 text-sm">
+                                            <User size={14} className="text-emerald-500" /> {order.received_by}
+                                          </p>
+                                        </div>
+                                      )}
+
                                       <div className="grid grid-cols-2 gap-3">
                                         {order.photo_url && (
                                           <div>

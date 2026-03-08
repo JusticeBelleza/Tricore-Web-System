@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
-import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react';
 
 function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVariantPrice, onClick }) {
   const [selectedProductId, setSelectedProductId] = useState(familyProducts[0].id);
@@ -20,11 +20,36 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
   const { originalPrice: originalDisplayPrice, finalPrice: displayPrice, isDiscounted } = getVariantPrice(activeProduct, activeVariant);
 
+  // 🚀 BULLETPROOF INVENTORY LOGIC
+  let stockAmount = 0;
+  if (Array.isArray(activeProduct?.inventory)) {
+    // If Supabase returns an Array
+    stockAmount = activeProduct.inventory.reduce((sum, item) => sum + (Number(item.base_units_on_hand) || 0), 0);
+  } else if (activeProduct?.inventory) {
+    // If Supabase returns a single Object
+    stockAmount = Number(activeProduct.inventory.base_units_on_hand) || 0;
+  }
+
+  const continueSelling = activeProduct?.continue_selling || false;
+  const isOutOfStock = stockAmount <= 0;
+  const preventPurchase = isOutOfStock && !continueSelling;
+
   return (
-    <div className="bg-white rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-all flex flex-col overflow-hidden group">
+    <div className={`bg-white rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-all flex flex-col overflow-hidden group ${preventPurchase ? 'opacity-80' : ''}`}>
       <div onClick={onClick} className="aspect-[4/3] bg-slate-50/50 relative p-4 border-b border-slate-50 flex items-center justify-center cursor-pointer overflow-hidden">
+        
+        <div className="absolute top-3 left-3 z-10">
+          {!isOutOfStock ? (
+            <span className="px-2 py-1 bg-emerald-50 text-emerald-700 text-[9px] font-bold uppercase tracking-widest rounded-md border border-emerald-200 shadow-sm">In Stock</span>
+          ) : continueSelling ? (
+            <span className="px-2 py-1 bg-amber-50 text-amber-700 text-[9px] font-bold uppercase tracking-widest rounded-md border border-amber-200 shadow-sm">Backorder</span>
+          ) : (
+            <span className="px-2 py-1 bg-red-50 text-red-700 text-[9px] font-bold uppercase tracking-widest rounded-md border border-red-200 shadow-sm">Out of Stock</span>
+          )}
+        </div>
+
         {activeProduct.image_urls?.[0] ? (
-          <img src={activeProduct.image_urls[0]} alt="" className="w-full h-full object-contain mix-blend-multiply transition-transform duration-500 group-hover:scale-105" />
+          <img src={activeProduct.image_urls[0]} alt="" className={`w-full h-full object-contain mix-blend-multiply transition-transform duration-500 ${!preventPurchase && 'group-hover:scale-105'} ${preventPurchase && 'grayscale'}`} />
         ) : (
           <div className="text-slate-300 flex flex-col items-center gap-2"><PackageOpen size={32} strokeWidth={1.5} /><span className="text-[10px] font-semibold uppercase tracking-widest">No Image</span></div>
         )}
@@ -82,7 +107,7 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
             <p className="text-xl font-bold text-slate-900 tracking-tight leading-none">${displayPrice.toFixed(2)}</p>
           </div>
           <button onClick={onClick} className="px-3.5 py-1.5 bg-white border border-slate-200 text-slate-900 text-[11px] font-bold rounded-lg hover:bg-slate-50 hover:border-slate-300 active:scale-95 transition-all">
-            View Details
+            {preventPurchase ? 'View Details' : 'Select Options'}
           </button>
         </div>
       </div>
@@ -101,10 +126,9 @@ export default function Catalog() {
   const [financials, setFinancials] = useState({ limit: 0, outstanding: 0, available: 0 });
   const [loading, setLoading] = useState(true);
   
-  // 🚀 SERVER-SIDE PAGINATION & SEARCH STATE
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
-  const pageSize = 24; // 24 is cleanly divisible by 2, 3, and 4 for responsive grids
+  const pageSize = 24; 
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
@@ -114,18 +138,12 @@ export default function Catalog() {
 
   const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
 
-  // Debouncer
   useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedSearch(searchTerm);
-      setPage(0);
-    }, 500);
+    const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
-  useEffect(() => {
-    setPage(0);
-  }, [selectedCategory]);
+  useEffect(() => { setPage(0); }, [selectedCategory]);
 
   useEffect(() => {
     if (profile?.id) {
@@ -150,7 +168,6 @@ export default function Catalog() {
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const [quantity, setQuantity] = useState(1);
 
-  // Fetch unique categories instantly
   useEffect(() => {
     const fetchCategories = async () => {
       const { data } = await supabase.from('products').select('category').neq('category', null);
@@ -169,38 +186,28 @@ export default function Catalog() {
       let rulesData = [];
       let calcFinancials = { limit: 0, outstanding: 0, available: 0 };
 
-      // Fetch Pricing Rules & Limits if B2B
       if (profile?.company_id && profile?.role?.toLowerCase() === 'b2b') {
         const [rulesRes, unpaidRes] = await Promise.all([
           supabase.from('pricing_rules').select('*').eq('company_id', profile.company_id),
           supabase.from('orders').select('total_amount').eq('company_id', profile.company_id).eq('payment_status', 'unpaid')
         ]);
-
         if (rulesRes.error) throw rulesRes.error;
         rulesData = rulesRes.data;
-
         const limit = Number(profile?.companies?.credit_limit || 0);
         const outstanding = unpaidRes.data?.reduce((sum, order) => sum + Number(order.total_amount), 0) || 0;
         calcFinancials = { limit, outstanding, available: limit - outstanding };
       }
 
-      // 🚀 SERVER-SIDE CATALOG QUERY (Joining Products + Variants instantly)
-      let query = supabase.from('products').select(`
-        *,
-        product_variants (*),
-        inventory (*)
-      `, { count: 'exact' });
+      let query = supabase.from('products').select(`*, product_variants (*), inventory (*)`, { count: 'exact' });
 
       if (debouncedSearch) {
         query = query.or(`name.ilike.%${debouncedSearch}%,base_sku.ilike.%${debouncedSearch}%`);
       }
-      
       if (selectedCategory) {
         query = query.eq('category', selectedCategory);
       }
 
       query = query.order('name');
-      
       const from = page * pageSize;
       const to = from + pageSize - 1;
       query = query.range(from, to);
@@ -211,7 +218,6 @@ export default function Catalog() {
       setProducts(data || []);
       setTotalCount(count || 0);
 
-      // Extract variants from joined query
       const fetchedVariants = (data || []).flatMap(p => p.product_variants || []);
       setVariants(fetchedVariants);
 
@@ -238,7 +244,6 @@ export default function Catalog() {
     return { originalPrice: variantRetail, finalPrice: finalPrice, isDiscounted: finalPrice < variantRetail };
   };
 
-  // 🚀 OPTIMIZED: Groups the already-filtered, paginated products directly.
   const groupedProducts = useMemo(() => {
     const groups = {};
     products.forEach(p => {
@@ -316,10 +321,22 @@ export default function Catalog() {
     }, 600); 
   };
 
+  // 🚀 BULLETPROOF INVENTORY CALCULATION FOR MODAL
   const activeProduct = viewingFamily ? viewingFamily.familyProducts.find(p => p.id === selectedProductId) : null;
   const activeVariants = activeProduct ? variants.filter(v => v.product_id === activeProduct.id) : [];
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
   const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
+
+  let modalStockAmount = 0;
+  if (Array.isArray(activeProduct?.inventory)) {
+    modalStockAmount = activeProduct.inventory.reduce((sum, item) => sum + (Number(item.base_units_on_hand) || 0), 0);
+  } else if (activeProduct?.inventory) {
+    modalStockAmount = Number(activeProduct.inventory.base_units_on_hand) || 0;
+  }
+
+  const modalContinueSelling = activeProduct?.continue_selling || false;
+  const modalIsOutOfStock = modalStockAmount <= 0;
+  const modalPreventPurchase = modalIsOutOfStock && !modalContinueSelling;
 
   return (
     <div className="space-y-6 pb-12 relative max-w-7xl mx-auto">
@@ -399,7 +416,7 @@ export default function Catalog() {
             ))}
           </div>
           
-          {/* 🚀 PAGINATION CONTROLS */}
+          {/* PAGINATION CONTROLS */}
           {totalCount > pageSize && (
             <div className="flex items-center justify-between px-6 py-4 bg-white border border-slate-200 shadow-sm rounded-2xl mt-6">
               <span className="text-sm font-medium text-slate-500">
@@ -420,13 +437,25 @@ export default function Catalog() {
           <div className="bg-white w-full max-w-4xl max-h-[90dvh] flex flex-col sm:flex-row sm:rounded-3xl shadow-2xl animate-in slide-in-from-bottom-8 sm:slide-in-from-bottom-0 sm:zoom-in-95 duration-200 overflow-hidden relative border border-slate-100">
             <button onClick={() => setViewingFamily(null)} className="absolute top-4 right-4 sm:top-5 sm:right-5 z-[60] w-9 h-9 flex items-center justify-center bg-white/90 backdrop-blur-sm border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-full shadow-sm transition-all"><X size={20} /></button>
             <div className="w-full sm:w-1/2 bg-slate-50/50 flex flex-col justify-center items-center p-8 border-b sm:border-b-0 sm:border-r border-slate-100 shrink-0 min-h-[30vh]">
-              {activeProduct.image_urls?.[0] ? (<img src={activeProduct.image_urls[0]} alt="" className="w-full max-h-[45vh] object-contain mix-blend-multiply" />) : (<div className="text-slate-300 flex flex-col items-center gap-3"><PackageOpen size={48} strokeWidth={1.5} /><span className="text-xs font-semibold uppercase tracking-widest">No Image</span></div>)}
+              {activeProduct.image_urls?.[0] ? (<img src={activeProduct.image_urls[0]} alt="" className={`w-full max-h-[45vh] object-contain mix-blend-multiply ${modalPreventPurchase ? 'grayscale opacity-75' : ''}`} />) : (<div className="text-slate-300 flex flex-col items-center gap-3"><PackageOpen size={48} strokeWidth={1.5} /><span className="text-xs font-semibold uppercase tracking-widest">No Image</span></div>)}
             </div>
 
             <div className="w-full sm:w-1/2 flex flex-col overflow-y-auto bg-white">
               <div className="p-6 sm:p-8 pr-14 sm:pr-16 flex-1 space-y-6">
                 <div>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">{activeProduct.category || 'General'}</p>
+                  <div className="flex items-center gap-3 mb-2">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{activeProduct.category || 'General'}</p>
+                    
+                    {/* 🚀 MODAL INVENTORY BADGES */}
+                    {!modalIsOutOfStock ? (
+                      <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 text-[9px] font-bold uppercase tracking-widest rounded border border-emerald-200">In Stock</span>
+                    ) : modalContinueSelling ? (
+                      <span className="px-2 py-0.5 bg-amber-50 text-amber-700 text-[9px] font-bold uppercase tracking-widest rounded border border-amber-200">Available on Backorder</span>
+                    ) : (
+                      <span className="px-2 py-0.5 bg-red-50 text-red-700 text-[9px] font-bold uppercase tracking-widest rounded border border-red-200 flex items-center gap-1"><AlertTriangle size={10}/> Out of Stock</span>
+                    )}
+                  </div>
+                  
                   <h3 className="text-2xl font-bold text-slate-900 tracking-tight leading-tight">{viewingFamily.familyName}</h3>
                   <div className="mt-3 space-y-1">
                     {activeProduct.manufacturer && <p className="text-sm text-slate-600"><span className="text-slate-400 mr-2">Brand:</span>{activeProduct.manufacturer}</p>}
@@ -471,16 +500,34 @@ export default function Catalog() {
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Unit Price</p>
                       <p className="text-3xl font-bold text-slate-900 tracking-tight">${displayPrice.toFixed(2)}</p>
                     </div>
-                    <div className="flex items-center p-1 rounded-xl border border-slate-200 bg-white shadow-sm">
-                      <button type="button" onClick={() => setQuantity(Math.max(1, quantity - 1))} className="w-8 h-8 flex items-center justify-center text-slate-500 rounded-lg hover:bg-slate-50 hover:text-slate-900 transition-colors"><Minus size={14} strokeWidth={2.5} /></button>
-                      <input type="number" value={quantity} onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))} className="w-10 h-8 bg-transparent text-center text-sm font-semibold text-slate-900 outline-none focus:ring-0" />
-                      <button type="button" onClick={() => setQuantity(quantity + 1)} className="w-8 h-8 flex items-center justify-center text-slate-500 rounded-lg hover:bg-slate-50 hover:text-slate-900 transition-colors"><Plus size={14} strokeWidth={2.5} /></button>
+                    
+                    {/* QUANTITY SELECTOR */}
+                    <div className={`flex items-center p-1 rounded-xl border shadow-sm ${modalPreventPurchase ? 'bg-slate-50 border-slate-100 opacity-50' : 'bg-white border-slate-200'}`}>
+                      <button type="button" disabled={modalPreventPurchase} onClick={() => setQuantity(Math.max(1, quantity - 1))} className="w-8 h-8 flex items-center justify-center text-slate-500 rounded-lg hover:bg-slate-50 hover:text-slate-900 transition-colors"><Minus size={14} strokeWidth={2.5} /></button>
+                      <input type="number" disabled={modalPreventPurchase} value={quantity} onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))} className="w-10 h-8 bg-transparent text-center text-sm font-semibold text-slate-900 outline-none focus:ring-0" />
+                      <button type="button" disabled={modalPreventPurchase} onClick={() => setQuantity(quantity + 1)} className="w-8 h-8 flex items-center justify-center text-slate-500 rounded-lg hover:bg-slate-50 hover:text-slate-900 transition-colors"><Plus size={14} strokeWidth={2.5} /></button>
                     </div>
                   </div>
 
-                  <button onClick={handleAddToCart} disabled={!selectedVariantId || isAddingToCart} className={`w-full flex items-center justify-center gap-2 py-3.5 text-sm font-semibold rounded-xl transition-all shadow-md ${isAddingToCart ? 'bg-emerald-500 text-white scale-105 shadow-emerald-500/30' : 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed'}`}>
-                    {isAddingToCart ? (<><CheckCircle2 size={18} className="animate-bounce" /> Added!</>) : (<><ShoppingCart size={16} /> Add to Cart — ${(displayPrice * quantity).toFixed(2)}</>)}
+                  {/* 🚀 SMART ADD TO CART BUTTON */}
+                  <button 
+                    onClick={handleAddToCart} 
+                    disabled={!selectedVariantId || isAddingToCart || modalPreventPurchase} 
+                    className={`w-full flex items-center justify-center gap-2 py-3.5 text-sm font-semibold rounded-xl transition-all shadow-md 
+                      ${modalPreventPurchase ? 'bg-slate-200 text-slate-400 shadow-none cursor-not-allowed' : 
+                        isAddingToCart ? 'bg-emerald-500 text-white scale-105 shadow-emerald-500/30' : 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95'}`}
+                  >
+                    {modalPreventPurchase ? (
+                      <><AlertTriangle size={16} /> Currently Out of Stock</>
+                    ) : isAddingToCart ? (
+                      <><CheckCircle2 size={18} className="animate-bounce" /> Added!</>
+                    ) : (
+                      <><ShoppingCart size={16} /> Add to Cart — ${(displayPrice * quantity).toFixed(2)}</>
+                    )}
                   </button>
+                  {modalIsOutOfStock && modalContinueSelling && (
+                    <p className="text-center text-xs font-bold text-amber-600 mt-2">Item is on backorder. It will ship when available.</p>
+                  )}
                 </div>
               </div>
             </div>

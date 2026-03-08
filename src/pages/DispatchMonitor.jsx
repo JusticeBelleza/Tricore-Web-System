@@ -29,8 +29,6 @@ export default function DispatchMonitor() {
   }, []);
 
   // 🚀 SMART NOTIFICATION CLEARING:
-  // Whenever the tab is "Delivered" (or deliveries update while on the tab),
-  // update local storage and tell the layout to reset the badge.
   useEffect(() => {
     if (activeTab === 'delivered') {
       localStorage.setItem('lastViewedDelivered', new Date().toISOString());
@@ -43,7 +41,8 @@ export default function DispatchMonitor() {
     try {
       const { data, error } = await supabase
         .from('orders')
-        .select('id, status, driver_name, vehicle_name, shipping_name, shipping_address, shipping_city, photo_url, signature_url, created_at, updated_at')
+        // 🚀 ADDED 'received_by' to the select query
+        .select('id, status, driver_name, vehicle_name, shipping_name, shipping_address, shipping_city, photo_url, signature_url, received_by, created_at, updated_at')
         .in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery', 'delivered'])
         .not('driver_name', 'is', null)
         .order('updated_at', { ascending: false });
@@ -58,7 +57,6 @@ export default function DispatchMonitor() {
   };
 
   const displayedDeliveries = deliveries.filter(d => {
-    // 🚀 REMOVED 'all' logic
     const matchesTab = activeTab === 'in_transit' 
       ? ['ready_for_delivery', 'shipped', 'out_for_delivery'].includes(d.status) 
       : d.status === 'delivered';
@@ -96,7 +94,6 @@ export default function DispatchMonitor() {
           <button onClick={() => setActiveTab('delivered')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'delivered' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}>
             <CheckCircle2 size={16}/> Delivered ({deliveries.filter(d => d.status === 'delivered').length})
           </button>
-          {/* 🚀 REMOVED "ALL ACTIVE" BUTTON */}
         </div>
         <div className="relative w-full md:w-80 shrink-0">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -130,7 +127,7 @@ export default function DispatchMonitor() {
               {displayedDeliveries.map(delivery => {
                 const shortId = delivery.id.substring(0, 8).toUpperCase();
                 const driverName = (delivery.driver_name || 'Unassigned').split(' | ')[0];
-                const hasPod = delivery.photo_url || delivery.signature_url;
+                const hasPod = delivery.photo_url || delivery.signature_url || delivery.received_by;
 
                 return (
                   <tr key={delivery.id} className="hover:bg-slate-50/80 transition-colors">
@@ -188,6 +185,17 @@ export default function DispatchMonitor() {
             </div>
             
             <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+              
+              {/* 🚀 NEW: DISPLAY RECIPIENT NAME */}
+              {selectedPod.received_by && (
+                <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-2xl">
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Received By</p>
+                  <p className="font-bold text-slate-900 flex items-center gap-2 text-base">
+                    <User size={18} className="text-emerald-500" /> {selectedPod.received_by}
+                  </p>
+                </div>
+              )}
+
               {selectedPod.photo_url && (
                 <div className="space-y-3">
                   <h4 className="flex items-center gap-2 text-sm font-bold text-slate-900 uppercase tracking-wider"><ImageIcon size={16} className="text-blue-600" /> Delivery Photo</h4>

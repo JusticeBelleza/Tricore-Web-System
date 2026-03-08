@@ -143,7 +143,7 @@ export default function Layout() {
         <nav className="flex-1 px-4 py-6 overflow-y-auto">
           <div className="space-y-1">
             
-            {/* 🚀 EXCLUSIVE DRIVER MENU */}
+            {/* EXCLUSIVE DRIVER MENU */}
             {profile?.role === 'driver' ? (
               <>
                 <p className="px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Driver Menu</p>
@@ -258,19 +258,26 @@ export default function Layout() {
         </nav>
 
         <div className="p-4 border-t border-slate-200 shrink-0 bg-slate-50/50">
-          <div className="flex items-center gap-3 px-2 mb-4">
-            <div className="w-9 h-9 rounded-full bg-slate-200 border border-slate-300 flex items-center justify-center text-sm font-semibold text-slate-700 shrink-0 uppercase shadow-inner">
-              <User size={16} />
+          
+          {/* 🚀 CLICKABLE PROFILE ROUTE */}
+          <Link 
+            to="/profile" 
+            onClick={closeMobileMenu}
+            className="flex items-center gap-3 p-2.5 mb-3 rounded-xl hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-200 transition-all cursor-pointer group"
+          >
+            <div className="w-10 h-10 rounded-full bg-slate-200 border border-slate-300 flex items-center justify-center text-sm font-semibold text-slate-700 shrink-0 uppercase shadow-inner group-hover:border-slate-400 group-hover:bg-slate-100 transition-colors">
+              <User size={18} />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold text-slate-900 truncate">
+              <p className="text-sm font-bold text-slate-900 truncate group-hover:text-blue-600 transition-colors">
                 {profile?.full_name || 'Loading...'}
               </p>
-              <p className="text-xs text-slate-500 capitalize truncate font-medium">
-                {profile?.role || 'User'}
+              <p className="text-[11px] text-slate-500 capitalize truncate font-medium">
+                {profile?.role || 'User'} Account
               </p>
             </div>
-          </div>
+          </Link>
+
           <button 
             onClick={handleLogout}
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-bold text-red-600 bg-white border border-slate-200 hover:bg-red-50 hover:border-red-200 active:scale-95 rounded-lg transition-all shadow-sm"
