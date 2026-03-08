@@ -31,7 +31,8 @@ export default function Dashboard() {
       else if (profile.role === 'driver') setLoading(false); // Drivers use DriverRoutes
       else fetchCustomerDashboard();
     }
-  }, [profile]);
+  // 🚀 FIX: Watch the specific IDs instead of the entire profile object
+  }, [profile?.id, profile?.role, profile?.company_id]);
 
   const fetchAdminDashboard = async () => {
     setLoading(true);
