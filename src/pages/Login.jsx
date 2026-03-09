@@ -89,10 +89,10 @@ export default function Login() {
             <img src="/images/tricore-logo.png" alt="TriCore Logo" className="w-full h-full object-contain" />
           </div>
           <h2 className="text-2xl font-black text-slate-900 tracking-tight">
-            {isLogin ? 'Sign in to Tricore' : 'Create an account'}
+            {isLogin ? 'Tricore Medical Supply' : 'Create an account'}
           </h2>
           <p className="text-slate-500 text-sm mt-1.5 font-medium">
-            {isLogin ? 'Enter your credentials to access your portal' : 'Join TriCore to order and track supplies'}
+            {isLogin ? 'Enter your credentials to access your portal' : 'Join Tricore Medical Supply to streamline your clinical logistics.'}
           </p>
         </div>
 
