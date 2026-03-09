@@ -15,7 +15,7 @@ import Reports from './pages/Reports';
 import FleetManagement from './pages/FleetManagement';
 import AgencyDashboard from './pages/AgencyDashboard';
 import DispatchMonitor from './pages/DispatchMonitor';
-
+import Profile from './pages/Profile';
 import Products from './pages/Products';
 import PurchaseOrders from './pages/PurchaseOrders';
 
@@ -58,6 +58,11 @@ const DashboardRouter = () => {
     // we can securely rely on profile.role being instantly available here!
     const role = profile?.role;
 
+    // 🚀 NEW: Instantly redirects Drivers to their Routes page instead of the Dashboard
+    if (role === 'driver') {
+        return <Navigate to="/driver" replace />;
+    }
+
     // Route B2B and Agency Admins to their specific dashboard
     if (role === 'b2b' || role === 'agency_admin') {
         return <AgencyDashboard />;
@@ -66,7 +71,6 @@ const DashboardRouter = () => {
     // Everyone else (Admins, Warehouse, etc.) gets the standard Dashboard
     return <Dashboard />;
 };
-
 
 export default function App() {
   return (
@@ -81,7 +85,7 @@ export default function App() {
             <Layout />
           </ProtectedRoute>
         }>
-          {/* Automatically redirect from root "/" to "/dashboard" */}
+          {/* Automatically redirect from root "/" to "/dashboard" (which now smartly redirects drivers to "/driver") */}
           <Route index element={<Navigate to="/dashboard" replace />} />
           
           {/* Dashboard is now a Router Component */}
@@ -101,6 +105,9 @@ export default function App() {
           <Route path="admin/reports" element={<Reports />} />
           <Route path="/fleet" element={<FleetManagement />} />
           <Route path="/dispatch" element={<DispatchMonitor />} />
+          
+          {/* 🚀 ADDED PROFILE ROUTE */}
+          <Route path="/profile" element={<Profile />} />
         </Route>
       </Routes>
     </BrowserRouter>

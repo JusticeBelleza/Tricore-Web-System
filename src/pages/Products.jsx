@@ -665,13 +665,25 @@ export default function Products() {
                 </div>
                 <div className="space-y-3">
                   {variants.map((v, i) => (
-                    <div key={i} className="grid grid-cols-2 sm:grid-cols-12 gap-3 items-center bg-slate-50 p-4 rounded-2xl border border-slate-200 shadow-sm w-full">
-                      <div className="col-span-2 sm:col-span-4"><input type="text" placeholder="Variant Name (e.g. Box of 50)" value={v.name} onChange={e => updateVariant(i, 'name', e.target.value)} required className={inputClass} /></div>
-                      <div className="col-span-2 sm:col-span-3"><input type="text" placeholder="Variant SKU" value={v.sku} onChange={e => updateVariant(i, 'sku', e.target.value)} required className={`${inputClass} font-mono uppercase`} /></div>
-                      <div className="col-span-1 sm:col-span-2"><input type="number" placeholder="Qty Multiplier" value={v.multiplier} onChange={e => updateVariant(i, 'multiplier', e.target.value)} required min="1" className={inputClass} /></div>
-                      <div className="col-span-1 sm:col-span-3 flex gap-2">
-                        <input type="number" step="0.01" placeholder="$ Selling Price" value={v.price} onChange={e => updateVariant(i, 'price', e.target.value)} required className={`${inputClass} w-full`} />
-                        <button type="button" onClick={() => removeVariant(i)} className="shrink-0 p-2.5 text-red-500 bg-white border border-slate-200 hover:bg-red-50 hover:border-red-200 active:scale-90 rounded-xl transition-all shadow-sm flex items-center justify-center"><Trash2 size={16}/></button>
+                    <div key={i} className="grid grid-cols-2 sm:grid-cols-12 gap-4 items-end bg-slate-50 p-4 rounded-2xl border border-slate-200 shadow-sm w-full">
+                      <div className="col-span-2 sm:col-span-4">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Variant Name</label>
+                        <input type="text" placeholder="Variant Name (e.g. Box of 50)" value={v.name} onChange={e => updateVariant(i, 'name', e.target.value)} required className={inputClass} />
+                      </div>
+                      <div className="col-span-2 sm:col-span-3">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Variant SKU</label>
+                        <input type="text" placeholder="Variant SKU" value={v.sku} onChange={e => updateVariant(i, 'sku', e.target.value)} required className={`${inputClass} font-mono uppercase`} />
+                      </div>
+                      <div className="col-span-1 sm:col-span-2">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Qty Multiplier</label>
+                        <input type="number" placeholder="Qty Multiplier" value={v.multiplier} onChange={e => updateVariant(i, 'multiplier', e.target.value)} required min="1" className={inputClass} />
+                      </div>
+                      <div className="col-span-1 sm:col-span-3">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">$ Selling Price</label>
+                        <div className="flex gap-2">
+                          <input type="number" step="0.01" placeholder="$ Selling Price" value={v.price} onChange={e => updateVariant(i, 'price', e.target.value)} required className={`${inputClass} w-full`} />
+                          <button type="button" onClick={() => removeVariant(i)} className="shrink-0 px-3 text-red-500 bg-white border border-slate-200 hover:bg-red-50 hover:border-red-200 active:scale-90 rounded-xl transition-all shadow-sm flex items-center justify-center"><Trash2 size={16}/></button>
+                        </div>
                       </div>
                     </div>
                   ))}

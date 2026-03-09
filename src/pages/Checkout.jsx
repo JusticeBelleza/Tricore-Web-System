@@ -270,8 +270,9 @@ export default function Checkout() {
     );
   }
 
-  const inputClass = "w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none text-sm font-medium text-slate-900 transition-all shadow-sm placeholder:text-slate-400";
-  const labelClass = "block text-xs font-bold text-slate-700 mb-1.5";
+  // 🚀 FLOATING LABEL CSS CLASSES
+  const inputClass = "block w-full px-4 pt-6 pb-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none text-sm font-bold text-slate-900 transition-all shadow-sm peer placeholder-transparent";
+  const floatingLabelClass = "absolute text-sm text-slate-400 duration-300 transform -translate-y-2.5 scale-[0.8] top-3.5 z-10 origin-[0] left-4 peer-placeholder-shown:scale-100 peer-placeholder-shown:translate-y-1 peer-focus:scale-[0.8] peer-focus:-translate-y-2.5 peer-focus:text-blue-600 peer-focus:font-bold pointer-events-none";
 
   const currentCartItems = cart.slice((cartPage - 1) * ITEMS_PER_PAGE, cartPage * ITEMS_PER_PAGE);
 
@@ -443,40 +444,42 @@ export default function Checkout() {
                 {isEditingRetail ? (
                   <div className="space-y-5 animate-in fade-in slide-in-from-top-2 duration-300">
                     <div className="space-y-4">
+                      
+                      {/* RETAIL EDIT FORM - USING FLOATING LABELS */}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div className="sm:col-span-2">
-                          <label className={labelClass}>Full Name <span className="text-red-500">*</span></label>
-                          <input type="text" value={retailInfo.full_name} onChange={e => setRetailInfo({...retailInfo, full_name: e.target.value})} className={inputClass} placeholder="John Doe" />
+                        <div className="relative sm:col-span-2">
+                          <input type="text" id="ship_name" value={retailInfo.full_name} onChange={e => setRetailInfo({...retailInfo, full_name: e.target.value})} className={inputClass} placeholder=" " />
+                          <label htmlFor="ship_name" className={floatingLabelClass}>Full Name <span className="text-red-500">*</span></label>
                         </div>
-                        <div>
-                          <label className={labelClass}>Email Address <span className="text-red-500">*</span></label>
-                          <input type="email" value={retailInfo.email} onChange={e => setRetailInfo({...retailInfo, email: e.target.value})} className={inputClass} placeholder="john@example.com" />
+                        <div className="relative">
+                          <input type="email" id="ship_email" value={retailInfo.email} onChange={e => setRetailInfo({...retailInfo, email: e.target.value})} className={inputClass} placeholder=" " />
+                          <label htmlFor="ship_email" className={floatingLabelClass}>Email Address <span className="text-red-500">*</span></label>
                         </div>
-                        <div>
-                          <label className={labelClass}>Phone Number <span className="text-red-500">*</span></label>
-                          <input type="tel" value={retailInfo.phone} onChange={e => setRetailInfo({...retailInfo, phone: e.target.value})} className={inputClass} placeholder="(555) 123-4567" />
+                        <div className="relative">
+                          <input type="tel" id="ship_phone" value={retailInfo.phone} onChange={e => setRetailInfo({...retailInfo, phone: e.target.value})} className={inputClass} placeholder=" " />
+                          <label htmlFor="ship_phone" className={floatingLabelClass}>Phone Number <span className="text-red-500">*</span></label>
                         </div>
                       </div>
 
                       <div className="h-px w-full bg-slate-200/60 my-2"></div>
 
                       <div className="space-y-4">
-                        <div>
-                          <label className={labelClass}>Street Address <span className="text-red-500">*</span></label>
-                          <input type="text" value={retailInfo.address} onChange={e => setRetailInfo({...retailInfo, address: e.target.value})} className={inputClass} placeholder="123 Main St, Apt 4B" />
+                        <div className="relative">
+                          <input type="text" id="ship_addr" value={retailInfo.address} onChange={e => setRetailInfo({...retailInfo, address: e.target.value})} className={inputClass} placeholder=" " />
+                          <label htmlFor="ship_addr" className={floatingLabelClass}>Street Address <span className="text-red-500">*</span></label>
                         </div>
                         <div className="grid grid-cols-6 gap-4">
-                          <div className="col-span-6 sm:col-span-3">
-                            <label className={labelClass}>City <span className="text-red-500">*</span></label>
-                            <input type="text" value={retailInfo.city} onChange={e => setRetailInfo({...retailInfo, city: e.target.value})} className={inputClass} placeholder="San Francisco" />
+                          <div className="relative col-span-6 sm:col-span-3">
+                            <input type="text" id="ship_city" value={retailInfo.city} onChange={e => setRetailInfo({...retailInfo, city: e.target.value})} className={inputClass} placeholder=" " />
+                            <label htmlFor="ship_city" className={floatingLabelClass}>City <span className="text-red-500">*</span></label>
                           </div>
-                          <div className="col-span-3 sm:col-span-1">
-                            <label className={labelClass}>State <span className="text-red-500">*</span></label>
-                            <input type="text" value={retailInfo.state} onChange={e => setRetailInfo({...retailInfo, state: e.target.value})} className={inputClass} placeholder="CA" />
+                          <div className="relative col-span-3 sm:col-span-1">
+                            <input type="text" id="ship_state" value={retailInfo.state} onChange={e => setRetailInfo({...retailInfo, state: e.target.value})} className={inputClass} placeholder=" " />
+                            <label htmlFor="ship_state" className={floatingLabelClass}>State <span className="text-red-500">*</span></label>
                           </div>
-                          <div className="col-span-3 sm:col-span-2">
-                            <label className={labelClass}>ZIP Code <span className="text-red-500">*</span></label>
-                            <input type="text" value={retailInfo.zip} onChange={e => setRetailInfo({...retailInfo, zip: e.target.value})} className={inputClass} placeholder="94105" />
+                          <div className="relative col-span-3 sm:col-span-2">
+                            <input type="text" id="ship_zip" value={retailInfo.zip} onChange={e => setRetailInfo({...retailInfo, zip: e.target.value})} className={inputClass} placeholder=" " />
+                            <label htmlFor="ship_zip" className={floatingLabelClass}>ZIP Code <span className="text-red-500">*</span></label>
                           </div>
                         </div>
                       </div>
@@ -491,15 +494,28 @@ export default function Checkout() {
                         <span className="text-sm font-bold text-slate-700 group-hover:text-slate-900 transition-colors">Billing address matches shipping</span>
                       </label>
 
+                      {/* BILLING INFO - FLOATING LABELS */}
                       {!billingSameAsShipping && (
                         <div className="pt-4 border-t border-slate-100 animate-in fade-in slide-in-from-top-2">
-                          <div className="flex items-center gap-2 mb-3"><CreditCard size={14} className="text-slate-400" /><h4 className="text-sm font-bold text-slate-900">Billing Address</h4></div>
+                          <div className="flex items-center gap-2 mb-4"><CreditCard size={14} className="text-slate-400" /><h4 className="text-sm font-bold text-slate-900">Billing Address</h4></div>
                           <div className="space-y-4">
-                            <div><label className={labelClass}>Street Address</label><input type="text" value={billingInfo.address} onChange={e => setBillingInfo({...billingInfo, address: e.target.value})} className={`${inputClass} bg-slate-50`} /></div>
+                            <div className="relative">
+                              <input type="text" id="bill_addr" value={billingInfo.address} onChange={e => setBillingInfo({...billingInfo, address: e.target.value})} className={inputClass} placeholder=" " />
+                              <label htmlFor="bill_addr" className={floatingLabelClass}>Street Address</label>
+                            </div>
                             <div className="grid grid-cols-6 gap-4">
-                              <div className="col-span-6 sm:col-span-3"><label className={labelClass}>City</label><input type="text" value={billingInfo.city} onChange={e => setBillingInfo({...billingInfo, city: e.target.value})} className={`${inputClass} bg-slate-50`} /></div>
-                              <div className="col-span-3 sm:col-span-1"><label className={labelClass}>State</label><input type="text" value={billingInfo.state} onChange={e => setBillingInfo({...billingInfo, state: e.target.value})} className={`${inputClass} bg-slate-50`} /></div>
-                              <div className="col-span-3 sm:col-span-2"><label className={labelClass}>ZIP</label><input type="text" value={billingInfo.zip} onChange={e => setBillingInfo({...billingInfo, zip: e.target.value})} className={`${inputClass} bg-slate-50`} /></div>
+                              <div className="relative col-span-6 sm:col-span-3">
+                                <input type="text" id="bill_city" value={billingInfo.city} onChange={e => setBillingInfo({...billingInfo, city: e.target.value})} className={inputClass} placeholder=" " />
+                                <label htmlFor="bill_city" className={floatingLabelClass}>City</label>
+                              </div>
+                              <div className="relative col-span-3 sm:col-span-1">
+                                <input type="text" id="bill_state" value={billingInfo.state} onChange={e => setBillingInfo({...billingInfo, state: e.target.value})} className={inputClass} placeholder=" " />
+                                <label htmlFor="bill_state" className={floatingLabelClass}>State</label>
+                              </div>
+                              <div className="relative col-span-3 sm:col-span-2">
+                                <input type="text" id="bill_zip" value={billingInfo.zip} onChange={e => setBillingInfo({...billingInfo, zip: e.target.value})} className={inputClass} placeholder=" " />
+                                <label htmlFor="bill_zip" className={floatingLabelClass}>ZIP</label>
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -662,7 +678,7 @@ export default function Checkout() {
               </select>
             </div>
 
-            {/* 🚀 EXACT 2 DECIMAL FORMATTING FIXED HERE */}
+            {/* EXACT 2 DECIMAL FORMATTING */}
             {isB2B && paymentMethod === 'net_30' && (
               <div className={`p-4 rounded-xl border ${isCreditExceeded ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'} space-y-2 text-sm mt-3 shadow-sm`}>
                 <div className="flex justify-between font-medium text-slate-500">

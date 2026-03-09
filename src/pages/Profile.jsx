@@ -16,7 +16,7 @@ export default function Profile() {
     full_name: '', contact_number: ''
   });
   
-  // 🚀 THE FIX: A lock to prevent Alt+Tab from overwriting user typing
+  // A lock to prevent Alt+Tab from overwriting user typing
   const [dataLoaded, setDataLoaded] = useState(false);
 
   // Password State
@@ -26,7 +26,7 @@ export default function Profile() {
   const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
-    // 🚀 Only update the form if we haven't loaded it yet!
+    // Only update the form if we haven't loaded it yet!
     if (profile && !dataLoaded) {
       setFormData({
         full_name: profile.full_name || '',
@@ -117,8 +117,9 @@ export default function Profile() {
     }
   };
 
-  const inputClass = "w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none text-sm font-medium text-slate-900 transition-all shadow-sm";
-  const labelClass = "block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider";
+  // 🚀 FLOATING LABEL CSS CLASSES
+  const inputClass = "block w-full pl-11 pr-10 pt-6 pb-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none text-sm font-bold text-slate-900 transition-all shadow-sm peer";
+  const floatingLabelClass = "absolute text-sm text-slate-400 duration-300 transform -translate-y-2.5 scale-[0.8] top-3.5 z-10 origin-[0] left-11 peer-placeholder-shown:scale-100 peer-placeholder-shown:translate-y-1 peer-focus:scale-[0.8] peer-focus:-translate-y-2.5 peer-focus:text-blue-600 peer-focus:font-bold pointer-events-none";
 
   return (
     <div className="max-w-3xl mx-auto space-y-6 pb-12">
@@ -160,41 +161,48 @@ export default function Profile() {
               <h4 className="text-lg font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2">
                 <User size={18} className="text-blue-600" /> Personal Details
               </h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                <div>
-                  <label className={labelClass}>Full Name</label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 pt-2">
+                
+                {/* Full Name */}
+                <div className="relative">
+                  <User size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" />
                   <input 
                     type="text" 
+                    id="full_name"
                     value={formData.full_name} 
                     onChange={e => setFormData({...formData, full_name: e.target.value})} 
                     className={inputClass} 
-                    placeholder="John Doe"
+                    placeholder=" "
                     required
                   />
+                  <label htmlFor="full_name" className={floatingLabelClass}>Full Name</label>
                 </div>
-                <div>
-                  <label className={labelClass}>Phone Number</label>
-                  <div className="relative">
-                    <Phone size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input 
-                      type="tel" 
-                      value={formData.contact_number} 
-                      onChange={e => setFormData({...formData, contact_number: e.target.value})} 
-                      className={`${inputClass} pl-10`}
-                      placeholder="(555) 123-4567"
-                    />
-                  </div>
+                
+                {/* Phone Number */}
+                <div className="relative">
+                  <Phone size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" />
+                  <input 
+                    type="tel" 
+                    id="contact_number"
+                    value={formData.contact_number} 
+                    onChange={e => setFormData({...formData, contact_number: e.target.value})} 
+                    className={inputClass}
+                    placeholder=" "
+                  />
+                  <label htmlFor="contact_number" className={floatingLabelClass}>Phone Number</label>
                 </div>
+
               </div>
             </div>
 
             <div className="pt-2 flex justify-end">
+              {/* 🚀 SMALLER BUTTON */}
               <button 
                 type="submit" 
                 disabled={loadingProfile}
-                className="px-8 py-3.5 bg-slate-900 text-white font-bold rounded-xl shadow-lg hover:bg-slate-800 active:scale-95 transition-all flex items-center gap-2 disabled:opacity-70"
+                className="px-6 py-2.5 bg-slate-900 text-white text-sm font-bold rounded-xl shadow-md hover:bg-slate-800 active:scale-95 transition-all flex items-center gap-2 disabled:opacity-70"
               >
-                {loadingProfile ? 'Saving...' : <><Save size={18} /> Update Profile</>}
+                {loadingProfile ? 'Saving...' : <><Save size={16} /> Update Profile</>}
               </button>
             </div>
           </form>
@@ -207,74 +215,79 @@ export default function Profile() {
               <Lock size={18} className="text-purple-600" /> Change Password
             </h4>
             
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-2">
               
               {/* New Password */}
               <div>
-                <label className={labelClass}>New Password</label>
                 <div className="relative">
-                  <Key size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <Key size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" />
                   <input 
                     type={showPassword ? "text" : "password"} 
+                    id="newPassword"
                     value={newPassword} 
                     onChange={e => setNewPassword(e.target.value)} 
-                    className={`${inputClass} pl-10 pr-10`}
-                    placeholder="Enter new password"
+                    className={inputClass}
+                    placeholder=" "
                     minLength={6}
                   />
+                  <label htmlFor="newPassword" className={floatingLabelClass}>New Password</label>
                   <button 
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors z-10"
                   >
-                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                   </button>
                 </div>
                 
                 {/* PASSWORD STRENGTH METER */}
                 {newPassword.length > 0 && (
-                  <div className="mt-3 animate-in fade-in duration-300">
+                  <div className="mt-2.5 px-1 animate-in fade-in duration-300">
                     <div className="flex gap-1.5 h-1.5 mb-1.5">
                       {[1, 2, 3, 4].map(level => (
                         <div 
                           key={level} 
-                          className={`flex-1 rounded-full transition-colors duration-500 ${strengthScore >= level ? strengthColors[strengthScore] : 'bg-slate-100'}`}
+                          className={`flex-1 rounded-full transition-colors duration-500 ${strengthScore >= level ? strengthColors[strengthScore] : 'bg-slate-200'}`}
                         ></div>
                       ))}
                     </div>
-                    <p className={`text-[10px] font-bold uppercase tracking-wider text-right ${strengthScore > 2 ? 'text-emerald-600' : strengthScore === 2 ? 'text-amber-500' : 'text-red-500'}`}>
-                      {strengthLabels[strengthScore]}
-                    </p>
+                    <div className="flex justify-between items-center text-[9px] font-bold uppercase tracking-wider">
+                      <span className="text-slate-400">Strength</span>
+                      <span className={strengthScore > 2 ? 'text-emerald-600' : strengthScore === 2 ? 'text-amber-500' : 'text-red-500'}>
+                        {strengthLabels[strengthScore]}
+                      </span>
+                    </div>
                   </div>
                 )}
               </div>
 
               {/* Confirm Password */}
-              <div>
-                <label className={labelClass}>Confirm Password</label>
-                <div className="relative">
-                  <Key size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input 
-                    type={showPassword ? "text" : "password"} 
-                    value={confirmPassword} 
-                    onChange={e => setConfirmPassword(e.target.value)} 
-                    className={`${inputClass} pl-10 pr-10 ${confirmPassword && newPassword !== confirmPassword ? 'border-red-300 focus:border-red-500 focus:ring-red-500/10' : ''}`}
-                    placeholder="Re-enter new password"
-                  />
-                </div>
+              <div className="relative">
+                <Key size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" />
+                <input 
+                  type={showPassword ? "text" : "password"} 
+                  id="confirmPassword"
+                  value={confirmPassword} 
+                  onChange={e => setConfirmPassword(e.target.value)} 
+                  className={`${inputClass} ${confirmPassword && newPassword !== confirmPassword ? 'border-red-300 focus:border-red-500 focus:ring-red-500/10' : ''}`}
+                  placeholder=" "
+                />
+                <label htmlFor="confirmPassword" className={`${floatingLabelClass} ${confirmPassword && newPassword !== confirmPassword ? 'text-red-500 peer-focus:text-red-500' : ''}`}>Confirm Password</label>
+                
                 {confirmPassword && newPassword !== confirmPassword && (
-                  <p className="text-[10px] font-bold text-red-500 uppercase tracking-wider mt-2 animate-in fade-in">Passwords do not match</p>
+                  <p className="text-[10px] font-bold text-red-500 uppercase tracking-wider mt-1.5 ml-1 animate-in fade-in">Passwords do not match</p>
                 )}
               </div>
             </div>
 
             <div className="pt-4 flex justify-end">
+              {/* 🚀 SMALLER BUTTON */}
               <button 
                 type="submit" 
                 disabled={loadingPassword || !newPassword || newPassword !== confirmPassword}
-                className="px-8 py-3.5 bg-slate-900 text-white font-bold rounded-xl shadow-lg hover:bg-slate-800 active:scale-95 transition-all flex items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
+                className="px-6 py-2.5 bg-slate-900 text-white text-sm font-bold rounded-xl shadow-md hover:bg-slate-800 active:scale-95 transition-all flex items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
               >
-                {loadingPassword ? 'Updating...' : <><Lock size={18} /> Update Password</>}
+                {loadingPassword ? 'Updating...' : <><Lock size={16} /> Update Password</>}
               </button>
             </div>
           </form>

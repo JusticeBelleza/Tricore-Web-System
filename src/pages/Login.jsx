@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Mail, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Mail, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight, ShieldCheck, X, Key, CheckCircle2 } from 'lucide-react';
 
 export default function Login() {
   const [isLogin, setIsLogin] = useState(true);
@@ -14,6 +14,12 @@ export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   
+  // --- FORGOT PASSWORD STATE ---
+  const [showForgotModal, setShowForgotModal] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetMessage, setResetMessage] = useState({ type: '', text: '' }); // 'success' | 'error'
+
   const { signIn } = useAuth();
   const navigate = useNavigate();
 
@@ -54,6 +60,27 @@ export default function Login() {
     }
   };
 
+  // --- HANDLE PASSWORD RESET ---
+  const handleResetPassword = async (e) => {
+    e.preventDefault();
+    setResetLoading(true);
+    setResetMessage({ type: '', text: '' });
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
+        redirectTo: `${window.location.origin}/profile`, // Redirects user to profile to type new password
+      });
+
+      if (error) throw error;
+      
+      setResetMessage({ type: 'success', text: 'Password reset link sent! Please check your inbox.' });
+    } catch (err) {
+      setResetMessage({ type: 'error', text: err.message });
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   // --- PASSWORD STRENGTH LOGIC ---
   const calculateStrength = (pass) => {
     let score = 0;
@@ -69,8 +96,9 @@ export default function Login() {
   const strengthLabels = ['Too Weak', 'Weak', 'Fair', 'Good', 'Strong'];
   const strengthColors = ['bg-slate-200', 'bg-red-500', 'bg-amber-500', 'bg-blue-500', 'bg-emerald-500'];
 
-  // Reduced py-3.5 to py-3 to make the inputs slightly shorter
-  const inputClass = "w-full pl-11 pr-10 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none text-sm font-bold text-slate-900 transition-all placeholder:text-slate-400 placeholder:font-medium shadow-sm";
+  // 🚀 FLOATING LABEL CSS CLASSES
+  const inputClass = "block w-full pl-11 pr-10 pt-6 pb-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none text-sm font-bold text-slate-900 transition-all shadow-sm peer";
+  const floatingLabelClass = "absolute text-sm text-slate-400 duration-300 transform -translate-y-2.5 scale-[0.8] top-3.5 z-10 origin-[0] left-11 peer-placeholder-shown:scale-100 peer-placeholder-shown:translate-y-1 peer-focus:scale-[0.8] peer-focus:-translate-y-2.5 peer-focus:text-blue-600 peer-focus:font-bold pointer-events-none";
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4 relative overflow-hidden">
@@ -92,7 +120,7 @@ export default function Login() {
             {isLogin ? 'Tricore Medical Supply' : 'Create an account'}
           </h2>
           <p className="text-slate-500 text-sm mt-1.5 font-medium">
-            {isLogin ? 'Enter your credentials to access your portal' : 'Join Tricore Medical Supply to streamline your clinical logistics.'}
+            {isLogin ? 'Enter your credentials to access your portal' : 'Join Tricore Medical Supply to streamline your clinical logistics'}
           </p>
         </div>
 
@@ -103,67 +131,60 @@ export default function Login() {
           </div>
         )}
 
-        {/* --- FORM --- (Changed space-y-5 to space-y-3.5 for tighter spacing) */}
-        <form onSubmit={handleSubmit} className="space-y-3.5">
+        {/* --- FORM --- */}
+        <form onSubmit={handleSubmit} className="space-y-4">
           
           {/* Full Name (Sign Up Only) */}
           {!isLogin && (
-            <div className="animate-in fade-in slide-in-from-top-2 duration-300">
-              <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest mb-1">Full Name</label>
-              <div className="relative">
-                <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={18} />
-                <input
-                  type="text"
-                  required
-                  className={inputClass}
-                  placeholder="John Doe"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                />
-              </div>
+            <div className="relative animate-in fade-in slide-in-from-top-2 duration-300">
+              <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
+              <input
+                type="text"
+                id="fullName"
+                required
+                className={inputClass}
+                placeholder=" "
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+              />
+              <label htmlFor="fullName" className={floatingLabelClass}>Full Name</label>
             </div>
           )}
           
           {/* Email */}
-          <div>
-            <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest mb-1">Email Address</label>
-            <div className="relative">
-              <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={18} />
-              <input
-                type="email"
-                required
-                className={inputClass}
-                placeholder="name@company.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
+          <div className="relative">
+            <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
+            <input
+              type="email"
+              id="email"
+              required
+              className={inputClass}
+              placeholder=" "
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <label htmlFor="email" className={floatingLabelClass}>Email Address</label>
           </div>
 
           {/* Password */}
           <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">Password</label>
-              {isLogin && (
-                <button type="button" onClick={() => alert('Password reset link sent to your email.')} className="text-[11px] font-bold text-blue-600 hover:text-blue-700 transition-colors uppercase tracking-wider">
-                  Forgot?
-                </button>
-              )}
-            </div>
             <div className="relative">
-              <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={18} />
+              <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
               <input
                 type={showPassword ? "text" : "password"}
+                id="password"
                 required
                 className={inputClass}
-                placeholder="••••••••"
+                placeholder=" "
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
+              <label htmlFor="password" className={floatingLabelClass}>Password</label>
+              
               <button 
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors z-10"
               >
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
@@ -171,12 +192,12 @@ export default function Login() {
 
             {/* Password Strength Meter (Sign Up Only) */}
             {!isLogin && password.length > 0 && (
-              <div className="mt-2 animate-in fade-in duration-300">
+              <div className="mt-2.5 px-1 animate-in fade-in duration-300">
                 <div className="flex gap-1.5 h-1.5 mb-1">
                   {[1, 2, 3, 4].map(level => (
                     <div 
                       key={level} 
-                      className={`flex-1 rounded-full transition-colors duration-500 ${strengthScore >= level ? strengthColors[strengthScore] : 'bg-slate-100'}`}
+                      className={`flex-1 rounded-full transition-colors duration-500 ${strengthScore >= level ? strengthColors[strengthScore] : 'bg-slate-200'}`}
                     ></div>
                   ))}
                 </div>
@@ -193,32 +214,50 @@ export default function Login() {
           {/* Confirm Password (Sign Up Only) */}
           {!isLogin && (
             <div className="animate-in fade-in slide-in-from-top-2 duration-300">
-              <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest mb-1">Confirm Password</label>
               <div className="relative">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={18} />
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
                 <input
                   type={showPassword ? "text" : "password"}
+                  id="confirmPassword"
                   required
-                  // 🚀 Dynamic class: Turns the border red if passwords don't match
                   className={`${inputClass} ${confirmPassword && password !== confirmPassword ? 'border-red-300 focus:border-red-500 focus:ring-red-500/10' : ''}`}
-                  placeholder="••••••••"
+                  placeholder=" "
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                 />
+                <label htmlFor="confirmPassword" className={`${floatingLabelClass} ${confirmPassword && password !== confirmPassword ? 'text-red-500 peer-focus:text-red-500' : ''}`}>Confirm Password</label>
               </div>
-              {/* 🚀 Mismatch Warning Text */}
+              
+              {/* Mismatch Warning Text */}
               {confirmPassword && password !== confirmPassword && (
-                <p className="text-[10px] font-bold text-red-500 uppercase tracking-wider mt-1.5 animate-in fade-in">
+                <p className="text-[10px] font-bold text-red-500 uppercase tracking-wider mt-1.5 ml-1 animate-in fade-in">
                   Passwords do not match
                 </p>
               )}
             </div>
           )}
 
+          {/* 🚀 Remember Me & Forgot Password Row (Login Only) */}
+          {isLogin && (
+            <div className="flex items-center justify-between pt-1 pb-2 px-1">
+              <div className="flex items-center gap-2">
+                <input type="checkbox" id="remember" className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer" />
+                <label htmlFor="remember" className="text-xs font-bold text-slate-600 cursor-pointer select-none">Remember me</label>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => setShowForgotModal(true)} 
+                className="text-[11px] font-bold text-blue-600 hover:text-blue-700 transition-colors uppercase tracking-wider"
+              >
+                Forgot password?
+              </button>
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={loading || !email || !password || (!isLogin && (!fullName || password !== confirmPassword))}
-            className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-black hover:bg-slate-800 active:scale-[0.98] transition-all shadow-lg shadow-slate-900/20 disabled:opacity-70 mt-5 flex items-center justify-center gap-2 group"
+            className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-black hover:bg-slate-800 active:scale-[0.98] transition-all shadow-lg shadow-slate-900/20 disabled:opacity-70 mt-2 flex items-center justify-center gap-2 group"
           >
             {loading ? (
               <span className="animate-pulse flex items-center gap-2"><ShieldCheck size={18} /> Processing...</span>
@@ -228,6 +267,7 @@ export default function Login() {
           </button>
         </form>
 
+        {/* Footer Toggle */}
         <div className="mt-6 pt-6 border-t border-slate-100 text-center">
           <p className="text-sm font-medium text-slate-500">
             {isLogin ? "Don't have an account? " : "Already have an account? "}
@@ -245,6 +285,72 @@ export default function Login() {
           </p>
         </div>
       </div>
+
+      {/* --- FORGOT PASSWORD MODAL --- */}
+      {showForgotModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-sm rounded-[2rem] shadow-2xl p-8 relative animate-in zoom-in-95 duration-200 border border-slate-100">
+            
+            {/* Close Button */}
+            <button 
+              onClick={() => {
+                setShowForgotModal(false);
+                setResetMessage({ type: '', text: '' });
+                setResetEmail('');
+              }} 
+              className="absolute top-5 right-5 text-slate-400 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 p-2 rounded-full transition-all"
+            >
+              <X size={20} />
+            </button>
+
+            <div className="text-center mb-6">
+              <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 border border-blue-100 shadow-sm">
+                <Key size={24} />
+              </div>
+              <h3 className="text-xl font-black text-slate-900 tracking-tight">Reset Password</h3>
+              <p className="text-sm text-slate-500 mt-2 font-medium">
+                Enter your email address and we'll send you a link to reset your password.
+              </p>
+            </div>
+
+            {resetMessage.text && (
+              <div className={`mb-5 p-3.5 rounded-xl text-sm font-bold flex items-start gap-3 animate-in fade-in zoom-in-95 duration-200 ${resetMessage.type === 'error' ? 'bg-red-50 border border-red-100 text-red-700' : 'bg-emerald-50 border border-emerald-100 text-emerald-800'}`}>
+                {resetMessage.type === 'error' ? (
+                  <AlertCircle size={18} className="shrink-0 mt-0.5 text-red-500" />
+                ) : (
+                  <CheckCircle2 size={18} className="shrink-0 mt-0.5 text-emerald-500" />
+                )}
+                <span className="leading-snug">{resetMessage.text}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleResetPassword} className="space-y-4">
+              <div className="relative">
+                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
+                <input
+                  type="email"
+                  id="resetEmail"
+                  required
+                  className={inputClass}
+                  placeholder=" "
+                  value={resetEmail}
+                  onChange={(e) => setResetEmail(e.target.value)}
+                />
+                <label htmlFor="resetEmail" className={floatingLabelClass}>Email Address</label>
+              </div>
+
+              <button
+                type="submit"
+                disabled={resetLoading || !resetEmail}
+                className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-black hover:bg-slate-800 active:scale-[0.98] transition-all shadow-md disabled:opacity-70 mt-2 flex items-center justify-center gap-2"
+              >
+                {resetLoading ? 'Sending...' : 'Send Reset Link'}
+              </button>
+            </form>
+
+          </div>
+        </div>
+      )}
 
     </div>
   );
