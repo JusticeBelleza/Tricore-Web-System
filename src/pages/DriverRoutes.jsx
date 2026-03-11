@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { 
   MapPin, Phone, CheckCircle2, Camera, PenTool, X, 
-  UploadCloud, Truck, Navigation, Route, PackageCheck, Package, DollarSign
+  UploadCloud, Truck, Navigation, Route, PackageCheck, Package, DollarSign, AlertTriangle, XCircle
 } from 'lucide-react';
 
 // 🚀 DEFINE YOUR WAREHOUSE ADDRESS HERE
@@ -12,15 +12,25 @@ const WAREHOUSE_ADDRESS = "2169 Harbor St, Pittsburg CA 94565";
 export default function DriverRoutes() {
   const { profile } = useAuth();
   const [orders, setOrders] = useState([]);
-  const [completedToday, setCompletedToday] = useState(0);
+  
+  // 🚀 CHANGED TO WEEKLY METRIC
+  const [completedThisWeek, setCompletedThisWeek] = useState(0);
   const [loading, setLoading] = useState(true);
   
   // Delivery Modal State
   const [activeOrder, setActiveOrder] = useState(null); 
   const [photoPreview, setPhotoPreview] = useState(null);
   const [photoFile, setPhotoFile] = useState(null);
-  const [receivedBy, setReceivedBy] = useState(''); // 🚀 NEW: State for recipient name
+  const [receivedBy, setReceivedBy] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Cancellation Modal State
+  const [cancellingOrder, setCancellingOrder] = useState(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [isCancelling, setIsCancelling] = useState(false);
+
+  // 🚀 TOAST NOTIFICATION STATE
+  const [toast, setToast] = useState({ show: false, message: '', isError: false });
 
   const canvasRef = useRef(null);
 
@@ -29,6 +39,11 @@ export default function DriverRoutes() {
       fetchMyRoutes();
     }
   }, [profile?.id, profile?.full_name]);
+
+  const showToast = (message, isError = false) => {
+    setToast({ show: true, message, isError });
+    setTimeout(() => setToast({ show: false, message: '', isError: false }), 4000);
+  };
 
   const fetchMyRoutes = async () => {
     setLoading(true);
@@ -48,20 +63,24 @@ export default function DriverRoutes() {
 
       if (pendingError) throw pendingError;
 
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      // 🚀 CALCULATE START OF THE WEEK (Sunday)
+      const startOfWeek = new Date();
+      startOfWeek.setHours(0, 0, 0, 0);
+      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+
       const { count: completedCount } = await supabase
         .from('orders')
         .select('*', { count: 'exact', head: true })
         .eq('status', 'delivered')
         .ilike('driver_name', `${profile.full_name}%`)
-        .gte('updated_at', today.toISOString());
+        .gte('updated_at', startOfWeek.toISOString());
 
       setOrders(pendingData || []);
-      setCompletedToday(completedCount || 0);
+      setCompletedThisWeek(completedCount || 0);
 
     } catch (error) {
       console.error('Error fetching routes:', error.message);
+      showToast('Failed to load routes.', true);
     } finally {
       setLoading(false);
     }
@@ -149,9 +168,8 @@ export default function DriverRoutes() {
   };
 
   const submitDelivery = async () => {
-    // 🚀 VALIDATE NAME INPUT
     if (!receivedBy.trim()) {
-      alert('Please enter the full name of the person receiving the order.');
+      showToast('Please enter the full name of the person receiving the order.', true);
       return;
     }
 
@@ -160,7 +178,7 @@ export default function DriverRoutes() {
     blank.width = canvas.width;
     blank.height = canvas.height;
     if (canvas.toDataURL() === blank.toDataURL()) {
-      alert('Please have the customer sign to confirm delivery.');
+      showToast('Please have the customer sign to confirm delivery.', true);
       return;
     }
 
@@ -183,7 +201,6 @@ export default function DriverRoutes() {
       if (sigErr) throw sigErr;
       signatureUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(sigPath).data.publicUrl;
 
-      // 🚀 UPDATED DB SUBMISSION (includes received_by)
       const { error: updateErr } = await supabase.from('orders').update({
         status: 'delivered',
         photo_url: photoUrlStr,
@@ -195,15 +212,45 @@ export default function DriverRoutes() {
       if (updateErr) throw updateErr;
 
       setOrders(orders.filter(o => o.id !== activeOrder.id));
-      setCompletedToday(prev => prev + 1);
+      setCompletedThisWeek(prev => prev + 1);
       window.dispatchEvent(new Event('orderStatusChanged'));
       closeModal();
+      showToast('Delivery completed successfully!');
       
     } catch (error) {
       console.error('Delivery Error:', error.message);
-      alert('Failed to upload delivery proof. Check your connection and try again.');
+      showToast('Failed to upload delivery proof. Check your connection.', true);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const submitCancellation = async () => {
+    if (!cancelReason.trim()) {
+      showToast('Please provide a reason for cancelling this delivery.', true);
+      return;
+    }
+
+    setIsCancelling(true);
+    try {
+      const { error } = await supabase.from('orders').update({
+        status: 'cancelled',
+        cancellation_reason: cancelReason.trim(),
+        updated_at: new Date().toISOString()
+      }).eq('id', cancellingOrder.id);
+
+      if (error) throw error;
+
+      setOrders(orders.filter(o => o.id !== cancellingOrder.id));
+      window.dispatchEvent(new Event('orderStatusChanged'));
+      closeCancelModal();
+      showToast('Order cancelled and dispatched to exceptions.', true); // Red toast for cancel
+      
+    } catch (error) {
+      console.error('Cancellation Error:', error.message);
+      showToast('Failed to cancel the delivery. Please try again.', true);
+    } finally {
+      setIsCancelling(false);
     }
   };
 
@@ -211,11 +258,16 @@ export default function DriverRoutes() {
     setActiveOrder(null);
     setPhotoFile(null);
     setPhotoPreview(null);
-    setReceivedBy(''); // Reset name when closing modal
+    setReceivedBy(''); 
+  };
+
+  const closeCancelModal = () => {
+    setCancellingOrder(null);
+    setCancelReason('');
   };
 
   return (
-    <div className="max-w-md sm:max-w-3xl mx-auto space-y-5 pb-24">
+    <div className="max-w-md sm:max-w-3xl mx-auto space-y-5 pb-24 relative">
       
       {/* --- DRIVER HERO DASHBOARD --- */}
       <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-lg relative overflow-hidden">
@@ -234,9 +286,9 @@ export default function DriverRoutes() {
             <div className="bg-emerald-500/10 backdrop-blur border border-emerald-500/20 rounded-2xl p-4 flex-1">
               <div className="flex items-center gap-1.5 text-emerald-400 mb-1">
                 <PackageCheck size={14} />
-                <span className="text-[10px] font-bold uppercase tracking-wider">Done Today</span>
+                <span className="text-[10px] font-bold uppercase tracking-wider">Done This Week</span>
               </div>
-              <p className="text-3xl font-black text-emerald-400">{completedToday}</p>
+              <p className="text-3xl font-black text-emerald-400">{completedThisWeek}</p>
             </div>
           </div>
         </div>
@@ -267,7 +319,6 @@ export default function DriverRoutes() {
 
             const totalItems = order.order_items?.reduce((sum, item) => sum + item.quantity_variants, 0) || 0;
             
-            // 🚀 FIXED PAYMENT STATUS LOGIC
             const isCOD = order.payment_method === 'cod';
             const isNet30 = order.payment_method === 'net_30';
             const paymentText = isCOD ? `$${Number(order.total_amount).toFixed(2)}` : (isNet30 ? 'Net 30' : 'Paid');
@@ -339,14 +390,22 @@ export default function DriverRoutes() {
                   )}
                 </div>
 
-                <div className="flex gap-2.5 mt-auto">
+                {/* ACTION BUTTONS */}
+                <div className="flex gap-2 mt-auto">
+                  <button 
+                    onClick={() => setCancellingOrder(order)}
+                    className="px-4 py-3.5 bg-red-50 text-red-600 border border-red-200 rounded-xl hover:bg-red-100 active:scale-95 transition-all flex items-center justify-center shadow-sm"
+                    title="Cancel Delivery"
+                  >
+                    <XCircle size={20} />
+                  </button>
                   <a 
                     href={directionsLink} 
                     target="_blank" 
                     rel="noreferrer" 
                     className="flex-1 py-3.5 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-black rounded-xl hover:bg-blue-100 active:scale-95 transition-all flex items-center justify-center gap-1.5 shadow-sm"
                   >
-                    <Navigation size={18} /> Navigate
+                    <Navigation size={18} /> Nav
                   </a>
                   <button 
                     onClick={() => setActiveOrder(order)}
@@ -361,12 +420,47 @@ export default function DriverRoutes() {
         </div>
       )}
 
+      {/* --- CANCELLATION CONFIRMATION MODAL --- */}
+      {cancellingOrder && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/70 backdrop-blur-sm animate-in fade-in duration-200 p-4">
+          <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 sm:p-8 animate-in zoom-in-95 duration-200 border border-slate-100 relative">
+            <button onClick={closeCancelModal} className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-900 bg-slate-50 rounded-full active:scale-95 transition-all"><X size={18} /></button>
+            
+            <div className="w-14 h-14 bg-red-50 text-red-600 rounded-full flex items-center justify-center mb-4 border border-red-100 shadow-sm">
+              <AlertTriangle size={24} />
+            </div>
+            
+            <h3 className="text-xl font-black text-slate-900 tracking-tight">Confirm Cancellation</h3>
+            <p className="text-sm text-slate-500 mt-1 font-medium leading-relaxed">
+              Are you sure you want to cancel <strong className="text-slate-800">Order #{cancellingOrder.id.split('-')[0].toUpperCase()}</strong>? This cannot be undone.
+            </p>
+
+            <div className="mt-5 space-y-3">
+              <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-widest">Reason for Cancellation</label>
+              <textarea 
+                rows="4"
+                placeholder="e.g. Customer not available, Wrong address provided..."
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-red-500 focus:ring-4 focus:ring-red-500/10 transition-all text-sm font-medium text-slate-900 resize-none shadow-sm placeholder:text-slate-400"
+              ></textarea>
+            </div>
+
+            <div className="mt-6 flex gap-3">
+              <button onClick={closeCancelModal} className="flex-1 py-3 bg-white text-slate-700 border border-slate-300 font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">Back</button>
+              <button onClick={submitCancellation} disabled={isCancelling} className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl shadow-lg shadow-red-600/30 hover:bg-red-700 active:scale-95 transition-all disabled:opacity-70 flex justify-center items-center">
+                {isCancelling ? 'Processing...' : 'Confirm Cancel'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* --- MODERN BOTTOM-SHEET DELIVERY POD MODAL --- */}
       {activeOrder && (
         <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/70 backdrop-blur-sm animate-in fade-in duration-200 p-0 sm:p-4">
           <div className="bg-white w-full sm:max-w-md h-[92vh] sm:h-auto sm:max-h-[90vh] rounded-t-[2rem] sm:rounded-3xl shadow-2xl flex flex-col animate-in slide-in-from-bottom-full duration-300">
             
-            {/* Modal Header */}
             <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center shrink-0 bg-slate-50 rounded-t-[2rem] sm:rounded-t-3xl">
               <div>
                 <h3 className="text-xl font-black text-slate-900 tracking-tight">Proof of Delivery</h3>
@@ -375,7 +469,6 @@ export default function DriverRoutes() {
               <button onClick={closeModal} className="p-2.5 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 shadow-sm"><X size={20} /></button>
             </div>
 
-            {/* Modal Body */}
             <div className="p-6 overflow-y-auto flex-1 space-y-6 bg-white">
               
               {/* Step 1: Photo Section */}
@@ -409,7 +502,7 @@ export default function DriverRoutes() {
 
               <div className="h-px w-full bg-slate-100"></div>
 
-              {/* 🚀 Step 2: Recipient Name */}
+              {/* Step 2: Recipient Name */}
               <div className="space-y-3">
                 <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
                   <div className="w-5 h-5 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-[10px]">2</div>
@@ -449,7 +542,6 @@ export default function DriverRoutes() {
               </div>
             </div>
 
-            {/* Modal Footer */}
             <div className="p-5 border-t border-slate-100 bg-white shrink-0 pb-8 sm:pb-5">
               <button 
                 onClick={submitDelivery} 
@@ -467,6 +559,17 @@ export default function DriverRoutes() {
           </div>
         </div>
       )}
+
+      {/* 🚀 TOAST NOTIFICATION COMPONENT */}
+      {toast.show && (
+        <div className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-[120] flex items-center gap-3 bg-slate-900 text-white px-5 py-4 rounded-2xl shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-300">
+          <div className={`p-1.5 rounded-full ${toast.isError ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+            {toast.isError ? <AlertTriangle size={18} strokeWidth={2.5} /> : <CheckCircle2 size={18} strokeWidth={2.5} />}
+          </div>
+          <p className="text-sm font-bold pr-2">{toast.message}</p>
+        </div>
+      )}
+
     </div>
   );
 }

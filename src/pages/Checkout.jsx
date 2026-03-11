@@ -17,7 +17,7 @@ export default function Checkout() {
 
   // CART PAGINATION & DELETE STATE
   const [cartPage, setCartPage] = useState(1);
-  const [itemToDelete, setItemToDelete] = useState(null); // Holds the index of the item to delete
+  const [itemToDelete, setItemToDelete] = useState(null); 
   const ITEMS_PER_PAGE = 5;
 
   const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
@@ -37,7 +37,6 @@ export default function Checkout() {
     }
   }, [cart, cartLoaded, profile?.id, cartKey]);
 
-  // Handle page edge case when an item is deleted and a page becomes empty
   const totalCartPages = Math.ceil(cart.length / ITEMS_PER_PAGE);
   useEffect(() => {
     if (cartPage > totalCartPages && totalCartPages > 0) {
@@ -56,7 +55,6 @@ export default function Checkout() {
   const [patientSearch, setPatientSearch] = useState('');
   const [selectedPatient, setSelectedPatient] = useState(null);
   
-  // NEW: Ship to Agency State
   const [shipToAgency, setShipToAgency] = useState(false);
 
   const [showDropdown, setShowDropdown] = useState(false);
@@ -125,9 +123,7 @@ export default function Checkout() {
     } catch (err) { console.error(err); }
   };
 
-  // LIVE TAX CALCULATOR EFFECT
   useEffect(() => {
-    // Use Agency ZIP if shipping to agency
     const targetZip = isB2B 
       ? (shipToAgency ? profile?.companies?.zip : selectedPatient?.zip) 
       : retailInfo?.zip;
@@ -169,7 +165,6 @@ export default function Checkout() {
 
   const filteredPatients = patients.filter(p => p.full_name.toLowerCase().includes(patientSearch.toLowerCase()));
 
-  // EXECUTE DELETE FROM CONFIRMATION MODAL
   const executeRemoveFromCart = () => {
     if (itemToDelete !== null) {
       setCart(prevCart => prevCart.filter((_, index) => index !== itemToDelete));
@@ -201,14 +196,12 @@ export default function Checkout() {
   const handlePlaceOrder = async () => {
     if (cart.length === 0 || isCreditExceeded || taxLoading) return;
     
-    // Updated validation to allow passing if shipToAgency is checked
     if (isB2B && !shipToAgency && !selectedPatient) { setError('Please select a patient or select "Ship to Agency".'); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
     if (!isB2B && (isEditingRetail || !retailInfo.address || !retailInfo.phone)) { setError('Please confirm your shipping address and phone number.'); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
 
     setLoading(true); setError('');
 
     try {
-      // Grab shipping info dynamically based on shipToAgency toggle
       const sName = isB2B ? (shipToAgency ? profile?.companies?.name : selectedPatient.full_name) : retailInfo.full_name;
       const sAddress = isB2B ? (shipToAgency ? profile?.companies?.address : selectedPatient.address) : retailInfo.address;
       const sCity = isB2B ? (shipToAgency ? profile?.companies?.city : selectedPatient.city) : retailInfo.city;
@@ -221,16 +214,13 @@ export default function Checkout() {
           user_id: profile.id, 
           company_id: profile.company_id || null, 
           patient_id: (isB2B && !shipToAgency) ? selectedPatient.id : null,
-          
           shipping_name: sName, 
           shipping_address: sAddress,
           shipping_city: sCity, 
           shipping_state: sState,
           shipping_zip: sZip,
-          
           shipping_email: sEmail,
           shipping_phone: sPhone,
-
           status: 'pending', payment_method: paymentMethod, payment_status: 'unpaid',
           subtotal, tax_amount: taxAmount, shipping_amount: shippingFee, total_amount: totalAmount,
         }).select().single();
@@ -244,6 +234,9 @@ export default function Checkout() {
 
       const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
       if (itemsError) throw itemsError;
+
+      // 🚀 NOTE: The manual supabase.rpc('deduct_inventory') block has been DELETED here. 
+      // The database will now handle the deduction automatically once!
 
       if (!isB2B && saveToProfile) {
         await supabase.from('user_profiles').update({
@@ -270,7 +263,6 @@ export default function Checkout() {
     );
   }
 
-  // 🚀 FLOATING LABEL CSS CLASSES
   const inputClass = "block w-full px-4 pt-6 pb-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none text-sm font-bold text-slate-900 transition-all shadow-sm peer placeholder-transparent";
   const floatingLabelClass = "absolute text-sm text-slate-400 duration-300 transform -translate-y-2.5 scale-[0.8] top-3.5 z-10 origin-[0] left-4 peer-placeholder-shown:scale-100 peer-placeholder-shown:translate-y-1 peer-focus:scale-[0.8] peer-focus:-translate-y-2.5 peer-focus:text-blue-600 peer-focus:font-bold pointer-events-none";
 
@@ -337,7 +329,6 @@ export default function Checkout() {
                   </div>
                   <div className="p-4 flex-1 flex flex-col justify-center">
                     
-                    {/* If Shipping to Agency, mirror the Bill To card */}
                     {shipToAgency ? (
                       <div className="animate-in fade-in zoom-in-95 duration-200">
                         <p className="font-extrabold text-slate-900 text-base mb-3 tracking-tight">{profile?.companies?.name || 'Your Agency'}</p>
@@ -360,7 +351,6 @@ export default function Checkout() {
                         </div>
                       </div>
                     ) : (
-                      /* If Shipping to Patient, show search or patient details */
                       !selectedPatient ? (
                         <div className="relative animate-in fade-in" ref={dropdownRef}>
                           <div className="relative cursor-pointer" onClick={() => setShowDropdown(true)}>
@@ -445,7 +435,6 @@ export default function Checkout() {
                   <div className="space-y-5 animate-in fade-in slide-in-from-top-2 duration-300">
                     <div className="space-y-4">
                       
-                      {/* RETAIL EDIT FORM - USING FLOATING LABELS */}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div className="relative sm:col-span-2">
                           <input type="text" id="ship_name" value={retailInfo.full_name} onChange={e => setRetailInfo({...retailInfo, full_name: e.target.value})} className={inputClass} placeholder=" " />
@@ -494,7 +483,6 @@ export default function Checkout() {
                         <span className="text-sm font-bold text-slate-700 group-hover:text-slate-900 transition-colors">Billing address matches shipping</span>
                       </label>
 
-                      {/* BILLING INFO - FLOATING LABELS */}
                       {!billingSameAsShipping && (
                         <div className="pt-4 border-t border-slate-100 animate-in fade-in slide-in-from-top-2">
                           <div className="flex items-center gap-2 mb-4"><CreditCard size={14} className="text-slate-400" /><h4 className="text-sm font-bold text-slate-900">Billing Address</h4></div>
@@ -538,7 +526,6 @@ export default function Checkout() {
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch animate-in fade-in zoom-in-95 duration-200">
                     
-                    {/* RETAIL SHIP TO CARD */}
                     <div className="border border-slate-200 rounded-2xl bg-white shadow-sm flex flex-col h-full overflow-hidden">
                       <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex items-center gap-2">
                         <Package size={14} className="text-emerald-600"/>
@@ -566,7 +553,6 @@ export default function Checkout() {
                       </div>
                     </div>
 
-                    {/* RETAIL BILL TO CARD */}
                     {!billingSameAsShipping && (
                       <div className="border border-slate-200 rounded-2xl bg-white shadow-sm flex flex-col h-full overflow-hidden">
                         <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex items-center gap-2">

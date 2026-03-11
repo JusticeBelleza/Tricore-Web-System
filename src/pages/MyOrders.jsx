@@ -5,7 +5,7 @@ import { useAuth } from '../lib/AuthContext';
 import { 
   Package, Receipt, ChevronDown, Calendar, Hash, Building, MapPin, Mail,
   CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2,
-  ChevronLeft, ChevronRight, PackageCheck
+  ChevronLeft, ChevronRight, PackageCheck, XCircle
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -34,7 +34,7 @@ export default function MyOrders() {
       let query = supabase
         .from('orders')
         .select(`
-          id, status, created_at, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
+          id, status, created_at, updated_at, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
           driver_name, vehicle_name, vehicle_license,
           shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, company_id,
           companies ( name, address, city, state, zip, phone, email ),
@@ -42,7 +42,7 @@ export default function MyOrders() {
           user_profiles ( full_name, contact_number, email ),
           order_items (
             id, quantity_variants, unit_price, line_total,
-            product_variants ( name, sku, products ( name, base_sku ) )
+            product_variants ( name, sku, products ( name, base_sku ) ) 
           )
         `, { count: 'exact' })
         .order('created_at', { ascending: false });
@@ -86,7 +86,8 @@ export default function MyOrders() {
       picking: 'bg-purple-50 text-purple-700 border-purple-200',
       packed: 'bg-indigo-50 text-indigo-700 border-indigo-200',
       out_for_delivery: 'bg-orange-50 text-orange-700 border-orange-200',
-      delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200'
+      delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      cancelled: 'bg-red-50 text-red-700 border-red-200'
     };
     return <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{status.replace(/_/g, ' ')}</span>;
   };
@@ -350,9 +351,24 @@ export default function MyOrders() {
                             </span>
                           </div>
                         </td>
+                        
+                        {/* 🚀 FIXED: Date Delivered / Cancelled below badge */}
                         <td className="px-6 py-4">
-                          <div className="flex flex-col items-start gap-1">
+                          <div className="flex flex-col items-start gap-1.5">
                             {getStatusBadge(order.status)}
+                            
+                            {order.status === 'delivered' && (
+                              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
+                                <CheckCircle2 size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                              </span>
+                            )}
+                            
+                            {order.status === 'cancelled' && (
+                              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
+                                <XCircle size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                              </span>
+                            )}
+
                             {isOverdue && (
                               <span className="text-[10px] font-bold text-red-600 uppercase tracking-widest flex items-center gap-1 mt-1">
                                 <AlertCircle size={10} /> Overdue
@@ -360,6 +376,7 @@ export default function MyOrders() {
                             )}
                           </div>
                         </td>
+                        
                         <td className="px-6 py-4 text-right">
                           <button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}>
                             <ChevronDown size={20} />
@@ -434,7 +451,8 @@ export default function MyOrders() {
                                           {order.order_items?.map((item) => (
                                             <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
                                               <td className="px-5 py-4">
-                                                <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name}</p>
+                                                {/* 🚀 FIXED: Displays the actual Product Name from the database */}
+                                                <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name || 'Product'}</p>
                                                 <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku}</span></p>
                                               </td>
                                               <td className="px-5 py-4 text-center">
@@ -540,14 +558,12 @@ export default function MyOrders() {
                                     </div>
                                   )}
 
-                                  {/* 🚀 UPDATED PROOF OF DELIVERY COMPONENT WITH RECIPIENT NAME */}
                                   {order.status === 'delivered' && (order.photo_url || order.signature_url || order.received_by) && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                       <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
                                         <PackageCheck size={16} className="text-slate-400" /> Proof of Delivery
                                       </h4>
 
-                                      {/* 🚀 NEW: Received By Section */}
                                       {order.received_by && (
                                         <div className="mb-4 p-3 bg-emerald-50 rounded-xl border border-emerald-100">
                                           <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">Received By</p>

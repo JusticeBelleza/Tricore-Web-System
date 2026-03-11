@@ -5,7 +5,7 @@ import {
   Search, Package, CheckCircle2, XCircle, Clock, 
   Truck, X, AlertCircle, PackageCheck, User, Car, Hash, Building, MapPin,
   ChevronDown, DollarSign, CreditCard, FileText, Calendar, ShieldAlert, Phone, FileDown, Mail,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, AlertTriangle
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -17,7 +17,7 @@ export default function AdminOrders() {
   const [drivers, setDrivers] = useState([]); 
   const [loading, setLoading] = useState(true);
   
-  // 🚀 SERVER-SIDE PAGINATION (Set to 10)
+  // 🚀 SERVER-SIDE PAGINATION
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const pageSize = 10;
@@ -26,7 +26,7 @@ export default function AdminOrders() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('all'); 
   
-  const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, dispatch: 0, due: 0 });
+  const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, dispatch: 0, due: 0, cancelled: 0 });
   const [newPendingCount, setNewPendingCount] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [confirmAction, setConfirmAction] = useState({ show: false, title: '', message: '', onConfirm: null });
@@ -74,14 +74,22 @@ export default function AdminOrders() {
       thresholdDate.setDate(thresholdDate.getDate() - 25);
       const lastViewedPending = localStorage.getItem('lastViewedPending') || new Date(0).toISOString();
 
-      const [pendingReq, newPendingReq, processingReq, dispatchReq, dueReq] = await Promise.all([
+      const [pendingReq, newPendingReq, processingReq, dispatchReq, dueReq, cancelledReq] = await Promise.all([
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').gt('created_at', lastViewedPending),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['ready_for_delivery', 'shipped']),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString())
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'cancelled')
       ]);
-      setTabCounts({ pending: pendingReq.count || 0, processing: processingReq.count || 0, dispatch: dispatchReq.count || 0, due: dueReq.count || 0 });
+      
+      setTabCounts({ 
+        pending: pendingReq.count || 0, 
+        processing: processingReq.count || 0, 
+        dispatch: dispatchReq.count || 0, 
+        due: dueReq.count || 0,
+        cancelled: cancelledReq.count || 0 
+      });
       setNewPendingCount(newPendingReq.count || 0);
     } catch (error) { console.error('Error fetching tab counts:', error); }
   };
@@ -101,7 +109,7 @@ export default function AdminOrders() {
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( full_name, contact_number, email ),
-          order_items ( id, quantity_variants, unit_price, line_total, product_variants ( name, sku, products(base_sku) ) )
+          order_items ( id, quantity_variants, unit_price, line_total, product_variants ( name, sku, products(name, base_sku) ) )
         `, { count: 'exact' }); 
 
       if (activeTab === 'pending') query = query.eq('status', 'pending');
@@ -116,7 +124,15 @@ export default function AdminOrders() {
       }
 
       if (debouncedSearch) query = query.ilike('shipping_name', `%${debouncedSearch}%`);
-      query = query.order('created_at', { ascending: false });
+
+      // 🚀 DYNAMIC SORTING
+      // If we are looking at finished orders, sort by the delivery/cancel time (updated_at)
+      // Otherwise, sort by the original order time (created_at)
+      const sortColumn = (activeTab === 'completed' || activeTab === 'cancelled') 
+        ? 'updated_at' 
+        : 'created_at';
+
+      query = query.order(sortColumn, { ascending: false });
 
       const from = page * pageSize;
       const to = from + pageSize - 1;
@@ -134,10 +150,13 @@ export default function AdminOrders() {
 
   const executeOrderStatusUpdate = async (orderId, newStatus) => {
     try {
-      await supabase.from('orders').update({ status: newStatus, updated_at: new Date().toISOString() }).eq('id', orderId);
+      const { error } = await supabase.from('orders').update({ status: newStatus, updated_at: new Date().toISOString() }).eq('id', orderId);
+      if (error) throw error; 
       setNotification({ show: true, isError: false, message: newStatus === 'processing' ? 'Order sent to warehouse.' : 'Order rejected.' });
       window.dispatchEvent(new Event('orderStatusChanged'));
-    } catch (error) { setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` }); }
+    } catch (error) { 
+      setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` }); 
+    }
   };
 
   const handleStatusChangeClick = (orderId, newStatus) => {
@@ -150,10 +169,13 @@ export default function AdminOrders() {
 
   const executeMarkAsPaid = async (orderId) => {
     try {
-      await supabase.from('orders').update({ payment_status: 'paid', updated_at: new Date().toISOString() }).eq('id', orderId);
+      const { error } = await supabase.from('orders').update({ payment_status: 'paid', updated_at: new Date().toISOString() }).eq('id', orderId);
+      if (error) throw error;
       setNotification({ show: true, isError: false, message: 'Order successfully marked as Paid!' });
       window.dispatchEvent(new Event('orderStatusChanged'));
-    } catch (error) { setNotification({ show: true, isError: true, message: `Failed to update: ${error.message}` }); }
+    } catch (error) { 
+      setNotification({ show: true, isError: true, message: `Failed to update: ${error.message}` }); 
+    }
   };
 
   const handleMarkAsPaid = (orderId) => {
@@ -233,7 +255,7 @@ export default function AdminOrders() {
     
     if (docType === 'receipt') {
       doc.setFont("helvetica", "bold");
-      doc.setTextColor(16, 185, 129); // Emerald Green
+      doc.setTextColor(16, 185, 129); 
       doc.text("Status: PAID IN FULL", 140, 34);
       doc.setTextColor(15, 23, 42); 
     } else {
@@ -260,12 +282,10 @@ export default function AdminOrders() {
     doc.setFont("helvetica", "bold");
     doc.text("BILL TO:", 14, 50); 
     doc.text("SHIP TO:", 110, 50);
-    
     doc.setFont("helvetica", "normal");
     
     let currentYBill = 56;
-    doc.setFont("helvetica", "bold");
-    doc.text(billName, 14, currentYBill); currentYBill += 5;
+    doc.setFont("helvetica", "bold"); doc.text(billName, 14, currentYBill); currentYBill += 5;
     doc.setFont("helvetica", "normal");
     if (billAddress && billAddress !== 'No billing address provided') { doc.text(billAddress, 14, currentYBill); currentYBill += 5; }
     if (billCityState) { doc.text(billCityState, 14, currentYBill); currentYBill += 5; }
@@ -273,8 +293,7 @@ export default function AdminOrders() {
     if (billEmail) { doc.text(`Email: ${billEmail}`, 14, currentYBill); currentYBill += 5; }
 
     let currentYShip = 56;
-    doc.setFont("helvetica", "bold");
-    doc.text(shipName, 110, currentYShip); currentYShip += 5;
+    doc.setFont("helvetica", "bold"); doc.text(shipName, 110, currentYShip); currentYShip += 5;
     doc.setFont("helvetica", "normal");
     if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
     if (shipCityState) { doc.text(shipCityState, 110, currentYShip); currentYShip += 5; }
@@ -282,7 +301,6 @@ export default function AdminOrders() {
     if (shipEmail) { doc.text(`Email: ${shipEmail}`, 110, currentYShip); currentYShip += 5; }
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
-
     const tableRows = order.order_items?.map(item => [
       `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}`,
       item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}`
@@ -341,9 +359,13 @@ export default function AdminOrders() {
     return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200 shadow-sm">Unpaid</span>;
   };
 
+  const format12hr = (dateString) => {
+    if (!dateString) return '';
+    return new Date(dateString).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+  };
+
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12 relative">
-      
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 pb-2">
         <div className="flex items-center gap-4">
           <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md">
@@ -373,10 +395,12 @@ export default function AdminOrders() {
           <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>
             Completed
           </button>
-          
           <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>
             {tabCounts.due > 0 && <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>}
             Payments Due ({tabCounts.due})
+          </button>
+          <button onClick={() => setActiveTab('cancelled')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>
+            Cancelled ({tabCounts.cancelled})
           </button>
         </div>
 
@@ -422,13 +446,13 @@ export default function AdminOrders() {
                   const isExpanded = expandedOrderId === order.id;
                   const isB2B = !!order.company_id;
                   const shortId = order.id.substring(0, 8).toUpperCase();
-
                   const up = Array.isArray(order.user_profiles) ? order.user_profiles[0] : order.user_profiles;
 
+                  // Move info extraction here so expanded view can access it
                   const billName = isB2B ? (order.companies?.name || 'Agency') : (up?.full_name || order.shipping_name || 'Retail Customer');
-                  const billEmail = isB2B ? (order.companies?.email) : (order.shipping_email || up?.email);
-                  const billPhone = isB2B ? (order.companies?.phone) : (order.shipping_phone || up?.contact_number);
-                  const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
+                  const billEmail = isB2B ? order.companies?.email : (order.shipping_email || up?.email);
+                  const billPhone = isB2B ? order.companies?.phone : (order.shipping_phone || up?.contact_number);
+                  const billAddress = isB2B ? (order.companies?.address || '') : (order.shipping_address || '');
                   const billCityState = isB2B 
                     ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
                     : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
@@ -459,7 +483,6 @@ export default function AdminOrders() {
                     const dueDate = new Date(placedDate);
                     dueDate.setDate(dueDate.getDate() + 30);
                     dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-                    
                     const diffDays = (dueDate - new Date()) / (1000 * 60 * 60 * 24);
                     if (order.payment_status === 'unpaid') {
                       if (diffDays < 0) isOverdue = true;
@@ -484,19 +507,16 @@ export default function AdminOrders() {
                             </div>
                           </div>
                         </td>
-
                         <td className="px-6 py-4">
                           <p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> Placed</p>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> Placed at {format12hr(order.created_at)}</p>
                         </td>
-
                         <td className="px-6 py-4">
                           <p className="font-bold text-slate-900">{getDisplayName(order)}</p>
                           <span className={`inline-flex mt-1 px-1.5 py-0.5 text-[9px] uppercase tracking-widest font-bold rounded shadow-sm ${isB2B ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>
                             {isB2B ? 'B2B Agency' : 'Retail'}
                           </span>
                         </td>
-
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1">
                             <p className="font-extrabold text-slate-900 text-base">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
@@ -507,23 +527,36 @@ export default function AdminOrders() {
                             </div>
                           </div>
                         </td>
-
                         <td className="px-6 py-4">
-                          {getStatusBadge(order.status)}
+                          <div className="flex flex-col items-start gap-1.5">
+                            {getStatusBadge(order.status)}
+                            {order.status === 'delivered' && (
+                              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
+                                <CheckCircle2 size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}
+                              </span>
+                            )}
+                            {order.status === 'cancelled' && (
+                              <span className="text-[9px] font-bold text-red-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
+                                <XCircle size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}
+                              </span>
+                            )}
+                            {['processing', 'ready_for_delivery', 'shipped'].includes(order.status) && (
+                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
+                                    <Clock size={10} /> Updated at {format12hr(order.updated_at)}
+                                </span>
+                            )}
+                          </div>
                         </td>
-
                         <td className="px-6 py-4 text-right">
                           <button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}>
                             <ChevronDown size={20} />
                           </button>
                         </td>
                       </tr>
-
                       {isExpanded && (
                         <tr className="bg-slate-50 shadow-inner">
                           <td colSpan="6" className="p-0 border-b border-slate-200">
-                            <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
-                              
+                            <div className="p-6 sm:p-8 pl-[72px] animate-in slide-in-from-top-2 fade-in duration-200">
                               <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 mb-6 border-b border-slate-200 pb-4">
                                 <div>
                                   <h3 className="text-xl font-bold text-slate-900 tracking-tight">Order Management Panel</h3>
@@ -539,7 +572,6 @@ export default function AdminOrders() {
                                   {order.status === 'ready_for_delivery' && (
                                     <button onClick={() => openAssignModal(order)} className="px-5 py-2 bg-blue-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-blue-700 active:scale-95 transition-all flex items-center gap-2"><Truck size={16} /> Dispatch Driver</button>
                                   )}
-                                  
                                   {order.status === 'delivered' && (
                                     <>
                                       <button onClick={() => generatePDF(order, 'invoice')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2">
@@ -554,31 +586,16 @@ export default function AdminOrders() {
                                   )}
                                 </div>
                               </div>
-
                               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                                 <div className="lg:col-span-2 space-y-6">
-                                  
                                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                    {/* BILL TO CARD */}
                                     <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm group hover:border-slate-300 transition-colors">
-                                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
-                                        <CreditCard size={14}/> Bill To
-                                      </h4>
-                                      <p className="font-bold text-slate-900 text-base mb-2 flex items-center gap-2">
-                                        <User size={16} className="text-slate-400"/> {billName}
-                                      </p>
+                                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><CreditCard size={14}/> Bill To</h4>
+                                      <p className="font-bold text-slate-900 text-base mb-2 flex items-center gap-2"><User size={16} className="text-slate-400"/> {billName}</p>
                                       <div className="space-y-2 text-sm font-medium text-slate-600">
                                         <div className="flex flex-col gap-1.5 text-xs text-slate-500">
-                                          {billEmail ? (
-                                            <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {billEmail}</p>
-                                          ) : (
-                                            <p className="flex items-center gap-2 text-slate-400 italic"><Mail size={14} className="opacity-50"/> No email saved</p>
-                                          )}
-                                          {billPhone ? (
-                                            <p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {billPhone}</p>
-                                          ) : (
-                                            <p className="flex items-center gap-2 text-slate-400 italic"><Phone size={14} className="opacity-50"/> No phone saved</p>
-                                          )}
+                                          {billEmail ? (<p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {billEmail}</p>) : (<p className="flex items-center gap-2 text-slate-400 italic"><Mail size={14} className="opacity-50"/> No email saved</p>)}
+                                          {billPhone ? (<p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {billPhone}</p>) : (<p className="flex items-center gap-2 text-slate-400 italic"><Phone size={14} className="opacity-50"/> No phone saved</p>)}
                                         </div>
                                         <div className="flex items-start gap-2 pt-2 border-t border-slate-100 mt-2">
                                           <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
@@ -589,27 +606,13 @@ export default function AdminOrders() {
                                         </div>
                                       </div>
                                     </div>
-                                    
-                                    {/* SHIP TO CARD */}
                                     <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm group hover:border-slate-300 transition-colors">
-                                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
-                                        <Package size={14}/> Ship To
-                                      </h4>
-                                      <p className="font-bold text-slate-900 text-base mb-2 flex items-center gap-2">
-                                        <User size={16} className="text-slate-400"/> {shipName}
-                                      </p>
+                                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Package size={14}/> Ship To</h4>
+                                      <p className="font-bold text-slate-900 text-base mb-2 flex items-center gap-2"><User size={16} className="text-slate-400"/> {shipName}</p>
                                       <div className="space-y-2 text-sm font-medium text-slate-600">
                                         <div className="flex flex-col gap-1.5 text-xs text-slate-500">
-                                          {shipEmail ? (
-                                            <p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {shipEmail}</p>
-                                          ) : (
-                                            <p className="flex items-center gap-2 text-slate-400 italic"><Mail size={14} className="opacity-50"/> No email saved</p>
-                                          )}
-                                          {shipPhone ? (
-                                            <p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {shipPhone}</p>
-                                          ) : (
-                                            <p className="flex items-center gap-2 text-slate-400 italic"><Phone size={14} className="opacity-50"/> No phone saved</p>
-                                          )}
+                                          {shipEmail ? (<p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {shipEmail}</p>) : (<p className="flex items-center gap-2 text-slate-400 italic"><Mail size={14} className="opacity-50"/> No email saved</p>)}
+                                          {shipPhone ? (<p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {shipPhone}</p>) : (<p className="flex items-center gap-2 text-slate-400 italic"><Phone size={14} className="opacity-50"/> No phone saved</p>)}
                                         </div>
                                         <div className="flex items-start gap-2 pt-2 border-t border-slate-100 mt-2">
                                           <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
@@ -621,19 +624,12 @@ export default function AdminOrders() {
                                       </div>
                                     </div>
                                   </div>
-
                                   <div className="space-y-3">
-                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
-                                      <FileText size={16} className="text-slate-400" /> Order Items
-                                    </h4>
+                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider"><FileText size={16} className="text-slate-400" /> Order Items</h4>
                                     <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
                                       <table className="w-full text-left text-sm whitespace-normal">
                                         <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest">
-                                          <tr>
-                                            <th className="px-5 py-3 font-bold w-full">Product</th>
-                                            <th className="px-5 py-3 font-bold text-center">Qty</th>
-                                            <th className="px-5 py-3 font-bold text-right">Total</th>
-                                          </tr>
+                                          <tr><th className="px-5 py-3 font-bold w-full">Product</th><th className="px-5 py-3 font-bold text-center">Qty</th><th className="px-5 py-3 font-bold text-right">Total</th></tr>
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
                                           {order.order_items?.map((item) => (
@@ -642,12 +638,8 @@ export default function AdminOrders() {
                                                 <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name || item.product_variants?.name}</p>
                                                 <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}</span></p>
                                               </td>
-                                              <td className="px-5 py-4 text-center">
-                                                <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span>
-                                              </td>
-                                              <td className="px-5 py-4 text-right font-extrabold text-slate-900">
-                                                ${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}
-                                              </td>
+                                              <td className="px-5 py-4 text-center"><span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span></td>
+                                              <td className="px-5 py-4 text-right font-extrabold text-slate-900">${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
                                             </tr>
                                           ))}
                                         </tbody>
@@ -655,106 +647,40 @@ export default function AdminOrders() {
                                     </div>
                                   </div>
                                 </div>
-
                                 <div className="space-y-4">
                                   <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
-                                      <DollarSign size={16} className="text-slate-400" /> Summary
-                                    </h4>
+                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><DollarSign size={16} className="text-slate-400" /> Summary</h4>
                                     <div className="space-y-3 text-sm font-medium">
                                       <div className="flex justify-between text-slate-500"><span>Subtotal</span><span className="text-slate-900">${Number(order.subtotal).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                       <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${Number(order.shipping_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                       <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${Number(order.tax_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                       <div className="h-px w-full bg-slate-200/60 my-2"></div>
-                                      <div className="flex justify-between items-end">
-                                        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
-                                        <span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
-                                      </div>
+                                      <div className="flex justify-between items-end"><span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span><span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                     </div>
-                                    
                                     <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-medium text-slate-500">
-                                      <div className="flex items-center gap-2">
-                                        <CreditCard size={14} className="text-slate-400 shrink-0" />
-                                        <span className="font-bold text-slate-700 capitalize">{order.payment_method.replace('_', ' ')}</span>
-                                      </div>
+                                      <div className="flex items-center gap-2"><CreditCard size={14} className="text-slate-400 shrink-0" /><span className="font-bold text-slate-700 capitalize">{order.payment_method.replace('_', ' ')}</span></div>
                                       {getPaymentBadge(order.payment_status)}
                                     </div>
-
-                                    {isNet30 && (
-                                      <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
-                                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Net 30 Due Date</span>
-                                        <span className={`text-xs font-bold px-2 py-0.5 rounded ${isOverdue ? 'bg-red-100 text-red-700 border border-red-200 shadow-sm' : isDueSoon ? 'bg-amber-100 text-amber-700 border border-amber-200 shadow-sm' : 'text-slate-700 bg-slate-100 border border-slate-200'}`}>
-                                          {dueDateDisplay}
-                                        </span>
-                                      </div>
-                                    )}
+                                    {isNet30 && (<div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100"><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Due Date</span><span className={`text-xs font-bold px-2 py-0.5 rounded ${isOverdue ? 'bg-red-100 text-red-700 border border-red-200 shadow-sm' : isDueSoon ? 'bg-amber-100 text-amber-700 border border-amber-200 shadow-sm' : 'text-slate-700 bg-slate-100 border border-slate-200'}`}>{dueDateDisplay}</span></div>)}
                                   </div>
-
                                   {(order.status === 'ready_for_delivery' || order.status === 'shipped' || order.status === 'delivered') && order.driver_name && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
-                                        <Truck size={16} className="text-slate-400" /> Dispatch Info
-                                      </h4>
+                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><Truck size={16} className="text-slate-400" /> Dispatch Info</h4>
                                       <div className="space-y-3 text-sm">
-                                        <div>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p>
-                                          <p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p>
-                                        </div>
-                                        {displayDriverPhone && (
-                                          <div>
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p>
-                                            <p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p>
-                                          </div>
-                                        )}
-                                        <div>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p>
-                                          <p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p>
-                                        </div>
-                                        {order.vehicle_license && (
-                                          <div>
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p>
-                                            <p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p>
-                                          </div>
-                                        )}
+                                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p><p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p></div>
+                                        {displayDriverPhone && (<div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p><p className="font-medium text-blue-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p></div>)}
+                                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p><p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p></div>
+                                        {order.vehicle_license && (<div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p><p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p></div>)}
                                       </div>
                                     </div>
                                   )}
-                                  
-                                  {/* 🚀 UPDATED PROOF OF DELIVERY CARD WITH RECIPIENT NAME */}
                                   {order.status === 'delivered' && (order.photo_url || order.signature_url || order.received_by) && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
-                                        <PackageCheck size={16} className="text-slate-400" /> Proof of Delivery
-                                      </h4>
-
-                                      {/* 🚀 NEW: Received By Section */}
-                                      {order.received_by && (
-                                        <div className="mb-4 p-3 bg-emerald-50 rounded-xl border border-emerald-100">
-                                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">Received By</p>
-                                          <p className="font-bold text-slate-900 flex items-center gap-2 text-sm">
-                                            <User size={14} className="text-emerald-500" /> {order.received_by}
-                                          </p>
-                                        </div>
-                                      )}
-
+                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><PackageCheck size={16} className="text-slate-400" /> Proof of Delivery</h4>
+                                      {order.received_by && (<div className="mb-4 p-3 bg-emerald-50 rounded-xl border border-emerald-100"><p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">Received By</p><p className="font-bold text-slate-900 flex items-center gap-2 text-sm"><User size={14} className="text-emerald-500" /> {order.received_by}</p></div>)}
                                       <div className="grid grid-cols-2 gap-3">
-                                        {order.photo_url && (
-                                          <div>
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Photo</p>
-                                            <a href={order.photo_url} target="_blank" rel="noreferrer" className="block relative group rounded-xl overflow-hidden border border-slate-200 shadow-sm">
-                                              <img src={order.photo_url} alt="Delivery Proof" className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300" />
-                                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors"></div>
-                                            </a>
-                                          </div>
-                                        )}
-                                        {order.signature_url && (
-                                          <div>
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Signature</p>
-                                            <a href={order.signature_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-slate-200 bg-white p-2 hover:border-slate-300 transition-colors shadow-sm">
-                                              <img src={order.signature_url} alt="Customer Signature" className="w-full h-20 object-contain mix-blend-multiply" />
-                                            </a>
-                                          </div>
-                                        )}
+                                        {order.photo_url && (<div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Photo</p><a href={order.photo_url} target="_blank" rel="noreferrer" className="block relative group rounded-xl overflow-hidden border border-slate-200 shadow-sm"><img src={order.photo_url} alt="Delivery Proof" className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300" /><div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors"></div></a></div>)}
+                                        {order.signature_url && (<div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Signature</p><a href={order.signature_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-slate-200 bg-white p-2 hover:border-slate-300 transition-colors shadow-sm"><img src={order.signature_url} alt="Customer Signature" className="w-full h-20 object-contain mix-blend-multiply" /></a></div>)}
                                       </div>
                                     </div>
                                   )}
@@ -770,35 +696,18 @@ export default function AdminOrders() {
               </tbody>
             </table>
           </div>
-
-          {/* 🚀 PAGINATION CONTROLS */}
           {totalCount > pageSize && (
             <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
-              <span className="text-sm font-medium text-slate-500">
-                Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> entries
-              </span>
+              <span className="text-sm font-medium text-slate-500">Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> entries</span>
               <div className="flex gap-2">
-                <button 
-                  onClick={() => setPage(p => Math.max(0, p - 1))} 
-                  disabled={page === 0} 
-                  className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
-                >
-                  <ChevronLeft size={18} />
-                </button>
-                <button 
-                  onClick={() => setPage(p => p + 1)} 
-                  disabled={(page + 1) * pageSize >= totalCount} 
-                  className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
-                >
-                  <ChevronRight size={18} />
-                </button>
+                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={18} /></button>
+                <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalCount} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={18} /></button>
               </div>
             </div>
           )}
         </div>
       )}
 
-      {/* --- ASSIGN DRIVER MODAL --- */}
       {assigningOrder && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg flex flex-col border border-slate-100 overflow-hidden">
@@ -806,7 +715,6 @@ export default function AdminOrders() {
               <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><Truck size={18}/> Assign Fleet & Driver</h3>
               <button onClick={() => setAssigningOrder(null)} className="p-1.5 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
             </div>
-            
             <form onSubmit={confirmAssignment} className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Assigned Driver</label>
@@ -819,9 +727,7 @@ export default function AdminOrders() {
                   <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
                 </div>
               </div>
-
               <div className="h-px w-full bg-slate-100"></div>
-
               <div>
                 <label className="block text-xs font-bold text-blue-600 uppercase tracking-widest mb-1.5">Select Vehicle from Fleet</label>
                 <div className="relative">
@@ -833,26 +739,20 @@ export default function AdminOrders() {
                   <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none" size={16} />
                 </div>
               </div>
-
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Vehicle Name</label><input type="text" required value={vehicleName} onChange={(e) => setVehicleName(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div>
               </div>
-
               <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">License Plate</label><input type="text" required value={vehicleLicense} onChange={(e) => setVehicleLicense(e.target.value.toUpperCase())} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold font-mono tracking-wide transition-all" /></div>
-
               <div className="pt-2 flex gap-3"><button type="button" onClick={() => setAssigningOrder(null)} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button><button type="submit" className="w-full py-3 text-sm bg-blue-600 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-blue-700 active:scale-95 transition-all"><Truck size={16} /> Confirm Dispatch</button></div>
             </form>
           </div>
         </div>
       )}
 
-      {/* --- CONFIRMATION MODAL --- */}
       {confirmAction.show && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm ${confirmAction.title.includes('Reject') ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-900 border-slate-200'}`}>
-              {confirmAction.title.includes('Reject') ? <XCircle size={32} /> : <CheckCircle2 size={32} />}
-            </div>
+            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm ${confirmAction.title.includes('Reject') ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-900 border-slate-200'}`}>{confirmAction.title.includes('Reject') ? <XCircle size={32} /> : <CheckCircle2 size={32} />}</div>
             <h4 className="text-xl font-bold text-slate-900 tracking-tight">{confirmAction.title}</h4>
             <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">{confirmAction.message}</p>
             <div className="flex gap-3 pt-5">
@@ -863,16 +763,12 @@ export default function AdminOrders() {
         </div>
       )}
 
-      {/* --- NOTIFICATION --- */}
       {notification.show && (
         <div className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-[120] flex items-center gap-3 bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-300">
-          <div className={`p-1.5 rounded-full ${notification.isError ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
-            {notification.isError ? <XCircle size={18} strokeWidth={2.5} /> : <CheckCircle2 size={18} strokeWidth={2.5} />}
-          </div>
+          <div className={`p-1.5 rounded-full ${notification.isError ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>{notification.isError ? <XCircle size={18} strokeWidth={2.5} /> : <CheckCircle2 size={18} strokeWidth={2.5} />}</div>
           <p className="text-sm font-medium pr-2">{notification.message}</p>
         </div>
       )}
-
     </div>
   );
 }
