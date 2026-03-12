@@ -5,7 +5,7 @@ import { useAuth } from '../lib/AuthContext';
 import { 
   Package, Receipt, ChevronDown, Calendar, Hash, Building, MapPin, Mail,
   CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2,
-  ChevronLeft, ChevronRight, PackageCheck, XCircle
+  ChevronLeft, ChevronRight, PackageCheck, XCircle, Clock
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -45,7 +45,7 @@ export default function MyOrders() {
             product_variants ( name, sku, products ( name, base_sku ) ) 
           )
         `, { count: 'exact' })
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false }); // Always sort by newest order placed
 
       if (profile?.company_id) {
         query = query.eq('company_id', profile.company_id);
@@ -82,9 +82,9 @@ export default function MyOrders() {
   const getStatusBadge = (status) => {
     const styles = {
       pending: 'bg-yellow-50 text-yellow-700 border-yellow-200',
-      approved: 'bg-blue-50 text-blue-700 border-blue-200',
-      picking: 'bg-purple-50 text-purple-700 border-purple-200',
-      packed: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+      processing: 'bg-blue-50 text-blue-700 border-blue-200',
+      ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200',
+      shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200',
       out_for_delivery: 'bg-orange-50 text-orange-700 border-orange-200',
       delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200',
       cancelled: 'bg-red-50 text-red-700 border-red-200'
@@ -98,6 +98,12 @@ export default function MyOrders() {
     return null;
   };
 
+  // Helper to format 12hr time consistently
+  const format12hr = (dateString) => {
+    if (!dateString) return '';
+    return new Date(dateString).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+  };
+
   const getBase64ImageFromUrl = (imageUrl) => {
     return new Promise((resolve) => {
       const img = new Image();
@@ -108,8 +114,7 @@ export default function MyOrders() {
         canvas.height = img.height;
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0);
-        const dataURL = canvas.toDataURL("image/png");
-        resolve({ dataURL, width: img.width, height: img.height });
+        resolve({ dataURL: canvas.toDataURL("image/png"), width: img.width, height: img.height });
       };
       img.onerror = () => resolve(null);
       img.src = imageUrl;
@@ -336,12 +341,15 @@ export default function MyOrders() {
                             </div>
                           </div>
                         </td>
+                        
                         <td className="px-6 py-4">
                           <p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> Date</p>
+                          {/* 🚀 FIXED: 12-hour format for Date Placed */}
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> at {format12hr(order.created_at)}</p>
                         </td>
+                        
                         <td className="px-6 py-4">
-                          <p className="font-extrabold text-slate-900 text-base">${order.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+                          <p className="font-extrabold text-slate-900 text-base">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1">
@@ -352,20 +360,28 @@ export default function MyOrders() {
                           </div>
                         </td>
                         
-                        {/* 🚀 FIXED: Date Delivered / Cancelled below badge */}
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1.5">
                             {getStatusBadge(order.status)}
                             
+                            {/* 🚀 FIXED: 12-hour format for Delivered */}
                             {order.status === 'delivered' && (
                               <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                <CheckCircle2 size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                                <CheckCircle2 size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}
                               </span>
                             )}
                             
+                            {/* 🚀 FIXED: 12-hour format for Cancelled */}
                             {order.status === 'cancelled' && (
+                              <span className="text-[9px] font-bold text-red-500 uppercase tracking-widest flex items-center gap-1 mt-0.5">
+                                <XCircle size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}
+                              </span>
+                            )}
+
+                            {/* Show updated time for active delivery phases */}
+                            {['processing', 'ready_for_delivery', 'shipped', 'out_for_delivery'].includes(order.status) && (
                               <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                <XCircle size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                                <Clock size={10} /> Updated at {format12hr(order.updated_at)}
                               </span>
                             )}
 
@@ -452,14 +468,14 @@ export default function MyOrders() {
                                             <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
                                               <td className="px-5 py-4">
                                                 {/* 🚀 FIXED: Displays the actual Product Name from the database */}
-                                                <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name || 'Product'}</p>
-                                                <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku}</span></p>
+                                                <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name || item.product_variants?.name || 'Product'}</p>
+                                                <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku || item.product_variants?.sku}</span></p>
                                               </td>
                                               <td className="px-5 py-4 text-center">
                                                 <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span>
                                               </td>
                                               <td className="px-5 py-4 text-right font-extrabold text-slate-900">
-                                                ${item.line_total.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                                ${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}
                                               </td>
                                             </tr>
                                           ))}
@@ -475,13 +491,13 @@ export default function MyOrders() {
                                       <DollarSign size={16} className="text-slate-400" /> Summary
                                     </h4>
                                     <div className="space-y-3 text-sm font-medium">
-                                      <div className="flex justify-between text-slate-500"><span>Subtotal</span><span className="text-slate-900">${order.subtotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
-                                      <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${order.shipping_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
-                                      <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${order.tax_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between text-slate-500"><span>Subtotal</span><span className="text-slate-900">${Number(order.subtotal).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${Number(order.shipping_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${Number(order.tax_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                       <div className="h-px w-full bg-slate-200/60 my-2"></div>
                                       <div className="flex justify-between items-end">
                                         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
-                                        <span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${order.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+                                        <span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
                                       </div>
                                     </div>
                                     
@@ -558,6 +574,7 @@ export default function MyOrders() {
                                     </div>
                                   )}
 
+                                  {/* 🚀 PROOF OF DELIVERY COMPONENT */}
                                   {order.status === 'delivered' && (order.photo_url || order.signature_url || order.received_by) && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                       <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">

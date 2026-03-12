@@ -26,7 +26,8 @@ export default function AdminOrders() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('all'); 
   
-  const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, dispatch: 0, due: 0, cancelled: 0 });
+  // 🚀 ADDED 'completed' TO TAB COUNTS
+  const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, dispatch: 0, completed: 0, due: 0, cancelled: 0 });
   const [newPendingCount, setNewPendingCount] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [confirmAction, setConfirmAction] = useState({ show: false, title: '', message: '', onConfirm: null });
@@ -37,6 +38,16 @@ export default function AdminOrders() {
   const [vehicleName, setVehicleName] = useState('');
   const [vehicleType, setVehicleType] = useState('Cargo Van');
   const [vehicleLicense, setVehicleLicense] = useState('');
+
+  // 🚀 AUTO-HIDE TOAST NOTIFICATION
+  useEffect(() => {
+    if (notification.show) {
+      const timer = setTimeout(() => {
+        setNotification({ ...notification, show: false });
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification.show]);
 
   useEffect(() => {
     const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
@@ -74,11 +85,13 @@ export default function AdminOrders() {
       thresholdDate.setDate(thresholdDate.getDate() - 25);
       const lastViewedPending = localStorage.getItem('lastViewedPending') || new Date(0).toISOString();
 
-      const [pendingReq, newPendingReq, processingReq, dispatchReq, dueReq, cancelledReq] = await Promise.all([
+      // 🚀 ADDED completedReq to fetch live Delivered counts
+      const [pendingReq, newPendingReq, processingReq, dispatchReq, completedReq, dueReq, cancelledReq] = await Promise.all([
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').gt('created_at', lastViewedPending),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['ready_for_delivery', 'shipped']),
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'cancelled')
       ]);
@@ -87,6 +100,7 @@ export default function AdminOrders() {
         pending: pendingReq.count || 0, 
         processing: processingReq.count || 0, 
         dispatch: dispatchReq.count || 0, 
+        completed: completedReq.count || 0,
         due: dueReq.count || 0,
         cancelled: cancelledReq.count || 0 
       });
@@ -125,13 +139,7 @@ export default function AdminOrders() {
 
       if (debouncedSearch) query = query.ilike('shipping_name', `%${debouncedSearch}%`);
 
-      // 🚀 DYNAMIC SORTING
-      // If we are looking at finished orders, sort by the delivery/cancel time (updated_at)
-      // Otherwise, sort by the original order time (created_at)
-      const sortColumn = (activeTab === 'completed' || activeTab === 'cancelled') 
-        ? 'updated_at' 
-        : 'created_at';
-
+      const sortColumn = (activeTab === 'completed' || activeTab === 'cancelled') ? 'updated_at' : 'created_at';
       query = query.order(sortColumn, { ascending: false });
 
       const from = page * pageSize;
@@ -148,10 +156,28 @@ export default function AdminOrders() {
 
   const toggleOrderDetails = (orderId) => setExpandedOrderId(expandedOrderId === orderId ? null : orderId);
 
+  // 🚀 ADDED OPTIMISTIC CONCURRENCY LOCK
   const executeOrderStatusUpdate = async (orderId, newStatus) => {
     try {
-      const { error } = await supabase.from('orders').update({ status: newStatus, updated_at: new Date().toISOString() }).eq('id', orderId);
+      const currentOrder = orders.find(o => o.id === orderId);
+      if (!currentOrder) return;
+
+      const { data, error } = await supabase
+        .from('orders')
+        .update({ status: newStatus, updated_at: new Date().toISOString() })
+        .eq('id', orderId)
+        .eq('status', currentOrder.status) // Lock: Only update if no one else has changed it!
+        .select();
+        
       if (error) throw error; 
+
+      // If data is empty, it means another Admin already clicked it
+      if (data && data.length === 0) {
+        setNotification({ show: true, isError: true, message: 'Action Blocked: Another user already updated this order.' });
+        fetchOrdersFleetAndDrivers(); 
+        return;
+      }
+
       setNotification({ show: true, isError: false, message: newStatus === 'processing' ? 'Order sent to warehouse.' : 'Order rejected.' });
       window.dispatchEvent(new Event('orderStatusChanged'));
     } catch (error) { 
@@ -196,6 +222,7 @@ export default function AdminOrders() {
     else { setVehicleName(''); setVehicleType('Cargo Van'); setVehicleLicense(''); }
   };
 
+  // 🚀 ADDED OPTIMISTIC CONCURRENCY LOCK TO DISPATCHING
   const confirmAssignment = async (e) => {
     e.preventDefault(); if (!assigningOrder) return;
     try {
@@ -203,10 +230,22 @@ export default function AdminOrders() {
       const driverPhone = assignedDriverObj?.contact_number || '';
       const finalDriverName = driverPhone ? `${driverName} | ${driverPhone}` : driverName;
 
-      await supabase.from('orders').update({ 
+      const { data, error } = await supabase.from('orders').update({ 
         driver_name: finalDriverName || null, vehicle_name: vehicleName || null, 
         vehicle_license: vehicleLicense || null, status: 'shipped', updated_at: new Date().toISOString()
-      }).eq('id', assigningOrder.id);
+      })
+      .eq('id', assigningOrder.id)
+      .eq('status', assigningOrder.status) // Lock: Ensure it hasn't been modified by another admin
+      .select();
+      
+      if (error) throw error;
+
+      if (data && data.length === 0) {
+        setAssigningOrder(null);
+        setNotification({ show: true, isError: true, message: 'Action Blocked: Another user already modified this order.' });
+        fetchOrdersFleetAndDrivers();
+        return;
+      }
       
       setAssigningOrder(null); setExpandedOrderId(null); 
       setNotification({ show: true, isError: false, message: 'Driver assigned and order shipped successfully!' });
@@ -393,7 +432,7 @@ export default function AdminOrders() {
             Dispatch ({tabCounts.dispatch})
           </button>
           <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>
-            Completed
+            Completed ({tabCounts.completed})
           </button>
           <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>
             {tabCounts.due > 0 && <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>}
@@ -448,7 +487,6 @@ export default function AdminOrders() {
                   const shortId = order.id.substring(0, 8).toUpperCase();
                   const up = Array.isArray(order.user_profiles) ? order.user_profiles[0] : order.user_profiles;
 
-                  // Move info extraction here so expanded view can access it
                   const billName = isB2B ? (order.companies?.name || 'Agency') : (up?.full_name || order.shipping_name || 'Retail Customer');
                   const billEmail = isB2B ? order.companies?.email : (order.shipping_email || up?.email);
                   const billPhone = isB2B ? order.companies?.phone : (order.shipping_phone || up?.contact_number);
@@ -557,6 +595,15 @@ export default function AdminOrders() {
                         <tr className="bg-slate-50 shadow-inner">
                           <td colSpan="6" className="p-0 border-b border-slate-200">
                             <div className="p-6 sm:p-8 pl-[72px] animate-in slide-in-from-top-2 fade-in duration-200">
+                              {order.status === 'cancelled' && order.cancellation_reason && (
+                                <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-3 shadow-sm">
+                                  <AlertTriangle size={20} className="text-red-600 mt-0.5 shrink-0" />
+                                  <div>
+                                    <h4 className="text-sm font-black text-red-900 tracking-tight">Delivery Cancelled by Driver</h4>
+                                    <p className="text-sm text-red-700 mt-1 font-medium leading-relaxed">{order.cancellation_reason}</p>
+                                  </div>
+                                </div>
+                              )}
                               <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 mb-6 border-b border-slate-200 pb-4">
                                 <div>
                                   <h3 className="text-xl font-bold text-slate-900 tracking-tight">Order Management Panel</h3>
