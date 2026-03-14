@@ -34,7 +34,7 @@ export default function MyOrders() {
       let query = supabase
         .from('orders')
         .select(`
-          id, status, created_at, updated_at, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
+          id, status, created_at, updated_at, processing_at, shipped_at, delivered_at, cancelled_at, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
           driver_name, vehicle_name, vehicle_license,
           shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, company_id,
           companies ( name, address, city, state, zip, phone, email ),
@@ -344,7 +344,6 @@ export default function MyOrders() {
                         
                         <td className="px-6 py-4">
                           <p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
-                          {/* 🚀 FIXED: 12-hour format for Date Placed */}
                           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> at {format12hr(order.created_at)}</p>
                         </td>
                         
@@ -364,24 +363,22 @@ export default function MyOrders() {
                           <div className="flex flex-col items-start gap-1.5">
                             {getStatusBadge(order.status)}
                             
-                            {/* 🚀 FIXED: 12-hour format for Delivered */}
-                            {order.status === 'delivered' && (
+                            {/* 🚀 FIXED: 12-hour format explicitly using new fields */}
+                            {order.status === 'delivered' && (order.delivered_at || order.updated_at) && (
                               <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                <CheckCircle2 size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}
+                                <CheckCircle2 size={10} /> {new Date(order.delivered_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.delivered_at || order.updated_at)}
                               </span>
                             )}
                             
-                            {/* 🚀 FIXED: 12-hour format for Cancelled */}
-                            {order.status === 'cancelled' && (
+                            {order.status === 'cancelled' && (order.cancelled_at || order.updated_at) && (
                               <span className="text-[9px] font-bold text-red-500 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                <XCircle size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}
+                                <XCircle size={10} /> {new Date(order.cancelled_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.cancelled_at || order.updated_at)}
                               </span>
                             )}
 
-                            {/* Show updated time for active delivery phases */}
                             {['processing', 'ready_for_delivery', 'shipped', 'out_for_delivery'].includes(order.status) && (
                               <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                <Clock size={10} /> Updated at {format12hr(order.updated_at)}
+                                <Clock size={10} /> Updated at {format12hr(order.shipped_at || order.processing_at || order.updated_at)}
                               </span>
                             )}
 

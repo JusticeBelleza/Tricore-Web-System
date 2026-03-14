@@ -13,11 +13,9 @@ import autoTable from 'jspdf-autotable';
 export default function AdminOrders() {
   const { profile } = useAuth(); 
   const [orders, setOrders] = useState([]);
-  const [fleetVehicles, setFleetVehicles] = useState([]);
   const [drivers, setDrivers] = useState([]); 
   const [loading, setLoading] = useState(true);
   
-  // 🚀 SERVER-SIDE PAGINATION
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const pageSize = 10;
@@ -26,20 +24,12 @@ export default function AdminOrders() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('all'); 
   
-  // 🚀 ADDED 'completed' TO TAB COUNTS
   const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, dispatch: 0, completed: 0, due: 0, cancelled: 0 });
   const [newPendingCount, setNewPendingCount] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [confirmAction, setConfirmAction] = useState({ show: false, title: '', message: '', onConfirm: null });
   const [notification, setNotification] = useState({ show: false, message: '', isError: false });
-  
-  const [assigningOrder, setAssigningOrder] = useState(null);
-  const [driverName, setDriverName] = useState('');
-  const [vehicleName, setVehicleName] = useState('');
-  const [vehicleType, setVehicleType] = useState('Cargo Van');
-  const [vehicleLicense, setVehicleLicense] = useState('');
 
-  // 🚀 AUTO-HIDE TOAST NOTIFICATION
   useEffect(() => {
     if (notification.show) {
       const timer = setTimeout(() => {
@@ -66,11 +56,11 @@ export default function AdminOrders() {
 
   useEffect(() => {
     if (profile?.id) {
-      fetchOrdersFleetAndDrivers();
+      fetchOrdersAndDrivers();
       fetchTabCounts(); 
-      const sub = supabase.channel('admin_orders_channel').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => { fetchOrdersFleetAndDrivers(); fetchTabCounts(); }).subscribe();
+      const sub = supabase.channel('admin_orders_channel').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => { fetchOrdersAndDrivers(); fetchTabCounts(); }).subscribe();
       
-      const localUpdateHandler = () => { fetchOrdersFleetAndDrivers(); fetchTabCounts(); };
+      const localUpdateHandler = () => { fetchOrdersAndDrivers(); fetchTabCounts(); };
       window.addEventListener('orderStatusChanged', localUpdateHandler);
       return () => {
         supabase.removeChannel(sub);
@@ -85,7 +75,6 @@ export default function AdminOrders() {
       thresholdDate.setDate(thresholdDate.getDate() - 25);
       const lastViewedPending = localStorage.getItem('lastViewedPending') || new Date(0).toISOString();
 
-      // 🚀 ADDED completedReq to fetch live Delivered counts
       const [pendingReq, newPendingReq, processingReq, dispatchReq, completedReq, dueReq, cancelledReq] = await Promise.all([
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').gt('created_at', lastViewedPending),
@@ -108,14 +97,10 @@ export default function AdminOrders() {
     } catch (error) { console.error('Error fetching tab counts:', error); }
   };
 
-  const fetchOrdersFleetAndDrivers = async () => {
+  const fetchOrdersAndDrivers = async () => {
     setLoading(true);
     try {
-      const [fleetRes, driversRes] = await Promise.all([
-        supabase.from('vehicles').select('*').order('name', { ascending: true }),
-        supabase.from('user_profiles').select('id, full_name, contact_number').eq('role', 'driver').order('full_name', { ascending: true }) 
-      ]);
-      setFleetVehicles(fleetRes.data || []);
+      const driversRes = await supabase.from('user_profiles').select('id, full_name, contact_number').eq('role', 'driver').order('full_name', { ascending: true });
       setDrivers(driversRes.data || []);
 
       let query = supabase.from('orders').select(`
@@ -156,25 +141,31 @@ export default function AdminOrders() {
 
   const toggleOrderDetails = (orderId) => setExpandedOrderId(expandedOrderId === orderId ? null : orderId);
 
-  // 🚀 ADDED OPTIMISTIC CONCURRENCY LOCK
   const executeOrderStatusUpdate = async (orderId, newStatus) => {
     try {
       const currentOrder = orders.find(o => o.id === orderId);
       if (!currentOrder) return;
 
+      const updatePayload = { 
+        status: newStatus, 
+        updated_at: new Date().toISOString() 
+      };
+      
+      if (newStatus === 'processing') updatePayload.processing_at = new Date().toISOString();
+      if (newStatus === 'cancelled') updatePayload.cancelled_at = new Date().toISOString();
+
       const { data, error } = await supabase
         .from('orders')
-        .update({ status: newStatus, updated_at: new Date().toISOString() })
+        .update(updatePayload)
         .eq('id', orderId)
-        .eq('status', currentOrder.status) // Lock: Only update if no one else has changed it!
+        .eq('status', currentOrder.status)
         .select();
         
       if (error) throw error; 
 
-      // If data is empty, it means another Admin already clicked it
       if (data && data.length === 0) {
         setNotification({ show: true, isError: true, message: 'Action Blocked: Another user already updated this order.' });
-        fetchOrdersFleetAndDrivers(); 
+        fetchOrdersAndDrivers(); 
         return;
       }
 
@@ -209,48 +200,6 @@ export default function AdminOrders() {
       show: true, title: 'Mark as Paid?', message: 'Confirming this will mark the invoice as Paid and replenish the credit limit.',
       onConfirm: () => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); executeMarkAsPaid(orderId); }
     });
-  };
-
-  const openAssignModal = (order) => {
-    setDriverName((order.driver_name || '').split(' | ')[0]); setVehicleName(order.vehicle_name || '');
-    setVehicleType(order.vehicle_type || 'Cargo Van'); setVehicleLicense(order.vehicle_license || ''); setAssigningOrder(order);
-  };
-
-  const handleFleetSelection = (e) => {
-    const selectedVehicle = fleetVehicles.find(v => v.id === e.target.value);
-    if (selectedVehicle) { setVehicleName(selectedVehicle.name); setVehicleType(selectedVehicle.type); setVehicleLicense(selectedVehicle.license_plate || ''); }
-    else { setVehicleName(''); setVehicleType('Cargo Van'); setVehicleLicense(''); }
-  };
-
-  // 🚀 ADDED OPTIMISTIC CONCURRENCY LOCK TO DISPATCHING
-  const confirmAssignment = async (e) => {
-    e.preventDefault(); if (!assigningOrder) return;
-    try {
-      const assignedDriverObj = drivers.find(d => d.full_name === driverName);
-      const driverPhone = assignedDriverObj?.contact_number || '';
-      const finalDriverName = driverPhone ? `${driverName} | ${driverPhone}` : driverName;
-
-      const { data, error } = await supabase.from('orders').update({ 
-        driver_name: finalDriverName || null, vehicle_name: vehicleName || null, 
-        vehicle_license: vehicleLicense || null, status: 'shipped', updated_at: new Date().toISOString()
-      })
-      .eq('id', assigningOrder.id)
-      .eq('status', assigningOrder.status) // Lock: Ensure it hasn't been modified by another admin
-      .select();
-      
-      if (error) throw error;
-
-      if (data && data.length === 0) {
-        setAssigningOrder(null);
-        setNotification({ show: true, isError: true, message: 'Action Blocked: Another user already modified this order.' });
-        fetchOrdersFleetAndDrivers();
-        return;
-      }
-      
-      setAssigningOrder(null); setExpandedOrderId(null); 
-      setNotification({ show: true, isError: false, message: 'Driver assigned and order shipped successfully!' });
-      window.dispatchEvent(new Event('orderStatusChanged'));
-    } catch (error) { setNotification({ show: true, isError: true, message: `Failed to dispatch: ${error.message}` }); }
   };
 
   const getBase64ImageFromUrl = (imageUrl) => {
@@ -412,7 +361,7 @@ export default function AdminOrders() {
           </div>
           <div>
             <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Order Management</h2>
-            <p className="text-sm text-slate-500 mt-1 font-medium">Review, approve, dispatch, and track incoming orders.</p>
+            <p className="text-sm text-slate-500 mt-1 font-medium">Review, approve, and track incoming orders.</p>
           </div>
         </div>
       </div>
@@ -568,19 +517,19 @@ export default function AdminOrders() {
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1.5">
                             {getStatusBadge(order.status)}
-                            {order.status === 'delivered' && (
+                            {order.status === 'delivered' && (order.delivered_at || order.updated_at) && (
                               <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                <CheckCircle2 size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}
+                                <CheckCircle2 size={10} /> {new Date(order.delivered_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.delivered_at || order.updated_at)}
                               </span>
                             )}
-                            {order.status === 'cancelled' && (
+                            {order.status === 'cancelled' && (order.cancelled_at || order.updated_at) && (
                               <span className="text-[9px] font-bold text-red-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                <XCircle size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}
+                                <XCircle size={10} /> {new Date(order.cancelled_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.cancelled_at || order.updated_at)}
                               </span>
                             )}
                             {['processing', 'ready_for_delivery', 'shipped'].includes(order.status) && (
                                 <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                    <Clock size={10} /> Updated at {format12hr(order.updated_at)}
+                                    <Clock size={10} /> Updated at {format12hr(order.shipped_at || order.processing_at || order.updated_at)}
                                 </span>
                             )}
                           </div>
@@ -616,9 +565,7 @@ export default function AdminOrders() {
                                       <button onClick={() => handleStatusChangeClick(order.id, 'processing')} className="px-5 py-2 bg-slate-900 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-slate-800 active:scale-95 transition-all flex items-center gap-2"><CheckCircle2 size={16} /> Approve to Warehouse</button>
                                     </>
                                   )}
-                                  {order.status === 'ready_for_delivery' && (
-                                    <button onClick={() => openAssignModal(order)} className="px-5 py-2 bg-blue-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-blue-700 active:scale-95 transition-all flex items-center gap-2"><Truck size={16} /> Dispatch Driver</button>
-                                  )}
+                                  
                                   {order.status === 'delivered' && (
                                     <>
                                       <button onClick={() => generatePDF(order, 'invoice')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2">
@@ -752,47 +699,6 @@ export default function AdminOrders() {
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {assigningOrder && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg flex flex-col border border-slate-100 overflow-hidden">
-            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-              <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><Truck size={18}/> Assign Fleet & Driver</h3>
-              <button onClick={() => setAssigningOrder(null)} className="p-1.5 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
-            </div>
-            <form onSubmit={confirmAssignment} className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Assigned Driver</label>
-                <div className="relative">
-                  <User className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                  <select required value={driverName} onChange={(e) => setDriverName(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold cursor-pointer appearance-none transition-all">
-                    <option value="" disabled>-- Select a Driver from Staff Directory --</option>
-                    {drivers.map(d => (<option key={d.id} value={d.full_name}>{d.full_name}</option>))}
-                  </select>
-                  <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
-                </div>
-              </div>
-              <div className="h-px w-full bg-slate-100"></div>
-              <div>
-                <label className="block text-xs font-bold text-blue-600 uppercase tracking-widest mb-1.5">Select Vehicle from Fleet</label>
-                <div className="relative">
-                  <Car className="absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-400" size={16} />
-                  <select onChange={handleFleetSelection} className="w-full pl-10 pr-4 py-3 bg-blue-50 text-blue-900 border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 text-sm font-bold cursor-pointer appearance-none transition-all">
-                    <option value="">-- Custom Vehicle (Type Below) --</option>
-                    {fleetVehicles.map(v => (<option key={v.id} value={v.id}>{v.name} ({v.license_plate})</option>))}
-                  </select>
-                  <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none" size={16} />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-2"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Vehicle Name</label><input type="text" required value={vehicleName} onChange={(e) => setVehicleName(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div>
-              </div>
-              <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">License Plate</label><input type="text" required value={vehicleLicense} onChange={(e) => setVehicleLicense(e.target.value.toUpperCase())} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold font-mono tracking-wide transition-all" /></div>
-              <div className="pt-2 flex gap-3"><button type="button" onClick={() => setAssigningOrder(null)} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button><button type="submit" className="w-full py-3 text-sm bg-blue-600 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-blue-700 active:scale-95 transition-all"><Truck size={16} /> Confirm Dispatch</button></div>
-            </form>
-          </div>
         </div>
       )}
 

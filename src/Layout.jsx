@@ -18,6 +18,7 @@ export default function Layout() {
   const [overdueCount, setOverdueCount] = useState(0);
   const [processingCount, setProcessingCount] = useState(0);
   const [deliveredTodayCount, setDeliveredTodayCount] = useState(0); 
+  const [needsDispatchCount, setNeedsDispatchCount] = useState(0);
 
   useEffect(() => {
     if (!profile) return;
@@ -57,6 +58,15 @@ export default function Layout() {
           .select('*', { count: 'exact', head: true })
           .eq('status', 'processing');
         setProcessingCount(count || 0);
+
+        // 🚀 Count orders waiting for a driver that are NEW since last viewed
+        const lastViewedDispatch = localStorage.getItem('lastViewedDispatch') || new Date(0).toISOString();
+        const { count: dispatchCount } = await supabase
+          .from('orders')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', 'ready_for_delivery')
+          .gt('updated_at', lastViewedDispatch); // Only count recently updated ones
+        setNeedsDispatchCount(dispatchCount || 0);
       }
 
       // 3. Agencies get badge for Net-30 Invoices (ONLY 5 days before due)
@@ -85,12 +95,15 @@ export default function Layout() {
     window.addEventListener('orderStatusChanged', fetchBadges);
     window.addEventListener('podViewed', fetchBadges);
     window.addEventListener('pendingViewed', fetchBadges);
+    // 🚀 NEW LISTENER FOR DISPATCH CLEARING
+    window.addEventListener('dispatchViewed', fetchBadges);
 
     return () => {
       supabase.removeChannel(sub);
       window.removeEventListener('orderStatusChanged', fetchBadges);
       window.removeEventListener('podViewed', fetchBadges);
       window.removeEventListener('pendingViewed', fetchBadges);
+      window.removeEventListener('dispatchViewed', fetchBadges);
     };
   }, [profile]);
 
@@ -187,7 +200,6 @@ export default function Layout() {
                   </div>
                 )}
                 
-                {/* 🚀 FIXED: Added Manage Products and Dispatch & POD for Warehouse */}
                 {(profile?.role === 'admin' || profile?.role === 'warehouse') && (
                   <>
                     <Link to="/warehouse" onClick={closeMobileMenu} className={navItemClass('/warehouse')}>
@@ -207,20 +219,20 @@ export default function Layout() {
                       <ClipboardList size={18} /> Purchase Orders
                     </Link>
 
-                    {/* Moved from Admin block to here */}
                     <Link to="/admin/products" onClick={closeMobileMenu} className={navItemClass('/admin/products')}>
                       <Package size={18} /> Manage Products
                     </Link>
 
-                    {/* Moved from Admin block to here */}
                     <Link to="/dispatch" onClick={closeMobileMenu} className={navItemClass('/dispatch')}>
                       <Navigation size={18} /> 
                       <span className="flex-1">Dispatch & POD</span>
-                      {deliveredTodayCount > 0 && (
+                      
+                      {/* 🚀 UPDATED: "To Dispatch" Badge */}
+                      {needsDispatchCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
-                          <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 animate-ping"></span>
-                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-emerald-500 rounded-full shadow-sm">
-                            {deliveredTodayCount} New
+                          <span className="absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75 animate-ping"></span>
+                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-purple-600 rounded-full shadow-sm">
+                            {needsDispatchCount} To Dispatch
                           </span>
                         </div>
                       )}
