@@ -32,8 +32,10 @@ export default function Layout() {
           .eq('status', 'pending')
           .gt('created_at', lastViewedPending); 
         setPendingCount(pCount || 0);
-
-        // Calculate "Delivered Today"
+      }
+      
+      // Calculate "Delivered Today" for both Admin and Warehouse
+      if (profile.role === 'admin' || profile.role === 'warehouse') {
         const today = new Date();
         today.setHours(0, 0, 0, 0); 
         let compareTime = today.toISOString();
@@ -46,7 +48,7 @@ export default function Layout() {
           .eq('status', 'delivered')
           .gt('updated_at', compareTime);
         setDeliveredTodayCount(dCount || 0);
-      } 
+      }
       
       // 2. Admins & Warehouse Staff get badge for Processing Orders
       if (profile.role === 'admin' || profile.role === 'warehouse') {
@@ -185,6 +187,7 @@ export default function Layout() {
                   </div>
                 )}
                 
+                {/* 🚀 FIXED: Added Manage Products and Dispatch & POD for Warehouse */}
                 {(profile?.role === 'admin' || profile?.role === 'warehouse') && (
                   <>
                     <Link to="/warehouse" onClick={closeMobileMenu} className={navItemClass('/warehouse')}>
@@ -199,8 +202,28 @@ export default function Layout() {
                         </div>
                       )}
                     </Link>
+                    
                     <Link to="/purchase-orders" onClick={closeMobileMenu} className={navItemClass('/purchase-orders')}>
                       <ClipboardList size={18} /> Purchase Orders
+                    </Link>
+
+                    {/* Moved from Admin block to here */}
+                    <Link to="/admin/products" onClick={closeMobileMenu} className={navItemClass('/admin/products')}>
+                      <Package size={18} /> Manage Products
+                    </Link>
+
+                    {/* Moved from Admin block to here */}
+                    <Link to="/dispatch" onClick={closeMobileMenu} className={navItemClass('/dispatch')}>
+                      <Navigation size={18} /> 
+                      <span className="flex-1">Dispatch & POD</span>
+                      {deliveredTodayCount > 0 && (
+                        <div className="relative flex items-center justify-center ml-auto">
+                          <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 animate-ping"></span>
+                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-emerald-500 rounded-full shadow-sm">
+                            {deliveredTodayCount} New
+                          </span>
+                        </div>
+                      )}
                     </Link>
                   </>
                 )}
@@ -210,9 +233,7 @@ export default function Layout() {
                     <div className="pt-4 pb-2">
                       <p className="px-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Administration</p>
                     </div>
-                    <Link to="/admin/products" onClick={closeMobileMenu} className={navItemClass('/admin/products')}>
-                      <Package size={18} /> Manage Products
-                    </Link>
+                    
                     <Link to="/admin/orders" onClick={closeMobileMenu} className={navItemClass('/admin/orders')}>
                       <ShoppingCart size={18} /> 
                       <span className="flex-1">All Orders</span>
@@ -221,19 +242,6 @@ export default function Layout() {
                           <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
                           <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
                             {pendingCount} New
-                          </span>
-                        </div>
-                      )}
-                    </Link>
-
-                    <Link to="/dispatch" onClick={closeMobileMenu} className={navItemClass('/dispatch')}>
-                      <Navigation size={18} /> 
-                      <span className="flex-1">Dispatch & POD</span>
-                      {deliveredTodayCount > 0 && (
-                        <div className="relative flex items-center justify-center ml-auto">
-                          <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 animate-ping"></span>
-                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-emerald-500 rounded-full shadow-sm">
-                            {deliveredTodayCount} New
                           </span>
                         </div>
                       )}
@@ -259,7 +267,6 @@ export default function Layout() {
 
         <div className="p-4 border-t border-slate-200 shrink-0 bg-slate-50/50">
           
-          {/* 🚀 CLICKABLE PROFILE ROUTE */}
           <Link 
             to="/profile" 
             onClick={closeMobileMenu}
