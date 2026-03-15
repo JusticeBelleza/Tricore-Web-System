@@ -5,7 +5,7 @@ import { useAuth } from '../lib/AuthContext';
 import { 
   ArrowLeft, CheckCircle2, Package, CreditCard, Receipt, 
   X, Building, MapPin, Search, User, Trash2, AlertCircle, 
-  ChevronDown, Mail, Phone, Edit2, Save, ChevronLeft, ChevronRight, AlertTriangle
+  ChevronDown, Mail, Phone, Edit2, Save, ChevronLeft, ChevronRight, AlertTriangle, Check
 } from 'lucide-react';
 
 export default function Checkout() {
@@ -163,7 +163,11 @@ export default function Checkout() {
     return () => clearTimeout(timeoutId);
   }, [isB2B, profile?.companies?.tax_exempt, selectedPatient?.zip, retailInfo?.zip, shipToAgency, profile?.companies?.zip]);
 
-  const filteredPatients = patients.filter(p => p.full_name.toLowerCase().includes(patientSearch.toLowerCase()));
+  // 🚀 FAILSAFE ADDED HERE: Prevents UI freeze if a patient's name is accidentally null in the DB
+  const filteredPatients = patients.filter(p => {
+    const safeName = p.full_name || '';
+    return safeName.toLowerCase().includes((patientSearch || '').toLowerCase());
+  });
 
   const executeRemoveFromCart = () => {
     if (itemToDelete !== null) {
@@ -234,9 +238,6 @@ export default function Checkout() {
 
       const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
       if (itemsError) throw itemsError;
-
-      // 🚀 NOTE: The manual supabase.rpc('deduct_inventory') block has been DELETED here. 
-      // The database will now handle the deduction automatically once!
 
       if (!isB2B && saveToProfile) {
         await supabase.from('user_profiles').update({
@@ -314,9 +315,9 @@ export default function Checkout() {
                   </div>
                 </div>
 
-                {/* B2B SHIP TO CARD */}
-                <div className="border border-slate-200 rounded-2xl bg-white shadow-sm flex flex-col h-full overflow-hidden transition-all duration-300">
-                  <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex justify-between items-center">
+                {/* B2B SHIP TO CARD - 🚀 REMOVED overflow-hidden so the dropdown can overlay the page! */}
+                <div className="border border-slate-200 rounded-2xl bg-white shadow-sm flex flex-col h-full transition-all duration-300">
+                  <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex justify-between items-center rounded-t-2xl">
                     <div className="flex items-center gap-2">
                       <Package size={14} className={shipToAgency ? "text-blue-600" : "text-emerald-600"} />
                       <h4 className="text-xs font-bold text-slate-700 uppercase tracking-widest">{shipToAgency ? 'Ship To Agency' : 'Ship to Patient'}</h4>
@@ -352,17 +353,55 @@ export default function Checkout() {
                       </div>
                     ) : (
                       !selectedPatient ? (
+                        // 🚀 ENTERPRISE SEARCHABLE COMBOBOX
                         <div className="relative animate-in fade-in" ref={dropdownRef}>
-                          <div className="relative cursor-pointer" onClick={() => setShowDropdown(true)}>
-                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
-                            <input type="text" placeholder="Select or search patient..." value={patientSearch} onChange={(e) => { setPatientSearch(e.target.value); setShowDropdown(true); }} onFocus={() => setShowDropdown(true)} className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 outline-none focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 shadow-sm transition-all" />
-                            <ChevronDown className={`absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 transition-transform ${showDropdown ? 'rotate-180' : ''}`} size={16} />
+                          <div 
+                            onClick={() => setShowDropdown(!showDropdown)}
+                            className={`w-full bg-white border rounded-xl px-4 py-3 flex justify-between items-center cursor-pointer shadow-sm transition-all ${showDropdown ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200 hover:border-slate-300'}`}
+                          >
+                            <span className="text-slate-400 font-medium text-sm">
+                              Search for a patient...
+                            </span>
+                            <ChevronDown size={18} className={`text-slate-400 transition-transform duration-200 ${showDropdown ? "rotate-180" : ""}`} />
                           </div>
+
                           {showDropdown && (
-                            <div className="absolute z-30 w-full mt-2 bg-white border border-slate-200 shadow-xl rounded-xl max-h-60 overflow-y-auto">
-                              {filteredPatients.length > 0 ? filteredPatients.map(p => (
-                                <button key={p.id} onClick={() => { setSelectedPatient(p); setShowDropdown(false); setPatientSearch(''); }} className="w-full text-left px-4 py-3 hover:bg-slate-50 border-b border-slate-50 flex flex-col group"><div className="flex items-center gap-2"><User size={14} className="text-slate-400 group-hover:text-blue-600" /><p className="font-bold text-slate-900 text-sm group-hover:text-blue-700">{p.full_name}</p></div><p className="text-xs text-slate-500 mt-1 pl-6">{p.address ? `${p.address}, ${p.city}` : 'No address saved'}</p></button>
-                              )) : (<div className="px-4 py-6 text-sm text-slate-500 text-center"><User size={24} className="text-slate-300 mb-2 mx-auto" />No patients found</div>)}
+                            <div className="absolute z-50 w-full mt-2 bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden">
+                              <div 
+                                className="p-3 border-b border-slate-100 flex items-center gap-2 bg-slate-50"
+                                onClick={(e) => e.stopPropagation()} // 🚀 Prevents focus bug!
+                              >
+                                <Search size={16} className="text-slate-400 ml-1 shrink-0" />
+                                <input
+                                  type="text"
+                                  placeholder="Type a name to search..."
+                                  value={patientSearch}
+                                  onChange={(e) => setPatientSearch(e.target.value)}
+                                  className="w-full bg-transparent outline-none text-sm font-bold text-slate-700 placeholder-slate-400 py-1"
+                                  autoFocus
+                                />
+                              </div>
+                              <ul className="max-h-60 overflow-y-auto p-1.5 bg-white">
+                                {filteredPatients.length === 0 ? (
+                                  <li className="p-4 text-center text-sm font-medium text-slate-400">
+                                    No patients found matching "{patientSearch}"
+                                  </li>
+                                ) : (
+                                  filteredPatients.map(p => (
+                                    <li
+                                      key={p.id}
+                                      onClick={() => {
+                                        setSelectedPatient(p);
+                                        setShowDropdown(false);
+                                        setPatientSearch('');
+                                      }}
+                                      className="px-3 py-2.5 rounded-xl cursor-pointer text-sm font-bold flex justify-between items-center transition-colors mb-1 last:mb-0 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                                    >
+                                      {p.full_name || 'Unnamed Patient'}
+                                    </li>
+                                  ))
+                                )}
+                              </ul>
                             </div>
                           )}
                         </div>
@@ -412,29 +451,21 @@ export default function Checkout() {
               </div>
             </div>
           ) : (
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/30 flex justify-between items-center">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center">
-                    <MapPin size={16} />
+            // 🚀 RETAIL CHECKOUT (UPDATED TO CARD LAYOUT)
+            <div className="space-y-4">
+              {isEditingRetail ? (
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden animate-in fade-in slide-in-from-top-2 duration-300">
+                  <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/30 flex items-center gap-3">
+                    <div className="w-8 h-8 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center">
+                      <MapPin size={16} />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-base tracking-tight">Enter Shipping Details</h3>
+                      <p className="text-[11px] font-medium text-slate-500 mt-0.5">Where should we send your order?</p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="font-bold text-slate-900 text-base tracking-tight">Shipping Details</h3>
-                    <p className="text-[11px] font-medium text-slate-500 mt-0.5">Where should we send your order?</p>
-                  </div>
-                </div>
-                {!isEditingRetail && (
-                  <button onClick={() => setIsEditingRetail(true)} className="px-3 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors flex items-center gap-1.5">
-                    <Edit2 size={12} /> Edit
-                  </button>
-                )}
-              </div>
-              
-              <div className="p-5 sm:p-6 bg-slate-50/20">
-                {isEditingRetail ? (
-                  <div className="space-y-5 animate-in fade-in slide-in-from-top-2 duration-300">
+                  <div className="p-5 sm:p-6 bg-slate-50/20">
                     <div className="space-y-4">
-                      
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div className="relative sm:col-span-2">
                           <input type="text" id="ship_name" value={retailInfo.full_name} onChange={e => setRetailInfo({...retailInfo, full_name: e.target.value})} className={inputClass} placeholder=" " />
@@ -474,7 +505,7 @@ export default function Checkout() {
                       </div>
                     </div>
 
-                    <div className="p-4 bg-white border border-slate-200 rounded-xl space-y-4 shadow-sm">
+                    <div className="p-4 bg-white border border-slate-200 rounded-xl space-y-4 shadow-sm mt-5">
                       <label className="flex items-center gap-3 cursor-pointer group w-fit">
                         <div className="relative flex items-center justify-center">
                           <input type="checkbox" checked={billingSameAsShipping} onChange={e => setBillingSameAsShipping(e.target.checked)} className="peer w-4 h-4 appearance-none border-2 border-slate-300 rounded bg-white checked:bg-blue-600 checked:border-blue-600 cursor-pointer transition-all" />
@@ -510,7 +541,7 @@ export default function Checkout() {
                       )}
                     </div>
 
-                    <label className="flex items-center gap-3 cursor-pointer group w-fit">
+                    <label className="flex items-center gap-3 cursor-pointer group w-fit mt-5">
                       <div className="relative flex items-center justify-center">
                         <input type="checkbox" checked={saveToProfile} onChange={e => setSaveToProfile(e.target.checked)} className="peer w-4 h-4 appearance-none border-2 border-slate-300 rounded bg-white checked:bg-slate-900 checked:border-slate-900 cursor-pointer transition-all" />
                         <CheckCircle2 size={12} className="absolute text-white opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" strokeWidth={3} />
@@ -518,72 +549,86 @@ export default function Checkout() {
                       <span className="text-sm font-medium text-slate-600 group-hover:text-slate-900 transition-colors">Save as default address for future orders</span>
                     </label>
 
-                    <div className="pt-4 flex justify-end gap-3 border-t border-slate-200">
+                    <div className="pt-5 flex justify-end gap-3 border-t border-slate-200 mt-5">
                       {profile?.address && (<button onClick={() => setIsEditingRetail(false)} className="px-5 py-2.5 text-sm font-bold text-slate-600 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 transition-colors shadow-sm">Cancel</button>)}
                       <button onClick={handleApplyAddress} className="px-6 py-2.5 text-sm font-bold text-white bg-slate-900 rounded-xl hover:bg-slate-800 active:scale-95 shadow-md transition-all w-full sm:w-auto">Use this Address</button>
                     </div>
                   </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch animate-in fade-in zoom-in-95 duration-200">
-                    
-                    <div className="border border-slate-200 rounded-2xl bg-white shadow-sm flex flex-col h-full overflow-hidden">
-                      <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex items-center gap-2">
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch animate-in fade-in zoom-in-95 duration-200">
+                  
+                  {/* RETAIL SHIP TO CARD */}
+                  <div className="border border-slate-200 rounded-2xl bg-white shadow-sm flex flex-col h-full overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
                         <Package size={14} className="text-emerald-600"/>
                         <h4 className="text-xs font-bold text-slate-700 uppercase tracking-widest">Ship To</h4>
                       </div>
-                      <div className="p-4 flex-1 flex flex-col">
-                        <p className="font-extrabold text-slate-900 text-base mb-3 tracking-tight">{retailInfo.full_name}</p>
-                        <div className="space-y-2.5 text-sm font-medium text-slate-600">
-                          <div className="flex items-center gap-2.5">
-                            <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Mail size={14}/></div>
-                            <span className="truncate">{retailInfo.email || <span className="italic text-slate-400">No email</span>}</span>
-                          </div>
-                          <div className="flex items-center gap-2.5">
-                            <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Phone size={14}/></div>
-                            <span>{retailInfo.phone || <span className="italic text-slate-400">No phone</span>}</span>
-                          </div>
-                          <div className="flex items-start gap-2.5">
-                            <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100 shrink-0"><MapPin size={14}/></div>
-                            <span className="leading-snug">
-                              {retailInfo.address}<br/>
-                              {retailInfo.city}, {retailInfo.state} {retailInfo.zip}
-                            </span>
-                          </div>
+                      <button onClick={() => setIsEditingRetail(true)} className="text-[10px] px-2.5 py-1 bg-white border border-slate-200 rounded-lg font-bold text-slate-500 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm">
+                        Edit
+                      </button>
+                    </div>
+                    <div className="p-4 flex-1 flex flex-col">
+                      <p className="font-extrabold text-slate-900 text-base mb-3 tracking-tight">{retailInfo.full_name}</p>
+                      <div className="space-y-2.5 text-sm font-medium text-slate-600">
+                        <div className="flex items-center gap-2.5">
+                          <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Mail size={14}/></div>
+                          <span className="truncate">{retailInfo.email || <span className="italic text-slate-400">No email</span>}</span>
+                        </div>
+                        <div className="flex items-center gap-2.5">
+                          <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Phone size={14}/></div>
+                          <span>{retailInfo.phone || <span className="italic text-slate-400">No phone</span>}</span>
+                        </div>
+                        <div className="flex items-start gap-2.5">
+                          <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100 shrink-0"><MapPin size={14}/></div>
+                          <span className="leading-snug">
+                            {retailInfo.address}<br/>
+                            {retailInfo.city}, {retailInfo.state} {retailInfo.zip}
+                          </span>
                         </div>
                       </div>
                     </div>
+                  </div>
 
-                    {!billingSameAsShipping && (
-                      <div className="border border-slate-200 rounded-2xl bg-white shadow-sm flex flex-col h-full overflow-hidden">
-                        <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex items-center gap-2">
-                          <CreditCard size={14} className="text-blue-600"/>
-                          <h4 className="text-xs font-bold text-slate-700 uppercase tracking-widest">Bill To</h4>
+                  {/* RETAIL BILL TO CARD */}
+                  <div className="border border-slate-200 rounded-2xl bg-white shadow-sm flex flex-col h-full overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex items-center gap-2">
+                      <CreditCard size={14} className="text-blue-600"/>
+                      <h4 className="text-xs font-bold text-slate-700 uppercase tracking-widest">Bill To</h4>
+                    </div>
+                    <div className="p-4 flex-1 flex flex-col">
+                      <p className="font-extrabold text-slate-900 text-base mb-3 tracking-tight">{retailInfo.full_name}</p>
+                      <div className="space-y-2.5 text-sm font-medium text-slate-600">
+                        <div className="flex items-center gap-2.5">
+                          <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Mail size={14}/></div>
+                          <span className="truncate">{retailInfo.email || <span className="italic text-slate-400">No email</span>}</span>
                         </div>
-                        <div className="p-4 flex-1 flex flex-col">
-                          <p className="font-extrabold text-slate-900 text-base mb-3 tracking-tight">{retailInfo.full_name}</p>
-                          <div className="space-y-2.5 text-sm font-medium text-slate-600">
-                            <div className="flex items-center gap-2.5">
-                              <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Mail size={14}/></div>
-                              <span className="truncate">{retailInfo.email || <span className="italic text-slate-400">No email</span>}</span>
-                            </div>
-                            <div className="flex items-center gap-2.5">
-                              <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Phone size={14}/></div>
-                              <span>{retailInfo.phone || <span className="italic text-slate-400">No phone</span>}</span>
-                            </div>
-                            <div className="flex items-start gap-2.5">
-                              <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100 shrink-0"><MapPin size={14}/></div>
-                              <span className="leading-snug">
+                        <div className="flex items-center gap-2.5">
+                          <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Phone size={14}/></div>
+                          <span>{retailInfo.phone || <span className="italic text-slate-400">No phone</span>}</span>
+                        </div>
+                        <div className="flex items-start gap-2.5">
+                          <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100 shrink-0"><MapPin size={14}/></div>
+                          <span className="leading-snug">
+                            {billingSameAsShipping ? (
+                              <>
+                                {retailInfo.address}<br/>
+                                {retailInfo.city}, {retailInfo.state} {retailInfo.zip}
+                              </>
+                            ) : (
+                              <>
                                 {billingInfo.address}<br/>
                                 {billingInfo.city}, {billingInfo.state} {billingInfo.zip}
-                              </span>
-                            </div>
-                          </div>
+                              </>
+                            )}
+                          </span>
                         </div>
                       </div>
-                    )}
+                    </div>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           )}
 
