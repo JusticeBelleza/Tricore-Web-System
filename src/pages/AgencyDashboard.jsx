@@ -5,7 +5,8 @@ import { useAuth } from '../lib/AuthContext';
 import { 
   Search, UserPlus, Trash2, Mail, Phone, Lock, 
   CheckCircle2, XCircle, X, Users, Building, 
-  MapPin, Edit, MoreVertical, Wallet, Activity, UserCog, Save, ShieldCheck
+  MapPin, Edit, MoreVertical, Wallet, Activity, UserCog, Save, ShieldCheck,
+  UploadCloud, DownloadCloud // 🚀 ADDED CSV ICONS
 } from 'lucide-react';
 
 export default function AgencyDashboard() {
@@ -30,6 +31,7 @@ export default function AgencyDashboard() {
   const [showAddSubAdminModal, setShowAddSubAdminModal] = useState(false);
   
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false); // 🚀 NEW: Import loading state
   const [confirmAction, setConfirmAction] = useState({ show: false, type: '', title: '', message: '', data: null });
   const [toast, setToast] = useState({ show: false, message: '', isError: false });
 
@@ -159,6 +161,64 @@ export default function AgencyDashboard() {
     }
   };
 
+  // 🚀 NEW: CSV PATIENT IMPORT LOGIC
+  const downloadPatientCSVFormat = () => {
+    const headers = "Full Name,Email,Phone Number,Street Address,City,State,ZIP Code\n";
+    const sample1 = "John Doe,johndoe@example.com,555-123-4567,123 Main St,San Francisco,CA,94105\n";
+    const sample2 = "Jane Smith,,,456 Oak Ave,Los Angeles,CA,90001\n"; // Missing email and phone is allowed
+    const blob = new Blob([headers + sample1 + sample2], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = "Patient_Import_Template.csv";
+    a.click();
+  };
+
+  const handleImportCSV = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setIsImporting(true);
+    
+    try {
+      const text = await file.text();
+      const lines = text.split('\n').filter(l => l.trim());
+      const patientsToInsert = [];
+      
+      // Start from i=1 to skip the header row
+      for (let i = 1; i < lines.length; i++) {
+        // Regex correctly splits CSV strings, ignoring commas inside quotes
+        const parts = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.replace(/(^"|"$)/g, '').trim());
+        
+        if (parts[0]) { // Full Name is mandatory
+          patientsToInsert.push({
+            agency_id: profile.company_id,
+            full_name: parts[0] || '',
+            email: parts[1] || null,
+            contact_number: parts[2] || null,
+            address: parts[3] || null,
+            city: parts[4] || null,
+            state: parts[5] || null,
+            zip: parts[6] || null,
+          });
+        }
+      }
+
+      if (patientsToInsert.length > 0) {
+        const { error } = await supabase.from('agency_patients').insert(patientsToInsert);
+        if (error) throw error;
+        showToast(`${patientsToInsert.length} patients imported successfully!`);
+        fetchDashboardData();
+      } else {
+        showToast("No valid patient data found in CSV.", true);
+      }
+    } catch (error) {
+      showToast("Error importing CSV: " + error.message, true);
+    } finally {
+      setIsImporting(false);
+      e.target.value = ''; // reset the input so you can upload the same file again if needed
+    }
+  };
+
   // --- SUB-ADMIN ACTIONS ---
   const triggerAddSubAdminConfirm = (e) => {
     e.preventDefault();
@@ -244,12 +304,26 @@ export default function AgencyDashboard() {
           <h2 className="text-3xl font-bold text-slate-900 tracking-tight">{profile?.companies?.name || 'Agency'} Dashboard</h2>
           <p className="text-sm text-slate-500 mt-2">Manage your patients, team members, and view your account financials.</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
+          {/* 🚀 NEW: CSV Buttons mapped conditionally */}
           {activeTab === 'patients' && (
-            <button onClick={() => setShowAddPatientModal(true)} className="px-5 py-2.5 text-sm bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center gap-2">
-              <UserPlus size={16} /> Add Patient
-            </button>
+            <>
+              <button onClick={downloadPatientCSVFormat} className="hidden sm:flex px-4 py-2.5 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm items-center gap-2">
+                <DownloadCloud size={16} /> Template
+              </button>
+              
+              <label className="cursor-pointer px-4 py-2.5 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm flex items-center gap-2">
+                {isImporting ? <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"/> : <UploadCloud size={16} />} 
+                Import CSV
+                <input type="file" accept=".csv" className="hidden" onChange={handleImportCSV} disabled={isImporting} />
+              </label>
+
+              <button onClick={() => setShowAddPatientModal(true)} className="px-5 py-2.5 text-sm bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center gap-2">
+                <UserPlus size={16} /> Add Patient
+              </button>
+            </>
           )}
+
           {activeTab === 'subadmins' && isPrimaryAdmin && (
             <button onClick={() => setShowAddSubAdminModal(true)} className="px-5 py-2.5 text-sm bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center gap-2">
               <UserCog size={16} /> Add Sub-Admin

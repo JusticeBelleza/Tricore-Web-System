@@ -24,7 +24,8 @@ export default function AdminOrders() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('all'); 
   
-  const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, dispatch: 0, completed: 0, due: 0, cancelled: 0 });
+  // 🚀 RENAMED 'dispatch' to 'shipped'
+  const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, shipped: 0, completed: 0, due: 0, cancelled: 0 });
   const [newPendingCount, setNewPendingCount] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [confirmAction, setConfirmAction] = useState({ show: false, title: '', message: '', onConfirm: null });
@@ -75,11 +76,12 @@ export default function AdminOrders() {
       thresholdDate.setDate(thresholdDate.getDate() - 25);
       const lastViewedPending = localStorage.getItem('lastViewedPending') || new Date(0).toISOString();
 
-      const [pendingReq, newPendingReq, processingReq, dispatchReq, completedReq, dueReq, cancelledReq] = await Promise.all([
+      const [pendingReq, newPendingReq, processingReq, shippedReq, completedReq, dueReq, cancelledReq] = await Promise.all([
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').gt('created_at', lastViewedPending),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['ready_for_delivery', 'shipped']),
+        // 🚀 ONLY COUNT 'shipped' ORDERS NOW
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'shipped'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'cancelled')
@@ -88,7 +90,7 @@ export default function AdminOrders() {
       setTabCounts({ 
         pending: pendingReq.count || 0, 
         processing: processingReq.count || 0, 
-        dispatch: dispatchReq.count || 0, 
+        shipped: shippedReq.count || 0, 
         completed: completedReq.count || 0,
         due: dueReq.count || 0,
         cancelled: cancelledReq.count || 0 
@@ -113,7 +115,8 @@ export default function AdminOrders() {
 
       if (activeTab === 'pending') query = query.eq('status', 'pending');
       else if (activeTab === 'processing') query = query.eq('status', 'processing');
-      else if (activeTab === 'dispatch') query = query.in('status', ['ready_for_delivery', 'shipped']);
+      // 🚀 ONLY FETCH 'shipped' ORDERS NOW
+      else if (activeTab === 'shipped') query = query.eq('status', 'shipped');
       else if (activeTab === 'completed') query = query.eq('status', 'delivered');
       else if (activeTab === 'cancelled') query = query.eq('status', 'cancelled');
       else if (activeTab === 'due') {
@@ -377,9 +380,12 @@ export default function AdminOrders() {
           <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-600 hover:bg-blue-50'}`}>
             Processing ({tabCounts.processing})
           </button>
-          <button onClick={() => setActiveTab('dispatch')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'dispatch' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>
-            Dispatch ({tabCounts.dispatch})
+          
+          {/* 🚀 CHANGED TO 'Shipped' */}
+          <button onClick={() => setActiveTab('shipped')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'shipped' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>
+            Shipped ({tabCounts.shipped})
           </button>
+          
           <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>
             Completed ({tabCounts.completed})
           </button>

@@ -41,6 +41,14 @@ export default function Profile() {
     setTimeout(() => setNotification({ show: false, message: '', isError: false }), 4000);
   };
 
+  // --- HELPER TO GET INITIALS ---
+  const getInitials = (name) => {
+    if (!name) return 'U';
+    const parts = name.trim().split(' ');
+    if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
+
   // --- SAVE PROFILE DATA ---
   const handleSaveProfile = async (e) => {
     e.preventDefault();
@@ -142,10 +150,13 @@ export default function Profile() {
           
           {/* Read-Only Account Block */}
           <div className="p-6 sm:p-8 bg-slate-50/50 border-b border-slate-100 flex flex-col sm:flex-row items-center sm:items-start gap-6">
-            <div className="w-24 h-24 bg-white border-2 border-slate-200 rounded-full flex items-center justify-center text-slate-400 shadow-sm shrink-0">
-              <User size={40} />
+            
+            {/* 🚀 DYNAMIC INITIALS AVATAR */}
+            <div className="w-24 h-24 bg-slate-100 border-2 border-slate-200 rounded-full flex items-center justify-center text-slate-700 text-3xl font-black shadow-sm shrink-0 uppercase tracking-widest">
+              {getInitials(profile?.full_name)}
             </div>
-            <div className="flex-1 text-center sm:text-left">
+
+            <div className="flex-1 text-center sm:text-left mt-2 sm:mt-0">
               <h3 className="text-2xl font-bold text-slate-900">{profile?.full_name || 'Loading...'}</h3>
               <p className="text-slate-500 font-medium capitalize mt-1 mb-4">{profile?.role || 'User'} Account</p>
               <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-sm text-slate-600 shadow-sm">
@@ -196,7 +207,6 @@ export default function Profile() {
             </div>
 
             <div className="pt-2 flex justify-end">
-              {/* 🚀 SMALLER BUTTON */}
               <button 
                 type="submit" 
                 disabled={loadingProfile}
@@ -281,7 +291,6 @@ export default function Profile() {
             </div>
 
             <div className="pt-4 flex justify-end">
-              {/* 🚀 SMALLER BUTTON */}
               <button 
                 type="submit" 
                 disabled={loadingPassword || !newPassword || newPassword !== confirmPassword}

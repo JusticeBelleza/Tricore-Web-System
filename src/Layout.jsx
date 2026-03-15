@@ -4,7 +4,7 @@ import { useAuth } from './lib/AuthContext';
 import { supabase } from './lib/supabase';
 import { 
   LayoutDashboard, Package, ShoppingCart, Truck, Warehouse, 
-  Users, BarChart3, ClipboardList, LogOut, User, Menu, X, Car, Navigation
+  Users, BarChart3, ClipboardList, LogOut, Menu, X, Car, Navigation
 } from "lucide-react"; 
 
 export default function Layout() {
@@ -59,7 +59,7 @@ export default function Layout() {
           .eq('status', 'processing');
         setProcessingCount(count || 0);
 
-        // 🚀 Count orders waiting for a driver that are NEW since last viewed
+        // Count orders waiting for a driver that are NEW since last viewed
         const lastViewedDispatch = localStorage.getItem('lastViewedDispatch') || new Date(0).toISOString();
         const { count: dispatchCount } = await supabase
           .from('orders')
@@ -95,7 +95,6 @@ export default function Layout() {
     window.addEventListener('orderStatusChanged', fetchBadges);
     window.addEventListener('podViewed', fetchBadges);
     window.addEventListener('pendingViewed', fetchBadges);
-    // 🚀 NEW LISTENER FOR DISPATCH CLEARING
     window.addEventListener('dispatchViewed', fetchBadges);
 
     return () => {
@@ -124,6 +123,14 @@ export default function Layout() {
       ? 'bg-slate-900 text-white shadow-md' 
       : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 active:scale-95'}
   `;
+
+  // 🚀 HELPER TO GET INITIALS
+  const getInitials = (name) => {
+    if (!name) return 'U';
+    const parts = name.trim().split(' ');
+    if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
 
   const isCustomer = !profile?.role || ['user', 'retail', 'b2b'].includes(profile?.role);
 
@@ -227,7 +234,6 @@ export default function Layout() {
                       <Navigation size={18} /> 
                       <span className="flex-1">Dispatch & POD</span>
                       
-                      {/* 🚀 UPDATED: "To Dispatch" Badge */}
                       {needsDispatchCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75 animate-ping"></span>
@@ -284,9 +290,11 @@ export default function Layout() {
             onClick={closeMobileMenu}
             className="flex items-center gap-3 p-2.5 mb-3 rounded-xl hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-200 transition-all cursor-pointer group"
           >
-            <div className="w-10 h-10 rounded-full bg-slate-200 border border-slate-300 flex items-center justify-center text-sm font-semibold text-slate-700 shrink-0 uppercase shadow-inner group-hover:border-slate-400 group-hover:bg-slate-100 transition-colors">
-              <User size={18} />
+            {/* 🚀 DYNAMIC INITIALS AVATAR IN SIDEBAR */}
+            <div className="w-10 h-10 rounded-full bg-slate-200 border border-slate-300 flex items-center justify-center text-sm font-black tracking-widest text-slate-700 shrink-0 uppercase shadow-inner group-hover:border-slate-400 group-hover:bg-slate-100 transition-colors">
+              {getInitials(profile?.full_name)}
             </div>
+            
             <div className="flex-1 min-w-0">
               <p className="text-sm font-bold text-slate-900 truncate group-hover:text-blue-600 transition-colors">
                 {profile?.full_name || 'Loading...'}

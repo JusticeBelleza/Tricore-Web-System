@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { 
   BarChart3, Package, DollarSign, Clock, Truck, 
   TrendingUp, AlertTriangle, ShoppingCart, ChevronRight, CheckCircle2,
-  Wallet, FileText, Activity, CreditCard
+  Wallet, FileText, Activity, CreditCard, Calendar, ChevronDown
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -13,9 +13,26 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   
-  // Admin Metrics
+  // 🚀 DYNAMIC DATE BOUNDARIES
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth(); // 0 - 11
+  const currentQuarter = Math.floor(currentMonth / 3) + 1; // 1 - 4
+  const currentSemester = currentMonth < 6 ? 1 : 2; // 1 - 2
+
+  const startYear = 2026;
+  const availableYears = Array.from(
+    { length: Math.max(1, currentYear - startYear + 1) }, 
+    (_, i) => currentYear - i
+  );
+
+  const [filterYear, setFilterYear] = useState(currentYear.toString());
+  const [filterType, setFilterType] = useState('month'); 
+  const [filterDetail, setFilterDetail] = useState(currentMonth.toString()); 
+
+  // Admin & Warehouse Metrics
   const [adminMetrics, setAdminMetrics] = useState({
-    monthlyRevenue: 0, pendingOrders: 0, activeDispatches: 0,
+    filteredRevenue: 0, pendingOrders: 0, activeDispatches: 0,
     lowStockItems: [], recentOrders: []
   });
 
@@ -25,36 +42,86 @@ export default function Dashboard() {
     financials: { limit: 0, outstanding: 0, available: 0 }
   });
 
+  // Re-fetch when the filters change
   useEffect(() => {
     if (profile?.id) {
-      if (profile.role === 'admin') fetchAdminDashboard();
-      else if (profile.role === 'driver') setLoading(false); // Drivers use DriverRoutes
+      if (profile.role === 'admin' || profile.role === 'warehouse') fetchAdminDashboard();
+      else if (profile.role === 'driver') setLoading(false);
       else fetchCustomerDashboard();
     }
-  // 🚀 FIX: Watch the specific IDs instead of the entire profile object
-  }, [profile?.id, profile?.role, profile?.company_id]);
+  }, [profile?.id, profile?.role, profile?.company_id, filterType, filterDetail, filterYear]);
+
+  // 🚀 SMART HANDLER: Automatically snaps to the max available period when changing Category
+  const handleFilterTypeChange = (e) => {
+    const newType = e.target.value;
+    setFilterType(newType);
+    
+    const isCurrentYear = parseInt(filterYear) === currentYear;
+    
+    if (newType === 'month') {
+      setFilterDetail(isCurrentYear ? currentMonth.toString() : "11");
+    } else if (newType === 'quarter') {
+      setFilterDetail(isCurrentYear ? currentQuarter.toString() : "4");
+    } else if (newType === 'semester') {
+      setFilterDetail(isCurrentYear ? currentSemester.toString() : "2");
+    } else {
+      setFilterDetail("1"); // Placeholder for annual
+    }
+  };
+
+  // 🚀 SMART HANDLER: Automatically prevents looking into future months if year is changed to current
+  const handleFilterYearChange = (e) => {
+    const newYear = parseInt(e.target.value);
+    setFilterYear(e.target.value);
+    
+    if (newYear === currentYear) {
+      if (filterType === 'month' && parseInt(filterDetail) > currentMonth) setFilterDetail(currentMonth.toString());
+      if (filterType === 'quarter' && parseInt(filterDetail) > currentQuarter) setFilterDetail(currentQuarter.toString());
+      if (filterType === 'semester' && parseInt(filterDetail) > currentSemester) setFilterDetail(currentSemester.toString());
+    }
+  };
 
   const fetchAdminDashboard = async () => {
     setLoading(true);
     try {
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const year = parseInt(filterYear);
+      let startIso = '';
+      let endIso = '';
+
+      if (filterType === 'month') {
+        const m = parseInt(filterDetail);
+        startIso = new Date(year, m, 1).toISOString();
+        endIso = new Date(year, m + 1, 0, 23, 59, 59, 999).toISOString();
+      } else if (filterType === 'quarter') {
+        const q = parseInt(filterDetail); 
+        const startMonth = (q - 1) * 3;
+        startIso = new Date(year, startMonth, 1).toISOString();
+        endIso = new Date(year, startMonth + 3, 0, 23, 59, 59, 999).toISOString();
+      } else if (filterType === 'semester') {
+        const s = parseInt(filterDetail); 
+        const startMonth = (s - 1) * 6;
+        startIso = new Date(year, startMonth, 1).toISOString();
+        endIso = new Date(year, startMonth + 6, 0, 23, 59, 59, 999).toISOString();
+      } else if (filterType === 'annual') {
+        startIso = new Date(year, 0, 1).toISOString();
+        endIso = new Date(year, 12, 0, 23, 59, 59, 999).toISOString();
+      }
 
       const [
         { data: revData }, { count: pendingCount }, { count: dispatchCount },
         { data: lowStock }, { data: recentOrders }
       ] = await Promise.all([
-        supabase.from('orders').select('total_amount').gte('created_at', thirtyDaysAgo.toISOString()),
+        supabase.from('orders').select('total_amount').gte('created_at', startIso).lte('created_at', endIso),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['ready_for_delivery', 'shipped']),
         supabase.from('inventory').select('product_id, base_units_on_hand, products(name)').lte('base_units_on_hand', 10).limit(5),
         supabase.from('orders').select('id, created_at, total_amount, status, shipping_name, companies(name)').order('created_at', { ascending: false }).limit(5)
       ]);
 
-      const monthlyRevenue = (revData || []).reduce((sum, order) => sum + Number(order.total_amount || 0), 0);
+      const filteredRevenue = (revData || []).reduce((sum, order) => sum + Number(order.total_amount || 0), 0);
 
       setAdminMetrics({
-        monthlyRevenue, pendingOrders: pendingCount || 0, activeDispatches: dispatchCount || 0,
+        filteredRevenue, pendingOrders: pendingCount || 0, activeDispatches: dispatchCount || 0,
         lowStockItems: lowStock || [], recentOrders: recentOrders || []
       });
     } catch (error) { console.error('Error:', error); } 
@@ -102,6 +169,17 @@ export default function Dashboard() {
   const getStatusBadge = (status) => {
     const styles = { pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', processing: 'bg-blue-50 text-blue-700 border-blue-200', ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', cancelled: 'bg-red-50 text-red-700 border-red-200' };
     return (<span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{status.replace(/_/g, ' ')}</span>);
+  };
+
+  const getRevenueTitle = () => {
+    if (filterType === 'month') {
+      const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+      return `${months[parseInt(filterDetail)]} ${filterYear} Revenue`;
+    }
+    if (filterType === 'quarter') return `Q${filterDetail} ${filterYear} Revenue`;
+    if (filterType === 'semester') return `H${filterDetail} ${filterYear} Revenue`;
+    if (filterType === 'annual') return `${filterYear} Annual Revenue`;
+    return 'Revenue';
   };
 
   if (loading) {
@@ -272,26 +350,106 @@ export default function Dashboard() {
   }
 
   // ==========================================
-  // 👑 ADMIN DASHBOARD
+  // 🏢 ADMIN & WAREHOUSE DASHBOARD
   // ==========================================
+  const isCurrentYearSelected = parseInt(filterYear) === currentYear;
+
+  // 🚀 GENERATE DYNAMIC OPTION LISTS BASED ON SELECTED YEAR
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const maxMonth = isCurrentYearSelected ? currentMonth : 11;
+  const availableMonths = Array.from({ length: maxMonth + 1 }, (_, i) => i);
+  
+  const maxQuarter = isCurrentYearSelected ? currentQuarter : 4;
+  const availableQuarters = Array.from({ length: maxQuarter }, (_, i) => i + 1);
+
+  const maxSemester = isCurrentYearSelected ? currentSemester : 2;
+  const availableSemesters = Array.from({ length: maxSemester }, (_, i) => i + 1);
+
   return (
     <div className="max-w-7xl mx-auto space-y-8 pb-12">
-      <div>
-        <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight">System Overview</h2>
-        <p className="text-sm text-slate-500 mt-1 font-medium">High-level metrics and warehouse dispatch status.</p>
+      
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+        <div>
+          <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight">System Overview</h2>
+          <p className="text-sm text-slate-500 mt-1 font-medium">High-level metrics and warehouse dispatch status.</p>
+        </div>
+
+        {profile?.role === 'admin' && (
+          <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+            
+            {/* 1. YEAR SELECTOR */}
+            <div className="relative w-full sm:w-28 shrink-0">
+              <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <select 
+                value={filterYear}
+                onChange={handleFilterYearChange}
+                className="w-full pl-10 pr-8 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-700 shadow-sm appearance-none cursor-pointer transition-all"
+              >
+                {availableYears.map(y => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
+            </div>
+
+            {/* 2. FILTER CATEGORY */}
+            <div className="relative w-full sm:w-40 shrink-0">
+              <select 
+                value={filterType}
+                onChange={handleFilterTypeChange}
+                className="w-full pl-4 pr-10 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-700 shadow-sm appearance-none cursor-pointer transition-all"
+              >
+                <option value="month">Monthly</option>
+                <option value="quarter">Quarterly</option>
+                <option value="semester">Semester</option>
+                <option value="annual">Annual ({filterYear})</option>
+              </select>
+              <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
+            </div>
+
+            {/* 3. DYNAMIC SPECIFIC PERIOD SELECTOR */}
+            {filterType !== 'annual' && (
+              <div className="relative w-full sm:w-56 shrink-0">
+                <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-500" size={16} />
+                <select 
+                  value={filterDetail}
+                  onChange={(e) => setFilterDetail(e.target.value)}
+                  className="w-full pl-10 pr-10 py-2.5 bg-blue-50 border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 text-sm font-bold text-blue-900 shadow-sm appearance-none cursor-pointer transition-all"
+                >
+                  {filterType === 'month' && availableMonths.map(m => (
+                    <option key={m} value={m}>{monthNames[m]} {filterYear}</option>
+                  ))}
+                  
+                  {filterType === 'quarter' && availableQuarters.map(q => (
+                    <option key={q} value={q}>{q === 1 ? '1st' : q === 2 ? '2nd' : q === 3 ? '3rd' : '4th'} Quarter {filterYear}</option>
+                  ))}
+                  
+                  {filterType === 'semester' && availableSemesters.map(s => (
+                    <option key={s} value={s}>{s === 1 ? '1st' : '2nd'} Semester {filterYear}</option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none" size={16} />
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
-          <div className="absolute -right-4 -top-4 w-24 h-24 bg-emerald-50 rounded-full group-hover:scale-150 transition-transform duration-500 ease-out z-0"></div>
-          <div className="relative z-10">
-            <div className="flex items-center gap-3 mb-2">
-              <div className="p-2 bg-emerald-100 text-emerald-600 rounded-xl"><DollarSign size={20} /></div>
-              <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">30-Day Revenue</p>
+      {/* Dynamic Grid depending on Admin vs Warehouse */}
+      <div className={`grid grid-cols-1 ${profile?.role === 'admin' ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-6`}>
+        
+        {profile?.role === 'admin' && (
+          <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
+            <div className="absolute -right-4 -top-4 w-24 h-24 bg-emerald-50 rounded-full group-hover:scale-150 transition-transform duration-500 ease-out z-0"></div>
+            <div className="relative z-10">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-2 bg-emerald-100 text-emerald-600 rounded-xl"><DollarSign size={20} /></div>
+                <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">{getRevenueTitle()}</p>
+              </div>
+              <p className="text-4xl font-black text-slate-900 tracking-tight">${adminMetrics.filteredRevenue.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
             </div>
-            <p className="text-4xl font-black text-slate-900 tracking-tight">${adminMetrics.monthlyRevenue.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
           </div>
-        </div>
+        )}
 
         <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
           <div className="absolute -right-4 -top-4 w-24 h-24 bg-red-50 rounded-full group-hover:scale-150 transition-transform duration-500 ease-out z-0"></div>
@@ -323,11 +481,13 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
-        {/* ADMIN RECENT ORDERS */}
+        {/* RECENT ORDERS TABLE */}
         <div className="lg:col-span-2 bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden flex flex-col">
           <div className="p-6 border-b border-slate-100 flex justify-between items-center">
             <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><ShoppingCart size={18} className="text-slate-400"/> Recent Orders</h3>
-            <Link to="/admin/orders" className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1">View All <ChevronRight size={14}/></Link>
+            {profile?.role === 'admin' && (
+              <Link to="/admin/orders" className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1">View All <ChevronRight size={14}/></Link>
+            )}
           </div>
           <div className="overflow-x-auto flex-1">
             <table className="w-full text-left text-sm whitespace-nowrap">
@@ -336,7 +496,9 @@ export default function Dashboard() {
                   <th className="px-6 py-3 font-bold tracking-tight">Order ID</th>
                   <th className="px-6 py-3 font-bold tracking-tight">Customer</th>
                   <th className="px-6 py-3 font-bold tracking-tight">Status</th>
-                  <th className="px-6 py-3 font-bold tracking-tight text-right">Amount</th>
+                  {profile?.role === 'admin' && (
+                    <th className="px-6 py-3 font-bold tracking-tight text-right">Amount</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -345,16 +507,18 @@ export default function Dashboard() {
                     <td className="px-6 py-4 font-mono font-bold text-slate-900 text-xs">#{order.id.substring(0,8).toUpperCase()}</td>
                     <td className="px-6 py-4 font-medium text-slate-700">{order.companies?.name || order.shipping_name || 'Retail'}</td>
                     <td className="px-6 py-4">{getStatusBadge(order.status)}</td>
-                    <td className="px-6 py-4 text-right font-extrabold text-slate-900">${Number(order.total_amount).toFixed(2)}</td>
+                    {profile?.role === 'admin' && (
+                      <td className="px-6 py-4 text-right font-extrabold text-slate-900">${Number(order.total_amount).toFixed(2)}</td>
+                    )}
                   </tr>
                 ))}
-                {adminMetrics.recentOrders.length === 0 && <tr><td colSpan="4" className="px-6 py-8 text-center text-slate-400 font-medium">No recent orders found.</td></tr>}
+                {adminMetrics.recentOrders.length === 0 && <tr><td colSpan={profile?.role === 'admin' ? "4" : "3"} className="px-6 py-8 text-center text-slate-400 font-medium">No recent orders found.</td></tr>}
               </tbody>
             </table>
           </div>
         </div>
 
-        {/* ADMIN LOW STOCK ALERTS */}
+        {/* LOW STOCK ALERTS */}
         <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden flex flex-col">
           <div className="p-6 border-b border-slate-100 flex items-center gap-2">
             <AlertTriangle size={18} className="text-amber-500"/>
