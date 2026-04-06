@@ -13,10 +13,12 @@ export default function DriverRoutes() {
   const { profile } = useAuth();
   const [orders, setOrders] = useState([]);
   
-  // 🚀 CHANGED TO WEEKLY METRIC
   const [completedThisWeek, setCompletedThisWeek] = useState(0);
   const [loading, setLoading] = useState(true);
   
+  // 🚀 LICENSE ALERT STATE
+  const [licenseAlert, setLicenseAlert] = useState(null);
+
   // Delivery Modal State
   const [activeOrder, setActiveOrder] = useState(null); 
   const [photoPreview, setPhotoPreview] = useState(null);
@@ -29,7 +31,6 @@ export default function DriverRoutes() {
   const [cancelReason, setCancelReason] = useState('');
   const [isCancelling, setIsCancelling] = useState(false);
 
-  // 🚀 TOAST NOTIFICATION STATE
   const [toast, setToast] = useState({ show: false, message: '', isError: false });
 
   const canvasRef = useRef(null);
@@ -37,8 +38,48 @@ export default function DriverRoutes() {
   useEffect(() => {
     if (profile?.id && profile?.full_name) {
       fetchMyRoutes();
+      checkLicenseStatus();
     }
-  }, [profile?.id, profile?.full_name]);
+  }, [profile?.id, profile?.full_name, profile?.license_expiry]);
+
+  // 🚀 LICENSE CHECKER LOGIC
+  const checkLicenseStatus = () => {
+    // Only check if the user is a driver
+    if (profile?.role?.toLowerCase() !== 'driver') return;
+
+    if (!profile?.license_expiry) {
+      setLicenseAlert({ 
+        type: 'warning', 
+        title: 'Action Required',
+        message: 'Please update your driver license details in your profile.' 
+      });
+      return;
+    }
+
+    const expiryDate = new Date(profile.license_expiry);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Reset time to midnight for accurate day calculation
+    
+    // Calculate difference in days
+    const diffTime = expiryDate - today;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays < 0) {
+      setLicenseAlert({ 
+        type: 'danger', 
+        title: 'License Expired!',
+        message: `Your driver's license expired on ${expiryDate.toLocaleDateString()}. Please update your profile to continue deliveries.` 
+      });
+    } else if (diffDays <= 30) {
+      setLicenseAlert({ 
+        type: 'warning', 
+        title: 'License Expiring Soon',
+        message: `Your driver's license expires in ${diffDays} day${diffDays === 1 ? '' : 's'} (${expiryDate.toLocaleDateString()}).` 
+      });
+    } else {
+      setLicenseAlert(null); // Valid and not expiring soon
+    }
+  };
 
   const showToast = (message, isError = false) => {
     setToast({ show: true, message, isError });
@@ -63,7 +104,6 @@ export default function DriverRoutes() {
 
       if (pendingError) throw pendingError;
 
-      // 🚀 CALCULATE START OF THE WEEK (Sunday)
       const startOfWeek = new Date();
       startOfWeek.setHours(0, 0, 0, 0);
       startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
@@ -244,7 +284,7 @@ export default function DriverRoutes() {
       setOrders(orders.filter(o => o.id !== cancellingOrder.id));
       window.dispatchEvent(new Event('orderStatusChanged'));
       closeCancelModal();
-      showToast('Order cancelled and dispatched to exceptions.', true); // Red toast for cancel
+      showToast('Order cancelled and dispatched to exceptions.', true); 
       
     } catch (error) {
       console.error('Cancellation Error:', error.message);
@@ -269,6 +309,25 @@ export default function DriverRoutes() {
   return (
     <div className="max-w-md sm:max-w-3xl mx-auto space-y-5 pb-24 relative">
       
+      {/* 🚀 SMART LICENSE ALERT BANNER */}
+      {licenseAlert && (
+        <div className={`p-4 rounded-3xl border flex items-start gap-3 shadow-sm animate-in fade-in slide-in-from-top-4 ${
+          licenseAlert.type === 'danger' 
+            ? 'bg-red-50 border-red-200 text-red-800' 
+            : 'bg-amber-50 border-amber-200 text-amber-800'
+        }`}>
+          <div className={`p-2 rounded-full shrink-0 ${
+            licenseAlert.type === 'danger' ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'
+          }`}>
+            <AlertTriangle size={20} />
+          </div>
+          <div className="pt-0.5">
+            <h4 className="text-sm font-black tracking-tight">{licenseAlert.title}</h4>
+            <p className="text-sm font-medium mt-0.5 opacity-90 leading-snug">{licenseAlert.message}</p>
+          </div>
+        </div>
+      )}
+
       {/* --- DRIVER HERO DASHBOARD --- */}
       <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-lg relative overflow-hidden">
         <div className="relative z-10">

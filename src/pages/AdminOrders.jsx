@@ -24,7 +24,6 @@ export default function AdminOrders() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('all'); 
   
-  // 🚀 RENAMED 'dispatch' to 'shipped'
   const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, shipped: 0, completed: 0, due: 0, cancelled: 0 });
   const [newPendingCount, setNewPendingCount] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
@@ -80,10 +79,10 @@ export default function AdminOrders() {
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').gt('created_at', lastViewedPending),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
-        // 🚀 ONLY COUNT 'shipped' ORDERS NOW
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'shipped'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
+        // 🚀 STRICTLY REQUIRES 'DELIVERED' STATUS FOR PAYMENTS DUE
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'cancelled')
       ]);
       
@@ -115,14 +114,14 @@ export default function AdminOrders() {
 
       if (activeTab === 'pending') query = query.eq('status', 'pending');
       else if (activeTab === 'processing') query = query.eq('status', 'processing');
-      // 🚀 ONLY FETCH 'shipped' ORDERS NOW
       else if (activeTab === 'shipped') query = query.eq('status', 'shipped');
       else if (activeTab === 'completed') query = query.eq('status', 'delivered');
       else if (activeTab === 'cancelled') query = query.eq('status', 'cancelled');
       else if (activeTab === 'due') {
         const thresholdDate = new Date();
         thresholdDate.setDate(thresholdDate.getDate() - 25);
-        query = query.eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
+        // 🚀 STRICTLY REQUIRES 'DELIVERED' STATUS FOR PAYMENTS DUE
+        query = query.eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
       }
 
       if (debouncedSearch) query = query.ilike('shipping_name', `%${debouncedSearch}%`);
@@ -381,7 +380,6 @@ export default function AdminOrders() {
             Processing ({tabCounts.processing})
           </button>
           
-          {/* 🚀 CHANGED TO 'Shipped' */}
           <button onClick={() => setActiveTab('shipped')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'shipped' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>
             Shipped ({tabCounts.shipped})
           </button>

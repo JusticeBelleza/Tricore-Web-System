@@ -5,19 +5,23 @@ import {
   Search, UserPlus, Trash2, Shield, Mail, Phone, Lock, 
   CheckCircle2, XCircle, X, Users, Building, ShoppingBag, 
   MapPin, Building2, DollarSign, UploadCloud, 
-  DownloadCloud, Save, ChevronLeft, ChevronRight, Package, ChevronDown, Wallet, MoreVertical, Edit3,
-  Edit, User, Truck
+  DownloadCloud, Save, ChevronLeft, ChevronRight, Package, ChevronDown, Wallet, MoreVertical, Edit, Truck, User
 } from 'lucide-react';
 
 export default function AdminUsers() {
   const [activeTab, setActiveTab] = useState('staff'); 
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [loading, setLoading] = useState(true);
   
-  const [staffList, setStaffList] = useState([]);
-  const [b2bList, setB2bList] = useState([]);
-  const [retailList, setRetailList] = useState([]);
+  // --- SERVER-SIDE PAGINATION STATE ---
+  const [users, setUsers] = useState([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [page, setPage] = useState(0);
+  const ITEMS_PER_PAGE = 15;
   
+  // KPI & Secondary Data
+  const [kpiData, setKpiData] = useState({ b2b: 0, retail: 0, staff: 0, outstanding: 0 });
   const [companyBalances, setCompanyBalances] = useState({});
   const [agencyPatientCounts, setAgencyPatientCounts] = useState({}); 
   const [activeMenuId, setActiveMenuId] = useState(null); 
@@ -40,88 +44,139 @@ export default function AdminUsers() {
   const [pricingSearch, setPricingSearch] = useState('');
   const [pricingPage, setPricingPage] = useState(0);
   const [isImporting, setIsImporting] = useState(false);
-  const ITEMS_PER_PAGE = 15;
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [confirmAction, setConfirmAction] = useState({ show: false, type: '', title: '', message: '', data: null });
-  
   const [toast, setToast] = useState({ show: false, message: '', isError: false });
 
   // Forms
-  const [staffForm, setStaffForm] = useState({ full_name: '', email: '', contact_number: '', role: 'Warehouse', password: '', confirm_password: '' });
+  const [staffForm, setStaffForm] = useState({ full_name: '', email: '', contact_number: '', role: 'Warehouse', password: '', confirm_password: '', license_number: '', license_expiry: '' });
   const [b2bForm, setB2bForm] = useState({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '', shipping_fee: '' });
   const [retailForm, setRetailForm] = useState({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '', password: '', confirm_password: '' });
   const [editAgencyForm, setEditAgencyForm] = useState({ userId: '', companyId: '', company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_phone: '' });
 
+  // --- DEBOUNCE SEARCH EFFECT ---
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+      setPage(0);
+    }, 400);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
+
+  // Reset page when switching tabs
+  useEffect(() => {
+    setPage(0);
+    setSearchTerm('');
+    setDebouncedSearch('');
+  }, [activeTab]);
+
   useEffect(() => {
     const handleClickOutside = () => setActiveMenuId(null);
     document.addEventListener('click', handleClickOutside);
+    fetchKPIs();
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
+  // --- EFFICIENT KPI FETCHING ---
+  const fetchKPIs = async () => {
+    try {
+      const { count: b2bCount } = await supabase.from('user_profiles').select('*', { count: 'exact', head: true }).eq('role', 'b2b');
+      const { count: retailCount } = await supabase.from('user_profiles').select('*', { count: 'exact', head: true }).in('role', ['retail', 'user']);
+      const { count: staffCount } = await supabase.from('user_profiles').select('*', { count: 'exact', head: true }).in('role', ['admin', 'warehouse', 'driver']);
+      
+      // 🚀 FIXED: Ensure we strictly exclude cancelled orders from the outstanding total KPI
+      const { data: unpaidOrders } = await supabase.from('orders')
+        .select('total_amount')
+        .eq('payment_status', 'unpaid')
+        .neq('status', 'cancelled')
+        .not('company_id', 'is', null);
+        
+      const outstanding = unpaidOrders ? unpaidOrders.reduce((sum, o) => sum + Number(o.total_amount), 0) : 0;
+
+      setKpiData({ b2b: b2bCount || 0, retail: retailCount || 0, staff: staffCount || 0, outstanding });
+    } catch (error) { console.error('Error fetching KPIs:', error); }
+  };
+
+  // --- SERVER-SIDE PAGINATED FETCHING ---
   useEffect(() => {
     fetchUsers();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, page, debouncedSearch]);
 
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase.from('user_profiles').select('*, companies(*)').order('full_name', { ascending: true });
+      let query = supabase.from('user_profiles').select('*, companies(*)', { count: 'exact' });
+
+      if (activeTab === 'staff') query = query.in('role', ['admin', 'warehouse', 'driver']);
+      else if (activeTab === 'b2b') query = query.eq('role', 'b2b');
+      else if (activeTab === 'retail') query = query.in('role', ['retail', 'user']);
+
+      if (debouncedSearch) {
+        query = query.or(`full_name.ilike.%${debouncedSearch}%,email.ilike.%${debouncedSearch}%`);
+      }
+
+      const from = page * ITEMS_PER_PAGE;
+      const to = from + ITEMS_PER_PAGE - 1;
+      query = query.order('full_name', { ascending: true }).range(from, to);
+
+      const { data, count, error } = await query;
       if (error) throw error;
 
-      // Fetch Balances
-      const { data: unpaidOrders } = await supabase.from('orders').select('company_id, total_amount').eq('payment_status', 'unpaid').not('company_id', 'is', null);
-      const balances = {};
-      if (unpaidOrders) { unpaidOrders.forEach(o => { balances[o.company_id] = (balances[o.company_id] || 0) + Number(o.total_amount); }); }
-      setCompanyBalances(balances);
+      let processedData = data || [];
 
-      // Fetch Patient Counts per Agency
-      const { data: patientsData } = await supabase.from('agency_patients').select('agency_id');
-      const pCounts = {};
-      if (patientsData) {
-        patientsData.forEach(p => {
-          if (p.agency_id) pCounts[p.agency_id] = (pCounts[p.agency_id] || 0) + 1;
+      // Filter logic to prevent sub-admin clutter in B2B tab
+      if (activeTab === 'b2b') {
+        const uniqueB2bMap = new Map();
+        processedData.forEach(p => {
+          const compId = p.companies?.id;
+          if (!compId) { uniqueB2bMap.set(p.id, p); } 
+          else {
+            if (!uniqueB2bMap.has(compId)) uniqueB2bMap.set(compId, p);
+            else if (p.email === p.companies.email) uniqueB2bMap.set(compId, p);
+          }
+        });
+        processedData = Array.from(uniqueB2bMap.values());
+      } else if (activeTab === 'staff') {
+        processedData.sort((a, b) => {
+          if (a.role?.toLowerCase() === 'admin' && b.role?.toLowerCase() !== 'admin') return -1;
+          if (a.role?.toLowerCase() !== 'admin' && b.role?.toLowerCase() === 'admin') return 1;
+          return a.full_name?.localeCompare(b.full_name);
         });
       }
-      setAgencyPatientCounts(pCounts);
 
-      const profiles = data || [];
-      
-      // Sort Staff: Admins at top, then alphabetical
-      const staff = profiles.filter(p => ['admin', 'warehouse', 'driver'].includes(p.role?.toLowerCase()));
-      staff.sort((a, b) => {
-        if (a.role?.toLowerCase() === 'admin' && b.role?.toLowerCase() !== 'admin') return -1;
-        if (a.role?.toLowerCase() !== 'admin' && b.role?.toLowerCase() === 'admin') return 1;
-        return a.full_name?.localeCompare(b.full_name);
-      });
+      setUsers(processedData);
+      setTotalCount(count || 0);
 
-      // Group B2B users by Agency so sub-admins don't clutter the table
-      const b2bProfiles = profiles.filter(p => p.role?.toLowerCase() === 'b2b');
-      const uniqueB2bMap = new Map();
-      
-      b2bProfiles.forEach(p => {
-        const compId = p.companies?.id;
-        if (!compId) {
-          uniqueB2bMap.set(p.id, p); 
-        } else {
-          if (!uniqueB2bMap.has(compId)) {
-            uniqueB2bMap.set(compId, p);
-          } else {
-            // Overwrite if this user is the Primary Admin (email matches company email)
-            if (p.email === p.companies.email) {
-              uniqueB2bMap.set(compId, p);
-            }
-          }
+      // Fetch supplementary B2B data only for the displayed agencies
+      if (activeTab === 'b2b' && processedData.length > 0) {
+        const companyIds = processedData.map(u => u.companies?.id).filter(Boolean);
+        if (companyIds.length > 0) {
+          
+          // 🚀 FIXED: Ensure we strictly exclude cancelled orders from deducting against their credit limit!
+          const { data: unpaidOrders } = await supabase.from('orders')
+            .select('company_id, total_amount')
+            .eq('payment_status', 'unpaid')
+            .neq('status', 'cancelled')
+            .in('company_id', companyIds);
+            
+          const balances = {};
+          if (unpaidOrders) unpaidOrders.forEach(o => { balances[o.company_id] = (balances[o.company_id] || 0) + Number(o.total_amount); });
+          setCompanyBalances(balances);
+
+          const { data: patientsData } = await supabase.from('agency_patients').select('agency_id').in('agency_id', companyIds);
+          const pCounts = {};
+          if (patientsData) patientsData.forEach(p => { pCounts[p.agency_id] = (pCounts[p.agency_id] || 0) + 1; });
+          setAgencyPatientCounts(pCounts);
         }
-      });
+      }
 
-      setStaffList(staff);
-      setB2bList(Array.from(uniqueB2bMap.values()));
-      setRetailList(profiles.filter(p => p.role?.toLowerCase() === 'retail' || p.role?.toLowerCase() === 'user'));
-    } catch (error) { console.error('Error fetching users:', error); } finally { setLoading(false); }
+    } catch (error) { console.error('Error fetching users:', error); } 
+    finally { setLoading(false); }
   };
 
-  const totalOutstanding = Object.values(companyBalances).reduce((sum, val) => sum + val, 0);
+  const totalPages = Math.ceil(totalCount / ITEMS_PER_PAGE);
 
   const getInitials = (name) => {
     if (!name) return '??';
@@ -156,9 +211,36 @@ export default function AdminUsers() {
     setConfirmAction({ show: false }); setIsSubmitting(true);
     try {
       const tempSupabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
-      const { error: authError } = await tempSupabase.auth.signUp({ email: confirmAction.data.email, password: confirmAction.data.password, options: { data: { full_name: confirmAction.data.full_name, role: confirmAction.data.role.toLowerCase(), contact_number: confirmAction.data.contact_number, company_id: null } } });
+      const { data, error: authError } = await tempSupabase.auth.signUp({ 
+        email: confirmAction.data.email, 
+        password: confirmAction.data.password, 
+        options: { 
+          data: { 
+            full_name: confirmAction.data.full_name, 
+            role: confirmAction.data.role.toLowerCase(), 
+            contact_number: confirmAction.data.contact_number, 
+            company_id: null,
+            license_number: confirmAction.data.role === 'Driver' ? confirmAction.data.license_number : null,
+            license_expiry: confirmAction.data.role === 'Driver' ? confirmAction.data.license_expiry : null
+          } 
+        } 
+      });
       if (authError) throw authError;
-      setTimeout(() => { fetchUsers(); setShowAddStaffModal(false); setStaffForm({ full_name: '', email: '', contact_number: '', role: 'Warehouse', password: '', confirm_password: '' }); showToast('Staff account created successfully!'); setIsSubmitting(false); }, 1500);
+
+      if (data?.user?.id && confirmAction.data.role === 'Driver') {
+        await supabase.from('user_profiles').update({
+          license_number: confirmAction.data.license_number,
+          license_expiry: confirmAction.data.license_expiry
+        }).eq('id', data.user.id);
+      }
+
+      setTimeout(() => { 
+        fetchUsers(); fetchKPIs();
+        setShowAddStaffModal(false); 
+        setStaffForm({ full_name: '', email: '', contact_number: '', role: 'Warehouse', password: '', confirm_password: '', license_number: '', license_expiry: '' }); 
+        showToast('Staff account created successfully!'); 
+        setIsSubmitting(false); 
+      }, 1500);
     } catch (error) { showToast(error.message, true); setIsSubmitting(false); }
   };
 
@@ -185,7 +267,7 @@ export default function AdminUsers() {
         }).eq('id', data.user.id);
       }
 
-      setTimeout(() => { fetchUsers(); setShowAddRetailModal(false); setRetailForm({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '', password: '', confirm_password: '' }); showToast('Retail customer created successfully!'); setIsSubmitting(false); }, 1500);
+      setTimeout(() => { fetchUsers(); fetchKPIs(); setShowAddRetailModal(false); setRetailForm({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '', password: '', confirm_password: '' }); showToast('Retail customer created successfully!'); setIsSubmitting(false); }, 1500);
     } catch (error) { showToast(error.message, true); setIsSubmitting(false); }
   };
 
@@ -211,7 +293,7 @@ export default function AdminUsers() {
       const { error: authError } = await tempSupabase.auth.signUp({ email: confirmAction.data.admin_email, password: confirmAction.data.password, options: { data: { full_name: confirmAction.data.admin_name, role: 'b2b', contact_number: confirmAction.data.admin_phone, company_id: company.id } } });
       if (authError) throw authError;
 
-      setTimeout(() => { fetchUsers(); setShowAddB2bModal(false); setB2bForm({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '', shipping_fee: '' }); showToast('Agency account created successfully!'); setIsSubmitting(false); }, 1500);
+      setTimeout(() => { fetchUsers(); fetchKPIs(); setShowAddB2bModal(false); setB2bForm({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '', shipping_fee: '' }); showToast('Agency account created successfully!'); setIsSubmitting(false); }, 1500);
     } catch (error) { showToast(error.message, true); setIsSubmitting(false); }
   };
 
@@ -242,7 +324,7 @@ export default function AdminUsers() {
     try {
       const { error } = await supabase.rpc('delete_user', { user_id: confirmAction.data });
       if (error) throw error;
-      fetchUsers(); showToast('User deleted.');
+      fetchUsers(); fetchKPIs(); showToast('User deleted.');
     } catch (error) { showToast(error.message, true); }
   };
 
@@ -252,7 +334,7 @@ export default function AdminUsers() {
       const newLimit = Number(creditLimitModal.limit.replace(/,/g, '')); 
       const { error } = await supabase.from('companies').update({ credit_limit: newLimit }).eq('id', creditLimitModal.companyId);
       if (error) throw error;
-      setB2bList(prev => prev.map(u => { if (u.companies?.id === creditLimitModal.companyId) { return { ...u, companies: { ...u.companies, credit_limit: newLimit } }; } return u; }));
+      setUsers(prev => prev.map(u => { if (u.companies?.id === creditLimitModal.companyId) { return { ...u, companies: { ...u.companies, credit_limit: newLimit } }; } return u; }));
       showToast('Credit limit updated successfully!'); setCreditLimitModal({ show: false, companyId: null, companyName: '', limit: '' });
     } catch (err) { showToast('Failed to update: ' + err.message, true); } finally { setIsSubmitting(false); }
   };
@@ -263,7 +345,7 @@ export default function AdminUsers() {
       const newFee = Number(shippingFeeModal.fee.replace(/,/g, '')); 
       const { error } = await supabase.from('companies').update({ shipping_fee: newFee }).eq('id', shippingFeeModal.companyId);
       if (error) throw error;
-      setB2bList(prev => prev.map(u => { if (u.companies?.id === shippingFeeModal.companyId) { return { ...u, companies: { ...u.companies, shipping_fee: newFee } }; } return u; }));
+      setUsers(prev => prev.map(u => { if (u.companies?.id === shippingFeeModal.companyId) { return { ...u, companies: { ...u.companies, shipping_fee: newFee } }; } return u; }));
       showToast('Shipping fee updated successfully!'); setShippingFeeModal({ show: false, companyId: null, companyName: '', fee: '' });
     } catch (err) { showToast('Failed to update: ' + err.message, true); } finally { setIsSubmitting(false); }
   };
@@ -332,18 +414,6 @@ export default function AdminUsers() {
     } catch (err) { showToast("Failed to parse CSV.", true); } finally { setIsImporting(false); e.target.value = ''; }
   };
 
-  const getActiveList = () => {
-    if (activeTab === 'staff') return staffList;
-    if (activeTab === 'b2b') return b2bList;
-    return retailList;
-  };
-
-  const filteredData = getActiveList().filter(user => 
-    (user.full_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (user.email || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (user.companies?.name || '').toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
   const filteredCatalog = catalogProducts.filter(p => 
     p.name.toLowerCase().includes(pricingSearch.toLowerCase()) || p.base_sku.toLowerCase().includes(pricingSearch.toLowerCase()) ||
     p.product_variants?.some(v => v.sku.toLowerCase().includes(pricingSearch.toLowerCase()) || v.name.toLowerCase().includes(pricingSearch.toLowerCase()))
@@ -358,16 +428,13 @@ export default function AdminUsers() {
   const renderRole = (role) => {
     const r = (role || 'user').toLowerCase();
     let Icon = User;
-    let iconColor = 'text-slate-400';
-    
-    if (r === 'admin') { Icon = Shield; iconColor = 'text-blue-600'; }
-    else if (r === 'warehouse') { Icon = Package; iconColor = 'text-amber-600'; }
-    else if (r === 'driver') { Icon = Truck; iconColor = 'text-emerald-600'; }
-
+    let colorClasses = 'bg-slate-100 text-slate-700 border-slate-200';
+    if (r === 'admin') { Icon = Shield; colorClasses = 'bg-blue-50 text-blue-700 border-blue-200'; }
+    else if (r === 'warehouse') { Icon = Package; colorClasses = 'bg-amber-50 text-amber-700 border-amber-200'; }
+    else if (r === 'driver') { Icon = Truck; colorClasses = 'bg-emerald-50 text-emerald-700 border-emerald-200'; }
     return (
-      <div className="flex items-center gap-2 text-slate-700 font-semibold">
-        <Icon size={16} className={iconColor} />
-        <span className="capitalize">{r}</span>
+      <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-[11px] font-bold uppercase tracking-wider shadow-sm ${colorClasses}`}>
+        <Icon size={14} /><span>{r}</span>
       </div>
     );
   };
@@ -402,56 +469,45 @@ export default function AdminUsers() {
 
       {/* KPI CARDS */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        {loading ? (
-          [1,2,3,4].map(n => (
-            <div key={n} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm h-32 animate-pulse flex flex-col justify-between">
-              <div className="flex justify-between items-center"><div className="w-24 h-4 bg-slate-200 rounded"></div><div className="w-8 h-8 bg-slate-200 rounded-lg"></div></div>
-              <div className="w-16 h-8 bg-slate-200 rounded mt-2"></div><div className="w-32 h-3 bg-slate-100 rounded mt-2"></div>
-            </div>
-          ))
-        ) : (
-          <>
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-              <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-blue-50 transition-transform group-hover:scale-110"></div>
-              <div className="flex justify-between items-start mb-4 relative">
-                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Active Agencies</h4>
-                <div className="p-2 rounded-xl bg-blue-100 text-blue-600 shadow-sm"><Building2 size={18} /></div>
-              </div>
-              <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{b2bList.length}</h2>
-              <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Total registered B2B accounts</p>
-            </div>
+        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+          <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-blue-50 transition-transform group-hover:scale-110"></div>
+          <div className="flex justify-between items-start mb-4 relative">
+            <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Active Agencies</h4>
+            <div className="p-2 rounded-xl bg-blue-100 text-blue-600 shadow-sm"><Building2 size={18} /></div>
+          </div>
+          <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{kpiData.b2b}</h2>
+          <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Total registered B2B accounts</p>
+        </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-              <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-amber-50 transition-transform group-hover:scale-110"></div>
-              <div className="flex justify-between items-start mb-4 relative">
-                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Total Outstanding</h4>
-                <div className="p-2 rounded-xl bg-amber-100 text-amber-600 shadow-sm"><Wallet size={18} /></div>
-              </div>
-              <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">${totalOutstanding.toLocaleString(undefined, {minimumFractionDigits: 2})}</h2>
-              <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Unpaid invoices across all agencies</p>
-            </div>
+        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+          <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-amber-50 transition-transform group-hover:scale-110"></div>
+          <div className="flex justify-between items-start mb-4 relative">
+            <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Total Outstanding</h4>
+            <div className="p-2 rounded-xl bg-amber-100 text-amber-600 shadow-sm"><Wallet size={18} /></div>
+          </div>
+          <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">${kpiData.outstanding.toLocaleString(undefined, {minimumFractionDigits: 2})}</h2>
+          <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Unpaid invoices across all agencies</p>
+        </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-              <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-emerald-50 transition-transform group-hover:scale-110"></div>
-              <div className="flex justify-between items-start mb-4 relative">
-                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Retail Users</h4>
-                <div className="p-2 rounded-xl bg-emerald-100 text-emerald-600 shadow-sm"><ShoppingBag size={18} /></div>
-              </div>
-              <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{retailList.length}</h2>
-              <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Standard direct-to-consumer accounts</p>
-            </div>
+        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+          <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-emerald-50 transition-transform group-hover:scale-110"></div>
+          <div className="flex justify-between items-start mb-4 relative">
+            <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Retail Users</h4>
+            <div className="p-2 rounded-xl bg-emerald-100 text-emerald-600 shadow-sm"><ShoppingBag size={18} /></div>
+          </div>
+          <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{kpiData.retail}</h2>
+          <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Standard direct-to-consumer accounts</p>
+        </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-              <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-purple-50 transition-transform group-hover:scale-110"></div>
-              <div className="flex justify-between items-start mb-4 relative">
-                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Internal Staff</h4>
-                <div className="p-2 rounded-xl bg-purple-100 text-purple-600 shadow-sm"><Users size={18} /></div>
-              </div>
-              <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{staffList.length}</h2>
-              <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Admins, Warehouse, and Drivers</p>
-            </div>
-          </>
-        )}
+        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+          <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-purple-50 transition-transform group-hover:scale-110"></div>
+          <div className="flex justify-between items-start mb-4 relative">
+            <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Internal Staff</h4>
+            <div className="p-2 rounded-xl bg-purple-100 text-purple-600 shadow-sm"><Users size={18} /></div>
+          </div>
+          <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{kpiData.staff}</h2>
+          <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Admins, Warehouse, and Drivers</p>
+        </div>
       </div>
 
       <div className="flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
@@ -462,47 +518,50 @@ export default function AdminUsers() {
         </div>
         <div className="relative w-full lg:w-80 shrink-0">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input type="text" placeholder="Search accounts..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all shadow-sm" />
+          <input type="text" placeholder={`Search ${activeTab}...`} value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all shadow-sm" />
         </div>
       </div>
 
       {loading ? (
-        <div className="text-slate-500 font-medium mt-6">Loading directory...</div>
-      ) : filteredData.length === 0 ? (
+        <div className="flex justify-center items-center py-20">
+          <div className="w-8 h-8 border-4 border-slate-900 border-t-transparent rounded-full animate-spin"></div>
+        </div>
+      ) : users.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-2xl border border-slate-200 shadow-sm mt-6">
           <Users size={48} strokeWidth={1.5} className="mx-auto text-slate-300 mb-4" />
           <h3 className="text-lg font-bold text-slate-900 mb-1">No users found</h3>
-          <p className="text-slate-500 text-sm">There are no accounts in this tab right now.</p>
+          <p className="text-slate-500 text-sm">There are no accounts matching your search.</p>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm mt-6">
-          <div className="overflow-x-auto lg:overflow-visible min-h-[300px] rounded-2xl pb-16">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm mt-6 overflow-hidden flex flex-col">
+          <div className="overflow-x-auto min-h-[300px]">
             <table className="w-full text-left text-sm whitespace-nowrap border-collapse">
-              <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500">
+              <thead className="bg-slate-50 border-b border-slate-200 text-slate-500">
                 <tr>
                   {activeTab === 'b2b' ? (
                     <>
-                      <th className="px-6 py-4 font-bold tracking-tight rounded-tl-2xl">Agency Profile</th>
+                      <th className="px-6 py-4 font-bold tracking-tight">Agency Profile</th>
                       <th className="px-6 py-4 font-bold tracking-tight">Patients</th>
                       <th className="px-6 py-4 font-bold tracking-tight">Financial Status</th>
                     </>
                   ) : activeTab === 'retail' ? (
                     <>
-                      <th className="px-6 py-4 font-bold tracking-tight rounded-tl-2xl">User Profile</th>
+                      <th className="px-6 py-4 font-bold tracking-tight">User Profile</th>
                       <th className="px-6 py-4 font-bold tracking-tight">Shipping Address</th>
                       <th className="px-6 py-4 font-bold tracking-tight">Role Type</th>
                     </>
                   ) : (
                     <>
-                      <th className="px-6 py-4 font-bold tracking-tight rounded-tl-2xl">User Profile</th>
-                      <th className="px-6 py-4 font-bold tracking-tight">Role Type</th>
+                      <th className="px-6 py-4 font-bold tracking-tight">User Profile</th>
+                      <th className="px-6 py-4 font-bold tracking-tight">Role & Access</th>
+                      <th className="px-6 py-4 font-bold tracking-tight">Credentials</th>
                     </>
                   )}
-                  <th className="px-6 py-4 font-bold tracking-tight text-right w-24 rounded-tr-2xl">Actions</th>
+                  <th className="px-6 py-4 font-bold tracking-tight text-right w-24">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200 border-b border-slate-200">
-                {filteredData.map(user => (
+              <tbody className="divide-y divide-slate-200">
+                {users.map(user => (
                   <tr key={user.id} className="hover:bg-slate-50 group transition-colors">
                     
                     {activeTab === 'b2b' ? (
@@ -572,14 +631,48 @@ export default function AdminUsers() {
                       <>
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-4">
-                            <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center font-bold text-sm shrink-0 border border-slate-200 shadow-sm">{getInitials(user.full_name || 'U')}</div>
+                            <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center font-bold text-sm shrink-0 border border-slate-200 shadow-sm">
+                              {getInitials(user.full_name || 'U')}
+                            </div>
                             <div className="flex flex-col">
-                              <p className="font-bold text-slate-900">{user.full_name || 'Unnamed User'}</p>
-                              <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5 font-mono"><span>{user.email}</span>{user.contact_number && (<><span className="text-slate-300">&bull;</span><span>{user.contact_number}</span></>)}</div>
+                              <p className="font-bold text-slate-900 text-sm">{user.full_name || 'Unnamed User'}</p>
+                              <div className="flex items-center gap-2 text-xs text-slate-500 mt-1 font-medium">
+                                <span className="flex items-center gap-1"><Mail size={12} className="text-slate-400"/> {user.email}</span>
+                                {user.contact_number && (
+                                  <>
+                                    <span className="text-slate-300">&bull;</span>
+                                    <span className="flex items-center gap-1"><Phone size={12} className="text-slate-400"/> {user.contact_number}</span>
+                                  </>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </td>
                         <td className="px-6 py-4">{renderRole(user.role)}</td>
+                        <td className="px-6 py-4">
+                          {user.role?.toLowerCase() === 'driver' ? (
+                            <div className="flex flex-col gap-1.5">
+                              <span className="text-xs font-mono text-slate-700 font-bold bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200 w-max shadow-sm">
+                                Lic: {user.license_number || 'Missing'}
+                              </span>
+                              {user.license_expiry ? (
+                                new Date(user.license_expiry) < new Date(new Date().setHours(0,0,0,0)) ? (
+                                  <span className="text-[10px] font-bold text-red-600 flex items-center gap-1 uppercase tracking-wider">
+                                    <XCircle size={12} /> Expired
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-bold text-emerald-600 flex items-center gap-1 uppercase tracking-wider">
+                                    <CheckCircle2 size={12} /> Valid
+                                  </span>
+                                )
+                              ) : (
+                                <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">No Expiry Set</span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-400 font-medium italic">Standard Access</span>
+                          )}
+                        </td>
                       </>
                     )}
 
@@ -605,6 +698,19 @@ export default function AdminUsers() {
               </tbody>
             </table>
           </div>
+          
+          {/* --- THE PAGINATION FOOTER --- */}
+          {totalCount > ITEMS_PER_PAGE && (
+            <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex justify-between items-center shrink-0">
+              <p className="text-sm text-slate-500 font-medium">
+                Showing <span className="font-bold text-slate-900">{page * ITEMS_PER_PAGE + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * ITEMS_PER_PAGE, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> results
+              </p>
+              <div className="flex gap-2">
+                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-1.5 rounded-lg border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:scale-95 disabled:opacity-50 shadow-sm transition-all"><ChevronLeft size={18} /></button>
+                <button onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1} className="p-1.5 rounded-lg border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:scale-95 disabled:opacity-50 shadow-sm transition-all"><ChevronRight size={18} /></button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -773,6 +879,20 @@ export default function AdminUsers() {
                 <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Contact Number</label><div className="relative"><Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="tel" name="contact_number" required value={staffForm.contact_number} onChange={e => setStaffForm({...staffForm, contact_number: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
               </div>
               <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Assign Role</label><select name="role" required value={staffForm.role} onChange={e => setStaffForm({...staffForm, role: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 text-slate-900 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold cursor-pointer transition-all"><option value="Admin">Admin (Full Access)</option><option value="Warehouse">Warehouse (Pick & Pack)</option><option value="Driver">Driver (Deliveries)</option></select></div>
+              
+              {staffForm.role === 'Driver' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 animate-in fade-in zoom-in-95 duration-200">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">License Number</label>
+                    <input type="text" name="license_number" required value={staffForm.license_number} onChange={e => setStaffForm({...staffForm, license_number: e.target.value})} placeholder="e.g. D1234567" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Expiration Date</label>
+                    <input type="date" name="license_expiry" required value={staffForm.license_expiry} onChange={e => setStaffForm({...staffForm, license_expiry: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 text-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" />
+                  </div>
+                </div>
+              )}
+
               <div className="h-px w-full bg-slate-100 my-2"></div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Temporary Password</label><div className="relative"><Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="password" name="password" required value={staffForm.password} onChange={e => setStaffForm({...staffForm, password: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
