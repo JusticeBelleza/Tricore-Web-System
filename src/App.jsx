@@ -29,7 +29,6 @@ const ProtectedRoute = ({ children }) => {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-4">
-          {/* TRICORE LOGO SPINNER */}
           <img 
             src="/images/tricore-logo.png" 
             alt="Tricore Loading" 
@@ -50,6 +49,21 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
+// 🚀 NEW: Component to strictly enforce Role-Based Access Control (RBAC)
+const RoleProtectedRoute = ({ allowedRoles, children }) => {
+  const { profile } = useAuth();
+  
+  // Default to 'user' if no role is explicitly set in the database
+  const userRole = profile?.role || 'user'; 
+
+  // If the user's role is NOT in the allowed list, boot them back to the dashboard safely
+  if (!allowedRoles.includes(userRole)) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return children;
+};
+
 // Component to handle Dashboard routing based on Role
 const DashboardRouter = () => {
     const { profile } = useAuth();
@@ -58,7 +72,7 @@ const DashboardRouter = () => {
     // we can securely rely on profile.role being instantly available here!
     const role = profile?.role;
 
-    // 🚀 NEW: Instantly redirects Drivers to their Routes page instead of the Dashboard
+    // Instantly redirects Drivers to their Routes page instead of the Dashboard
     if (role === 'driver') {
         return <Navigate to="/driver" replace />;
     }
@@ -85,29 +99,66 @@ export default function App() {
             <Layout />
           </ProtectedRoute>
         }>
-          {/* Automatically redirect from root "/" to "/dashboard" (which now smartly redirects drivers to "/driver") */}
+          {/* Automatically redirect from root "/" to "/dashboard" */}
           <Route index element={<Navigate to="/dashboard" replace />} />
           
-          {/* Dashboard is now a Router Component */}
           <Route path="dashboard" element={<DashboardRouter />} />
-          
           <Route path="catalog" element={<Catalog />} />
           <Route path="checkout" element={<Checkout />} />
           <Route path="orders" element={<MyOrders />} /> 
-          <Route path="warehouse" element={<Warehouse />} />
-          <Route path="admin/orders" element={<AdminOrders />} />
-          <Route path="driver" element={<DriverRoutes />} />
-          
-          {/* ADMIN & STAFF ROUTES */}
-          <Route path="purchase-orders" element={<PurchaseOrders />} />
-          <Route path="admin/products" element={<Products />} />
-          <Route path="admin/users" element={<AdminUsers />} />
-          <Route path="admin/reports" element={<Reports />} />
-          <Route path="/fleet" element={<FleetManagement />} />
-          <Route path="/dispatch" element={<DispatchMonitor />} />
-          
-          {/* 🚀 ADDED PROFILE ROUTE */}
           <Route path="/profile" element={<Profile />} />
+          
+          {/* 🚀 STRICT ROLE PROTECTION: Admin & Warehouse Only */}
+          <Route path="warehouse" element={
+            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
+              <Warehouse />
+            </RoleProtectedRoute>
+          } />
+          <Route path="purchase-orders" element={
+            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
+              <PurchaseOrders />
+            </RoleProtectedRoute>
+          } />
+          <Route path="admin/products" element={
+            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
+              <Products />
+            </RoleProtectedRoute>
+          } />
+          <Route path="dispatch" element={
+            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
+              <DispatchMonitor />
+            </RoleProtectedRoute>
+          } />
+          
+          {/* 🚀 STRICT ROLE PROTECTION: Admin Only */}
+          <Route path="admin/orders" element={
+            <RoleProtectedRoute allowedRoles={['admin']}>
+              <AdminOrders />
+            </RoleProtectedRoute>
+          } />
+          <Route path="fleet" element={
+            <RoleProtectedRoute allowedRoles={['admin']}>
+              <FleetManagement />
+            </RoleProtectedRoute>
+          } />
+          <Route path="admin/users" element={
+            <RoleProtectedRoute allowedRoles={['admin']}>
+              <AdminUsers />
+            </RoleProtectedRoute>
+          } />
+          <Route path="admin/reports" element={
+            <RoleProtectedRoute allowedRoles={['admin']}>
+              <Reports />
+            </RoleProtectedRoute>
+          } />
+
+          {/* 🚀 STRICT ROLE PROTECTION: Drivers (and Admins for debugging) */}
+          <Route path="driver" element={
+            <RoleProtectedRoute allowedRoles={['admin', 'driver']}>
+              <DriverRoutes />
+            </RoleProtectedRoute>
+          } />
+
         </Route>
       </Routes>
     </BrowserRouter>
