@@ -69,19 +69,29 @@ export default function Layout() {
         setNeedsDispatchCount(dispatchCount || 0);
       }
 
-      // 3. Agencies get badge for Net-30 Invoices (ONLY 5 days before due)
-      if (profile.role === 'b2b' && profile.company_id) {
+      // 3. Customers (B2B & Retail) get badge for Net-30 Invoices (Older than 25 days)
+      const isCustomerRole = !profile.role || ['user', 'retail', 'b2b'].includes(profile.role);
+      
+      if (isCustomerRole) {
         const threshold = new Date();
         threshold.setDate(threshold.getDate() - 25); 
         
-        const { count } = await supabase
+        let query = supabase
           .from('orders')
           .select('*', { count: 'exact', head: true })
-          .eq('company_id', profile.company_id)
           .eq('payment_status', 'unpaid')
           .eq('payment_method', 'net_30')
+          .neq('status', 'cancelled') // Prevent cancelled orders from inflating the count!
           .lte('created_at', threshold.toISOString());
 
+        // Filter appropriately depending on if they are B2B (Company) or Retail (User)
+        if (profile.company_id) {
+          query = query.eq('company_id', profile.company_id);
+        } else if (profile.id) {
+          query = query.eq('user_id', profile.id);
+        }
+
+        const { count } = await query;
         setOverdueCount(count || 0);
       }
     };
@@ -192,7 +202,7 @@ export default function Layout() {
                       {overdueCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
-                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
+                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-medium text-white bg-red-600 rounded-full shadow-sm">
                             {overdueCount} Due
                           </span>
                         </div>
@@ -215,7 +225,7 @@ export default function Layout() {
                       {processingCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
-                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
+                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-medium text-white bg-red-600 rounded-full shadow-sm">
                             {processingCount} New
                           </span>
                         </div>
@@ -237,7 +247,7 @@ export default function Layout() {
                       {needsDispatchCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75 animate-ping"></span>
-                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-purple-600 rounded-full shadow-sm">
+                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-medium text-white bg-purple-600 rounded-full shadow-sm">
                             {needsDispatchCount} To Dispatch
                           </span>
                         </div>
@@ -258,7 +268,7 @@ export default function Layout() {
                       {pendingCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
-                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-extrabold text-white bg-red-600 rounded-full shadow-sm">
+                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-medium text-white bg-red-600 rounded-full shadow-sm">
                             {pendingCount} New
                           </span>
                         </div>
