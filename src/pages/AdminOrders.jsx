@@ -5,7 +5,7 @@ import {
   Search, Package, CheckCircle2, XCircle, Clock, 
   Truck, X, AlertCircle, PackageCheck, User, Car, Hash, Building, MapPin,
   ChevronDown, DollarSign, CreditCard, FileText, Calendar, ShieldAlert, Phone, FileDown, Mail,
-  ChevronLeft, ChevronRight, AlertTriangle
+  ChevronLeft, ChevronRight, AlertTriangle, Receipt
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -24,7 +24,7 @@ export default function AdminOrders() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('all'); 
   
-  const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, shipped: 0, completed: 0, due: 0, cancelled: 0 });
+  const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, shipped: 0, completed: 0, due: 0, paid: 0, cancelled: 0 });
   const [newPendingCount, setNewPendingCount] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [confirmAction, setConfirmAction] = useState({ show: false, title: '', message: '', onConfirm: null });
@@ -75,14 +75,18 @@ export default function AdminOrders() {
       thresholdDate.setDate(thresholdDate.getDate() - 25);
       const lastViewedPending = localStorage.getItem('lastViewedPending') || new Date(0).toISOString();
 
-      const [pendingReq, newPendingReq, processingReq, shippedReq, completedReq, dueReq, cancelledReq] = await Promise.all([
+      const [pendingReq, newPendingReq, processingReq, shippedReq, completedReq, dueReq, paidReq, cancelledReq] = await Promise.all([
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').gt('created_at', lastViewedPending),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'shipped'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered'),
-        // 🚀 STRICTLY REQUIRES 'DELIVERED' STATUS FOR PAYMENTS DUE
+        // Completed: Delivered AND Unpaid
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').eq('payment_status', 'unpaid'),
+        // Due: Delivered AND Unpaid AND Net 30 AND Old enough (Strictly NOT cancelled)
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
+        // Paid: Any order that is paid
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('payment_status', 'paid'),
+        // Cancelled:
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'cancelled')
       ]);
       
@@ -92,6 +96,7 @@ export default function AdminOrders() {
         shipped: shippedReq.count || 0, 
         completed: completedReq.count || 0,
         due: dueReq.count || 0,
+        paid: paidReq.count || 0,
         cancelled: cancelledReq.count || 0 
       });
       setNewPendingCount(newPendingReq.count || 0);
@@ -115,18 +120,19 @@ export default function AdminOrders() {
       if (activeTab === 'pending') query = query.eq('status', 'pending');
       else if (activeTab === 'processing') query = query.eq('status', 'processing');
       else if (activeTab === 'shipped') query = query.eq('status', 'shipped');
-      else if (activeTab === 'completed') query = query.eq('status', 'delivered');
+      else if (activeTab === 'completed') query = query.eq('status', 'delivered').eq('payment_status', 'unpaid');
+      else if (activeTab === 'paid') query = query.eq('payment_status', 'paid');
       else if (activeTab === 'cancelled') query = query.eq('status', 'cancelled');
       else if (activeTab === 'due') {
         const thresholdDate = new Date();
         thresholdDate.setDate(thresholdDate.getDate() - 25);
-        // 🚀 STRICTLY REQUIRES 'DELIVERED' STATUS FOR PAYMENTS DUE
+        // STRICTLY DEMAND STATUS IS DELIVERED FOR DUE PAYMENTS
         query = query.eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
       }
 
       if (debouncedSearch) query = query.ilike('shipping_name', `%${debouncedSearch}%`);
 
-      const sortColumn = (activeTab === 'completed' || activeTab === 'cancelled') ? 'updated_at' : 'created_at';
+      const sortColumn = (activeTab === 'completed' || activeTab === 'cancelled' || activeTab === 'paid') ? 'updated_at' : 'created_at';
       query = query.order(sortColumn, { ascending: false });
 
       const from = page * pageSize;
@@ -344,8 +350,12 @@ export default function AdminOrders() {
     return (<span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center gap-1.5 w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{icons[status]} {status.replace(/_/g, ' ')}</span>);
   };
 
-  const getPaymentBadge = (paymentStatus) => {
-    if (paymentStatus === 'paid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-600 border border-emerald-200 shadow-sm">Paid</span>;
+  const getPaymentBadge = (paymentStatus, orderStatus) => {
+    // If the order is cancelled, show a grayed-out 'Voided' badge
+    if (orderStatus === 'cancelled') {
+      return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-400 border border-slate-200 shadow-sm">Voided</span>;
+    }
+    if (paymentStatus === 'paid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-700 border border-emerald-200 shadow-sm">Paid</span>;
     return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200 shadow-sm">Unpaid</span>;
   };
 
@@ -358,9 +368,7 @@ export default function AdminOrders() {
     <div className="space-y-6 max-w-7xl mx-auto pb-12 relative">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 pb-2">
         <div className="flex items-center gap-4">
-          <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md">
-            <ShieldAlert size={28} strokeWidth={1.5} />
-          </div>
+          <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md"><ShieldAlert size={28} strokeWidth={1.5} /></div>
           <div>
             <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Order Management</h2>
             <p className="text-sm text-slate-500 mt-1 font-medium">Review, approve, and track incoming orders.</p>
@@ -371,56 +379,23 @@ export default function AdminOrders() {
       <div className="flex flex-col xl:flex-row gap-4 justify-between items-start xl:items-center bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full xl:w-auto overflow-x-auto shrink-0">
           <button onClick={() => setActiveTab('all')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'all' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}>All</button>
-          
-          <button onClick={() => setActiveTab('pending')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'pending' ? 'bg-red-500 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>
-            {newPendingCount > 0 && <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>}
-            Pending ({tabCounts.pending})
-          </button>
-          <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-600 hover:bg-blue-50'}`}>
-            Processing ({tabCounts.processing})
-          </button>
-          
-          <button onClick={() => setActiveTab('shipped')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'shipped' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>
-            Shipped ({tabCounts.shipped})
-          </button>
-          
-          <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>
-            Completed ({tabCounts.completed})
-          </button>
-          <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>
-            {tabCounts.due > 0 && <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>}
-            Payments Due ({tabCounts.due})
-          </button>
-          <button onClick={() => setActiveTab('cancelled')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>
-            Cancelled ({tabCounts.cancelled})
-          </button>
+          <button onClick={() => setActiveTab('pending')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'pending' ? 'bg-red-500 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>{newPendingCount > 0 && <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>}Pending ({tabCounts.pending})</button>
+          <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-600 hover:bg-blue-50'}`}>Processing ({tabCounts.processing})</button>
+          <button onClick={() => setActiveTab('shipped')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'shipped' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>Shipped ({tabCounts.shipped})</button>
+          <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>Completed ({tabCounts.completed})</button>
+          <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>{tabCounts.due > 0 && <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>}Due ({tabCounts.due})</button>
+          <button onClick={() => setActiveTab('paid')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'paid' ? 'bg-slate-800 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200'}`}><Receipt size={14}/> Paid ({tabCounts.paid})</button>
+          <button onClick={() => setActiveTab('cancelled')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>Cancelled ({tabCounts.cancelled})</button>
         </div>
-
-        <div className="relative w-full xl:w-64 shrink-0">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input 
-            type="text" 
-            placeholder="Search Patient Name..." 
-            value={searchTerm} 
-            onChange={(e) => setSearchTerm(e.target.value)} 
-            className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" 
-          />
-        </div>
+        <div className="relative w-full xl:w-64 shrink-0"><Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" /></div>
       </div>
 
       {loading ? (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
-          {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div></div>))}
-        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 p-12 flex justify-center"><div className="w-8 h-8 border-4 border-slate-900 border-t-transparent rounded-full animate-spin"></div></div>
       ) : orders.length === 0 ? (
-        <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm mt-6">
-          <Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" />
-          <h3 className="text-xl font-bold text-slate-900 mb-2 tracking-tight">No orders found</h3>
-          <p className="text-slate-500 text-sm">There are no orders matching your current filters.</p>
-        </div>
+        <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 mt-6"><Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" /><h3 className="text-xl font-bold text-slate-900 mb-2">No orders found</h3></div>
       ) : (
-        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm mt-6 flex flex-col">
+        <div className="bg-white rounded-3xl border border-slate-200 mt-6 flex flex-col">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm whitespace-nowrap">
               <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500">
@@ -475,7 +450,8 @@ export default function AdminOrders() {
                     dueDate.setDate(dueDate.getDate() + 30);
                     dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
                     const diffDays = (dueDate - new Date()) / (1000 * 60 * 60 * 24);
-                    if (order.payment_status === 'unpaid') {
+                    // Only check for overdue if it's unpaid AND not cancelled
+                    if (order.payment_status === 'unpaid' && order.status !== 'cancelled') {
                       if (diffDays < 0) isOverdue = true;
                       else if (diffDays <= 5) isDueSoon = true;
                     }
@@ -510,9 +486,13 @@ export default function AdminOrders() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1">
-                            <p className="font-extrabold text-slate-900 text-base">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+                            {/* Cross out the text and make it gray if cancelled */}
+                            <p className={`font-extrabold text-base ${order.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                              ${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                            </p>
                             <div className="flex items-center gap-2">
-                              {getPaymentBadge(order.payment_status)}
+                              {/* Pass order.status to the badge */}
+                              {getPaymentBadge(order.payment_status, order.status)}
                               {isOverdue && <span className="text-[9px] font-bold text-red-600 uppercase tracking-widest flex items-center gap-1"><AlertCircle size={10} /> Overdue</span>}
                               {isDueSoon && <span className="text-[9px] font-bold text-amber-600 uppercase tracking-widest flex items-center gap-1"><Clock size={10} /> Due Soon</span>}
                             </div>
@@ -572,8 +552,8 @@ export default function AdminOrders() {
                                   
                                   {order.status === 'delivered' && (
                                     <>
-                                      <button onClick={() => generatePDF(order, 'invoice')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2">
-                                        <FileDown size={16} className="text-slate-400" /> Download Invoice
+                                      <button onClick={() => generatePDF(order, order.payment_status === 'paid' ? 'receipt' : 'invoice')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2">
+                                        <FileDown size={16} className="text-slate-400" /> {order.payment_status === 'paid' ? 'Download Receipt' : 'Download Invoice'}
                                       </button>
                                       {order.payment_status === 'unpaid' && (
                                         <button onClick={() => handleMarkAsPaid(order.id)} className="px-5 py-2 bg-emerald-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-emerald-700 active:scale-95 transition-all flex items-center gap-2">
@@ -581,6 +561,12 @@ export default function AdminOrders() {
                                         </button>
                                       )}
                                     </>
+                                  )}
+
+                                  {order.status === 'cancelled' && order.payment_status === 'paid' && (
+                                      <button onClick={() => generatePDF(order, 'receipt')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2">
+                                        <FileDown size={16} className="text-slate-400" /> Download Receipt
+                                      </button>
                                   )}
                                 </div>
                               </div>
@@ -657,7 +643,8 @@ export default function AdminOrders() {
                                     </div>
                                     <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-medium text-slate-500">
                                       <div className="flex items-center gap-2"><CreditCard size={14} className="text-slate-400 shrink-0" /><span className="font-bold text-slate-700 capitalize">{order.payment_method.replace('_', ' ')}</span></div>
-                                      {getPaymentBadge(order.payment_status)}
+                                      {/* Pass order.status here as well */}
+                                      {getPaymentBadge(order.payment_status, order.status)}
                                     </div>
                                     {isNet30 && (<div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100"><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Due Date</span><span className={`text-xs font-bold px-2 py-0.5 rounded ${isOverdue ? 'bg-red-100 text-red-700 border border-red-200 shadow-sm' : isDueSoon ? 'bg-amber-100 text-amber-700 border border-amber-200 shadow-sm' : 'text-slate-700 bg-slate-100 border border-slate-200'}`}>{dueDateDisplay}</span></div>)}
                                   </div>

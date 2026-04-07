@@ -92,7 +92,9 @@ export default function MyOrders() {
     return <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{status.replace(/_/g, ' ')}</span>;
   };
 
-  const getPaymentStatusBadge = (paymentStatus) => {
+  const getPaymentStatusBadge = (paymentStatus, orderStatus) => {
+    // Return Voided if the order is cancelled
+    if (orderStatus === 'cancelled') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-400 border border-slate-200 shadow-sm">Voided</span>;
     if (paymentStatus === 'paid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-600 border border-emerald-200 shadow-sm">Paid</span>;
     if (paymentStatus === 'unpaid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-50 text-amber-600 border border-amber-200 shadow-sm">Unpaid</span>;
     return null;
@@ -321,7 +323,8 @@ export default function MyOrders() {
                     const dueDate = new Date(baseDate);
                     dueDate.setDate(dueDate.getDate() + 30);
                     dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-                    isOverdue = order.payment_status === 'unpaid' && new Date() > dueDate;
+                    // Prevent cancelled orders from showing as overdue
+                    isOverdue = order.payment_status === 'unpaid' && order.status !== 'cancelled' && new Date() > dueDate;
                   }
                   
                   return (
@@ -348,11 +351,15 @@ export default function MyOrders() {
                         </td>
                         
                         <td className="px-6 py-4">
-                          <p className="font-extrabold text-slate-900 text-base">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+                          {/* Cross out the text and make it gray if cancelled */}
+                          <p className={`font-extrabold text-base ${order.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                            ${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                          </p>
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1">
-                            {getPaymentStatusBadge(order.payment_status)}
+                            {/* Pass order.status to check for cancelled state */}
+                            {getPaymentStatusBadge(order.payment_status, order.status)}
                             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
                               <CreditCard size={10} /> {order.payment_method.replace(/_/g, ' ')}
                             </span>
@@ -494,7 +501,9 @@ export default function MyOrders() {
                                       <div className="h-px w-full bg-slate-200/60 my-2"></div>
                                       <div className="flex justify-between items-end">
                                         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
-                                        <span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+                                        <span className={`text-2xl font-extrabold tracking-tight leading-none ${order.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                                          ${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                        </span>
                                       </div>
                                     </div>
                                     
@@ -503,7 +512,8 @@ export default function MyOrders() {
                                         <CreditCard size={14} className="text-slate-400 shrink-0" />
                                         <span className="font-bold text-slate-700 capitalize">{order.payment_method.replace('_', ' ')}</span>
                                       </div>
-                                      {getPaymentStatusBadge(order.payment_status)}
+                                      {/* Pass order.status to check for cancelled state here as well */}
+                                      {getPaymentStatusBadge(order.payment_status, order.status)}
                                     </div>
 
                                     {isNet30 && (

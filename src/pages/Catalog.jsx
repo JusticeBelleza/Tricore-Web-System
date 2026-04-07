@@ -32,7 +32,6 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
   const preventPurchase = isOutOfStock && !continueSelling;
 
   return (
-    // 🚀 RESPONSIVE CARD: List on Mobile, Grid on Desktop
     <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-lg transition-all flex flex-row sm:flex-col overflow-hidden group ${preventPurchase ? 'opacity-80' : ''}`}>
       
       <div onClick={onClick} className="w-[120px] sm:w-full shrink-0 aspect-[3/4] sm:aspect-[4/3] bg-slate-50/50 relative p-2 sm:p-4 border-r sm:border-r-0 sm:border-b border-slate-100 flex items-center justify-center cursor-pointer overflow-hidden">
@@ -136,7 +135,6 @@ export default function Catalog() {
   const pageSize = 24; 
   const [searchTerm, setSearchTerm] = useState('');
   
-  // 🚀 CUSTOM DROPDOWN STATE
   const [selectedCategory, setSelectedCategory] = useState('All Categories');
   const [isCategoryOpen, setIsCategoryOpen] = useState(false);
   const categoryDropdownRef = useRef(null);
@@ -148,7 +146,6 @@ export default function Catalog() {
 
   const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
 
-  // Handle clicking outside custom dropdown
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (categoryDropdownRef.current && !categoryDropdownRef.current.contains(event.target)) {
@@ -182,6 +179,7 @@ export default function Catalog() {
   }, [cart, cartLoaded, profile?.id, cartKey]);
 
   const [viewingFamily, setViewingFamily] = useState(null); 
+  const [isClosing, setIsClosing] = useState(false); // 🚀 NEW: Tracks closing animation state
   const [toast, setToast] = useState({ show: false, message: '' });
   const [isAddingToCart, setIsAddingToCart] = useState(false);
 
@@ -302,6 +300,16 @@ export default function Catalog() {
     setSelectedVariantId(defaultVariants[0]?.id || '');
     setQuantity(1);
     setIsAddingToCart(false); 
+    setIsClosing(false); // Reset closing state
+  };
+
+  // 🚀 NEW: Close Modal Handler
+  const handleCloseModal = () => {
+    setIsClosing(true);
+    setTimeout(() => {
+      setViewingFamily(null);
+      setIsClosing(false);
+    }, 300); // Matches the animation duration below
   };
 
   const handleSizeChange = (newProductId) => {
@@ -335,7 +343,7 @@ export default function Catalog() {
     });
 
     setTimeout(() => {
-      setViewingFamily(null); 
+      handleCloseModal(); // Smooth close after adding
       setIsAddingToCart(false);
       setToast({ show: true, message: `Added ${quantity}x ${variant.name} to cart.` });
       setTimeout(() => { setToast({ show: false, message: '' }); }, 3000);
@@ -361,6 +369,39 @@ export default function Catalog() {
   return (
     <div className="space-y-4 sm:space-y-6 pb-20 relative max-w-7xl mx-auto px-4 sm:px-6">
       
+      {/* 🚀 CSS ANIMATIONS: Now supports opening AND closing smoothly! */}
+      <style>
+        {`
+          /* Opening Animations */
+          @keyframes modalOverlayFade { from { opacity: 0; } to { opacity: 1; } }
+          @keyframes modalSlideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+          @keyframes modalZoomIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+          
+          /* Closing Animations */
+          @keyframes modalOverlayFadeOut { from { opacity: 1; } to { opacity: 0; } }
+          @keyframes modalSlideDown { from { transform: translateY(0); } to { transform: translateY(100%); } }
+          @keyframes modalZoomOut { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(0.95); } }
+
+          /* Toast Animation */
+          @keyframes toastSlide { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+          
+          /* Classes */
+          .modal-overlay-anim { animation: modalOverlayFade 0.3s ease-out forwards; }
+          .modal-overlay-close-anim { animation: modalOverlayFadeOut 0.3s ease-in forwards; }
+          
+          .modal-content-anim { animation: modalSlideUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+          .modal-content-close-anim { animation: modalSlideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+          
+          .toast-slide-anim { animation: toastSlide 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+          /* Desktop Zoom overrides instead of sliding */
+          @media (min-width: 640px) {
+            .modal-content-anim { animation: modalZoomIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+            .modal-content-close-anim { animation: modalZoomOut 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+          }
+        `}
+      </style>
+
       {/* Header Area */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 sm:gap-6 pb-2 pt-4">
         <div>
@@ -417,7 +458,7 @@ export default function Catalog() {
             />
           </div>
 
-          {/* 🚀 CUSTOM DROPDOWN FIX: Exactly matches container width, solves OS bugs */}
+          {/* 🚀 CUSTOM DROPDOWN FIX */}
           <div className="relative w-full sm:w-64 shrink-0" ref={categoryDropdownRef}>
             <button 
               onClick={() => setIsCategoryOpen(!isCategoryOpen)}
@@ -486,15 +527,15 @@ export default function Catalog() {
         </div>
       )}
 
-      {/* 🚀 FIXED PRODUCT MODAL: Solved layout bug for mobile scrolling */}
+      {/* 🚀 FIXED PRODUCT MODAL: Perfect iOS-style Slide Up for Mobile */}
       {viewingFamily && activeProduct && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm sm:p-4 pb-0 sm:pb-4">
+        <div className={`fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm sm:p-4 pb-0 sm:pb-4 ${isClosing ? 'modal-overlay-close-anim' : 'modal-overlay-anim'}`}>
           
           {/* Main Modal Container */}
-          <div className="bg-white w-full max-w-4xl h-[90dvh] sm:h-auto sm:max-h-[85dvh] flex flex-col sm:flex-row rounded-t-3xl sm:rounded-3xl shadow-2xl animate-in slide-in-from-bottom-8 sm:slide-in-from-bottom-0 sm:zoom-in-95 duration-200 overflow-hidden relative border-t sm:border border-slate-100">
+          <div className={`bg-white w-full max-w-4xl h-[90dvh] sm:h-auto sm:max-h-[85dvh] flex flex-col sm:flex-row rounded-t-[2rem] sm:rounded-3xl shadow-2xl overflow-hidden relative border-t sm:border border-slate-100 ${isClosing ? 'modal-content-close-anim' : 'modal-content-anim'}`}>
             
             {/* Close Button */}
-            <button onClick={() => setViewingFamily(null)} className="absolute top-3 right-3 sm:top-4 sm:right-4 z-[60] w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center bg-white/90 backdrop-blur border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-full shadow-md transition-all">
+            <button onClick={handleCloseModal} className="absolute top-3 right-3 sm:top-4 sm:right-4 z-[60] w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center bg-white/90 backdrop-blur border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-full shadow-md transition-all">
               <X size={18} />
             </button>
             
@@ -606,7 +647,7 @@ export default function Catalog() {
 
       {/* --- TOAST NOTIFICATION --- */}
       {toast.show && (
-        <div className="fixed bottom-20 sm:bottom-8 right-4 sm:right-8 z-[100] flex items-center gap-2 sm:gap-3 bg-slate-900 text-white px-4 py-3 sm:px-5 sm:py-3.5 rounded-xl sm:rounded-2xl shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-300">
+        <div className="fixed bottom-20 sm:bottom-8 right-4 sm:right-8 z-[100] flex items-center gap-2 sm:gap-3 bg-slate-900 text-white px-4 py-3 sm:px-5 sm:py-3.5 rounded-xl sm:rounded-2xl shadow-2xl toast-slide-anim">
           <div className="bg-emerald-500/20 text-emerald-400 p-1 sm:p-1.5 rounded-full"><CheckCircle2 size={16} strokeWidth={2.5} className="sm:w-5 sm:h-5" /></div>
           <p className="text-xs sm:text-sm font-medium pr-1 sm:pr-2">{toast.message}</p>
         </div>

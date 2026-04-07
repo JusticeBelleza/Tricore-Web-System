@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Search, Car, Plus, Trash2, Hash, Info, CheckCircle2, XCircle, X, Truck } from 'lucide-react';
+import { Search, Car, Plus, Trash2, Hash, Info, CheckCircle2, XCircle, X, Truck, Pencil } from 'lucide-react';
 
 export default function FleetManagement() {
   const [vehicles, setVehicles] = useState([]);
@@ -10,6 +10,7 @@ export default function FleetManagement() {
   // Modal & Form State
   const [showAddModal, setShowAddModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editingId, setEditingId] = useState(null); // Tracks if we are editing
   
   // Confirmation and Notification States
   const [confirmAction, setConfirmAction] = useState({ show: false, title: '', message: '', onConfirm: null, isDelete: false });
@@ -46,31 +47,62 @@ export default function FleetManagement() {
     setTimeout(() => setNotification({ show: false, message: '', isError: false }), 4000);
   };
 
-  // --- ADD VEHICLE LOGIC ---
-  const triggerAddConfirmation = (e) => {
+  // --- OPEN MODALS ---
+  const openAddModal = () => {
+    setEditingId(null);
+    setFormData({ name: '', type: 'Cargo Van', make: '', model: '', year: '', vin: '', license_plate: '' });
+    setShowAddModal(true);
+  };
+
+  const openEditModal = (vehicle) => {
+    setEditingId(vehicle.id);
+    setFormData({
+      name: vehicle.name || '',
+      type: vehicle.type || 'Cargo Van',
+      make: vehicle.make || '',
+      model: vehicle.model || '',
+      year: vehicle.year || '',
+      vin: vehicle.vin || '',
+      license_plate: vehicle.license_plate || ''
+    });
+    setShowAddModal(true);
+  };
+
+  // --- SAVE/UPDATE VEHICLE LOGIC ---
+  const triggerSaveConfirmation = (e) => {
     e.preventDefault(); 
     setConfirmAction({
       show: true,
-      title: 'Confirm New Vehicle',
-      message: `Are you sure you want to add ${formData.name} to the fleet?`,
+      title: editingId ? 'Update Vehicle' : 'Confirm New Vehicle',
+      message: editingId ? `Are you sure you want to update ${formData.name}?` : `Are you sure you want to add ${formData.name} to the fleet?`,
       isDelete: false,
-      onConfirm: executeAddVehicle
+      onConfirm: executeSaveVehicle
     });
   };
 
-  const executeAddVehicle = async () => {
+  const executeSaveVehicle = async () => {
     setConfirmAction({ show: false }); 
     setIsSubmitting(true);
     try {
-      const { data, error } = await supabase.from('vehicles').insert([formData]).select().single();
-      if (error) throw error;
+      if (editingId) {
+        // UPDATE existing vehicle
+        const { data, error } = await supabase.from('vehicles').update(formData).eq('id', editingId).select().single();
+        if (error) throw error;
+        
+        setVehicles(vehicles.map(v => v.id === editingId ? data : v).sort((a, b) => a.name.localeCompare(b.name)));
+        showToast('Vehicle updated successfully!');
+      } else {
+        // INSERT new vehicle
+        const { data, error } = await supabase.from('vehicles').insert([formData]).select().single();
+        if (error) throw error;
+        
+        setVehicles([...vehicles, data].sort((a, b) => a.name.localeCompare(b.name)));
+        showToast('Vehicle added to fleet successfully!');
+      }
       
-      setVehicles([...vehicles, data].sort((a, b) => a.name.localeCompare(b.name)));
       setShowAddModal(false);
-      setFormData({ name: '', type: 'Cargo Van', make: '', model: '', year: '', vin: '', license_plate: '' });
-      showToast('Vehicle added to fleet successfully!');
     } catch (error) {
-      showToast(`Failed to add vehicle: ${error.message}`, true);
+      showToast(`Failed to save vehicle: ${error.message}`, true);
     } finally {
       setIsSubmitting(false);
     }
@@ -120,7 +152,7 @@ export default function FleetManagement() {
           </div>
         </div>
         <button 
-          onClick={() => setShowAddModal(true)}
+          onClick={openAddModal}
           className="px-6 py-3 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center gap-2"
         >
           <Plus size={16} /> Add New Vehicle
@@ -204,13 +236,22 @@ export default function FleetManagement() {
                   </td>
 
                   <td className="px-6 py-4 text-right">
-                    <button 
-                      onClick={() => triggerDeleteConfirmation(vehicle.id, vehicle.name)}
-                      className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 active:scale-95 rounded-xl transition-all shadow-sm border border-transparent hover:border-red-100"
-                      title="Remove Vehicle"
-                    >
-                      <Trash2 size={18} />
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      <button 
+                        onClick={() => openEditModal(vehicle)}
+                        className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 active:scale-95 rounded-xl transition-all shadow-sm border border-transparent hover:border-blue-100"
+                        title="Edit Vehicle"
+                      >
+                        <Pencil size={18} />
+                      </button>
+                      <button 
+                        onClick={() => triggerDeleteConfirmation(vehicle.id, vehicle.name)}
+                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 active:scale-95 rounded-xl transition-all shadow-sm border border-transparent hover:border-red-100"
+                        title="Remove Vehicle"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -219,16 +260,19 @@ export default function FleetManagement() {
         </div>
       )}
 
-      {/* --- ADD VEHICLE MODAL --- */}
+      {/* --- ADD / EDIT VEHICLE MODAL --- */}
       {showAddModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-xl flex flex-col border border-slate-100 overflow-hidden">
             <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-              <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><Truck size={18}/> Add New Vehicle</h3>
+              <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
+                {editingId ? <Pencil size={18}/> : <Truck size={18}/>} 
+                {editingId ? 'Edit Vehicle' : 'Add New Vehicle'}
+              </h3>
               <button onClick={() => setShowAddModal(false)} className="p-1.5 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
             </div>
             
-            <form onSubmit={triggerAddConfirmation} className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+            <form onSubmit={triggerSaveConfirmation} className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
               
               <div>
                 <h4 className="text-sm font-bold text-slate-900 mb-3 border-b border-slate-100 pb-2">Vehicle Identity</h4>
@@ -286,7 +330,7 @@ export default function FleetManagement() {
               <div className="pt-2 flex gap-3">
                 <button type="button" onClick={() => setShowAddModal(false)} className="w-full py-3.5 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all">Cancel</button>
                 <button type="submit" disabled={isSubmitting} className="w-full py-3.5 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all">
-                  {isSubmitting ? 'Saving...' : <><Plus size={16} /> Save Vehicle</>}
+                  {isSubmitting ? 'Saving...' : (editingId ? <><Pencil size={16} /> Update Vehicle</> : <><Plus size={16} /> Save Vehicle</>)}
                 </button>
               </div>
             </form>

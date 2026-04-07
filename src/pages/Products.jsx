@@ -4,7 +4,7 @@ import {
   Bold, Italic, Underline, List, ListOrdered, AlignLeft, AlignCenter, AlignRight, 
   Upload, X, Plus, Image as ImageIcon, Download, FileUp, FileDown, CheckCircle2, 
   Eye, Pencil, Trash2, Search, ChevronRight, ChevronDown, Images, Trash, Check, 
-  PackageOpen, Layers, Tag, Box, Hash, ChevronLeft, XCircle
+  PackageOpen, Layers, Tag, Box, Hash, ChevronLeft, XCircle, AlertTriangle, AlertCircle
 } from 'lucide-react';
 
 export default function Products() {
@@ -16,13 +16,14 @@ export default function Products() {
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  // 🚀 SERVER-SIDE PAGINATION & SEARCH
+  // 🚀 SERVER-SIDE PAGINATION, SEARCH, & TABS
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const pageSize = 20;
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [activeTab, setActiveTab] = useState('all');
 
   // Media Library
   const [showMediaLibrary, setShowMediaLibrary] = useState(false);
@@ -58,7 +59,6 @@ export default function Products() {
     alignLeft: false, alignCenter: false, alignRight: false
   });
 
-  // Debouncer
   useEffect(() => {
     const handler = setTimeout(() => {
       setDebouncedSearch(searchTerm);
@@ -69,7 +69,7 @@ export default function Products() {
 
   useEffect(() => {
     setPage(0);
-  }, [selectedCategory]);
+  }, [selectedCategory, activeTab]);
 
   useEffect(() => {
     fetchCategories();
@@ -77,7 +77,8 @@ export default function Products() {
 
   useEffect(() => {
     fetchProducts();
-  }, [debouncedSearch, selectedCategory, page]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, selectedCategory, activeTab, page]);
 
   useEffect(() => {
     if (showForm && editorRef.current) {
@@ -85,7 +86,7 @@ export default function Products() {
         editorRef.current.innerHTML = formData.description || '';
       }
     }
-  }, [showForm]); 
+  }, [showForm, formData.description]); 
 
   const fetchCategories = async () => {
     try {
@@ -102,14 +103,14 @@ export default function Products() {
   const fetchProducts = async () => {
     setLoading(true);
     try {
+      // 🚀 FIXED: Using 'multiplier' to match your database, and inner join on inventory for filtering
       let query = supabase.from('products').select(`
           *,
-          inventory ( base_units_on_hand, base_units_reserved ),
+          inventory!inner ( base_units_on_hand, base_units_reserved ),
           product_variants ( id, name, multiplier, sku, price )
         `, { count: 'exact' });
 
       if (debouncedSearch) {
-        // Search by Name or SKU
         query = query.or(`name.ilike.%${debouncedSearch}%,base_sku.ilike.%${debouncedSearch}%`);
       }
 
@@ -117,9 +118,15 @@ export default function Products() {
         query = query.eq('category', selectedCategory);
       }
 
+      // 🚀 FIXED: Replaced supabase.raw with a static number (10) for Low Stock
+      if (activeTab === 'low_stock') {
+        query = query.gt('inventory.base_units_on_hand', 0).lte('inventory.base_units_on_hand', 10);
+      } else if (activeTab === 'out_of_stock') {
+        query = query.lte('inventory.base_units_on_hand', 0);
+      }
+
       query = query.order('name');
 
-      // Pagination
       const from = page * pageSize;
       const to = from + pageSize - 1;
       query = query.range(from, to);
@@ -153,7 +160,6 @@ export default function Products() {
     showToast('Template Downloaded', 'The CSV import template has been saved.');
   };
 
-  // 🚀 REWRITTEN: Forces a full fetch to guarantee a complete CSV Export!
   const exportCSV = async () => {
     setExporting(true);
     showToast('Exporting...', 'Gathering all catalog data for export.');
@@ -202,7 +208,7 @@ export default function Products() {
       }
       showToast('Import Complete', 'Products imported successfully!');
       fetchProducts();
-      fetchCategories(); // Refresh categories
+      fetchCategories(); 
     } catch (error) {
       showToast('Import Failed', 'Failed to parse CSV.', true);
     } finally {
@@ -412,9 +418,14 @@ export default function Products() {
     });
   };
 
+  // UI Class Helpers
   const inputClass = "w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 outline-none text-sm font-medium transition-all placeholder:text-slate-400";
   const labelClass = "block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5";
   const getFormatClass = (isActive) => `p-1.5 rounded-lg transition-all ${isActive ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-200 hover:text-slate-900'}`;
+  
+  const tabBaseClass = "flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95";
+  const tabActiveClass = `${tabBaseClass} bg-slate-900 text-white shadow-md`;
+  const tabInactiveClass = `${tabBaseClass} text-slate-500 hover:text-slate-900 hover:bg-slate-200/50`;
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12 relative">
@@ -444,6 +455,11 @@ export default function Products() {
 
       {/* Filters Row */}
       <div className="flex flex-col sm:flex-row gap-3 bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full sm:w-auto overflow-x-auto shrink-0">
+          <button onClick={() => setActiveTab('all')} className={activeTab === 'all' ? tabActiveClass : tabInactiveClass}><Layers size={16}/> All</button>
+          <button onClick={() => setActiveTab('low_stock')} className={activeTab === 'low_stock' ? tabActiveClass : tabInactiveClass}><AlertTriangle size={16}/> Low Stock</button>
+          <button onClick={() => setActiveTab('out_of_stock')} className={activeTab === 'out_of_stock' ? tabActiveClass : tabInactiveClass}><AlertCircle size={16}/> Out of Stock</button>
+        </div>
         <div className="relative flex-1">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
           <input type="text" placeholder="Search by Name or SKU..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-100 outline-none text-sm font-medium transition-all" />
@@ -675,7 +691,7 @@ export default function Products() {
                         <input type="text" placeholder="Variant SKU" value={v.sku} onChange={e => updateVariant(i, 'sku', e.target.value)} required className={`${inputClass} font-mono uppercase`} />
                       </div>
                       <div className="col-span-1 sm:col-span-2">
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Qty Multiplier</label>
+                        <label className="block text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-1.5">Qty Multiplier</label>
                         <input type="number" placeholder="Qty Multiplier" value={v.multiplier} onChange={e => updateVariant(i, 'multiplier', e.target.value)} required min="1" className={inputClass} />
                       </div>
                       <div className="col-span-1 sm:col-span-3">
