@@ -355,7 +355,7 @@ export default function FleetManagement() {
         </div>
       )}
 
-      {/* --- MODERN TOAST NOTIFICATION --- */}
+      {/* --- TOAST NOTIFICATION --- */}
       {notification.show && (
         <div className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-[120] flex items-center gap-3 bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-300">
           <div className={`p-1.5 rounded-full ${notification.isError ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>

@@ -5,13 +5,15 @@ import {
   Search, Package, CheckCircle2, XCircle, Clock, 
   Truck, X, AlertCircle, PackageCheck, User, Car, Hash, Building, MapPin,
   ChevronDown, DollarSign, CreditCard, FileText, Calendar, ShieldAlert, Phone, FileDown, Mail,
-  ChevronLeft, ChevronRight, AlertTriangle, Receipt
+  ChevronLeft, ChevronRight, AlertTriangle, Receipt, Edit3, RefreshCw, Plus
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 export default function AdminOrders() {
   const { profile } = useAuth(); 
+  const isWarehouse = profile?.role === 'warehouse';
+
   const [orders, setOrders] = useState([]);
   const [drivers, setDrivers] = useState([]); 
   const [loading, setLoading] = useState(true);
@@ -27,14 +29,21 @@ export default function AdminOrders() {
   const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, shipped: 0, completed: 0, due: 0, paid: 0, cancelled: 0 });
   const [newPendingCount, setNewPendingCount] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
+  
   const [confirmAction, setConfirmAction] = useState({ show: false, title: '', message: '', onConfirm: null });
+  const [cancelReason, setCancelReason] = useState(''); 
+
+  const [itemAction, setItemAction] = useState({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+  
+  const [availableVariants, setAvailableVariants] = useState([]);
+  const [substituteSearch, setSubstituteSearch] = useState('');
+  const [selectedSubstitute, setSelectedSubstitute] = useState(null);
+
   const [notification, setNotification] = useState({ show: false, message: '', isError: false });
 
   useEffect(() => {
     if (notification.show) {
-      const timer = setTimeout(() => {
-        setNotification({ ...notification, show: false });
-      }, 3000);
+      const timer = setTimeout(() => setNotification({ ...notification, show: false }), 3000);
       return () => clearTimeout(timer);
     }
   }, [notification.show]);
@@ -53,6 +62,20 @@ export default function AdminOrders() {
       window.dispatchEvent(new Event('pendingViewed')); 
     }
   }, [activeTab, orders]);
+
+  // Fetch variants for Substitute or Add modals
+  useEffect(() => {
+    if (itemAction.show && (itemAction.type === 'substitute' || itemAction.type === 'add') && availableVariants.length === 0) {
+      const fetchVariants = async () => {
+        const { data, error } = await supabase
+          .from('product_variants')
+          .select('id, name, price, sku, products(name, base_sku)')
+          .order('name', { ascending: true });
+        if (!error && data) setAvailableVariants(data);
+      };
+      fetchVariants();
+    }
+  }, [itemAction.show, itemAction.type]);
 
   useEffect(() => {
     if (profile?.id) {
@@ -80,24 +103,15 @@ export default function AdminOrders() {
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').gt('created_at', lastViewedPending),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'shipped'),
-        // Completed: Delivered AND Unpaid
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').eq('payment_status', 'unpaid'),
-        // Due: Delivered AND Unpaid AND Net 30 AND Old enough (Strictly NOT cancelled)
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
-        // Paid: Any order that is paid
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('payment_status', 'paid'),
-        // Cancelled:
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'cancelled')
       ]);
       
       setTabCounts({ 
-        pending: pendingReq.count || 0, 
-        processing: processingReq.count || 0, 
-        shipped: shippedReq.count || 0, 
-        completed: completedReq.count || 0,
-        due: dueReq.count || 0,
-        paid: paidReq.count || 0,
-        cancelled: cancelledReq.count || 0 
+        pending: pendingReq.count || 0, processing: processingReq.count || 0, shipped: shippedReq.count || 0, 
+        completed: completedReq.count || 0, due: dueReq.count || 0, paid: paidReq.count || 0, cancelled: cancelledReq.count || 0 
       });
       setNewPendingCount(newPendingReq.count || 0);
     } catch (error) { console.error('Error fetching tab counts:', error); }
@@ -114,7 +128,7 @@ export default function AdminOrders() {
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( full_name, contact_number, email ),
-          order_items ( id, quantity_variants, unit_price, line_total, product_variants ( name, sku, products(name, base_sku) ) )
+          order_items ( id, quantity_variants, unit_price, line_total, status, cancellation_reason, product_variants ( id, name, sku, price, products(name, base_sku) ) )
         `, { count: 'exact' }); 
 
       if (activeTab === 'pending') query = query.eq('status', 'pending');
@@ -126,7 +140,6 @@ export default function AdminOrders() {
       else if (activeTab === 'due') {
         const thresholdDate = new Date();
         thresholdDate.setDate(thresholdDate.getDate() - 25);
-        // STRICTLY DEMAND STATUS IS DELIVERED FOR DUE PAYMENTS
         query = query.eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
       }
 
@@ -134,41 +147,30 @@ export default function AdminOrders() {
 
       const sortColumn = (activeTab === 'completed' || activeTab === 'cancelled' || activeTab === 'paid') ? 'updated_at' : 'created_at';
       query = query.order(sortColumn, { ascending: false });
-
-      const from = page * pageSize;
-      const to = from + pageSize - 1;
-      query = query.range(from, to);
+      query = query.range(page * pageSize, (page * pageSize) + pageSize - 1);
 
       const { data, count, error } = await query;
       if (error) throw error;
       setOrders(data || []);
       setTotalCount(count || 0);
-
     } catch (error) { console.error('Error fetching data:', error.message); } finally { setLoading(false); }
   };
 
   const toggleOrderDetails = (orderId) => setExpandedOrderId(expandedOrderId === orderId ? null : orderId);
 
-  const executeOrderStatusUpdate = async (orderId, newStatus) => {
+  const executeOrderStatusUpdate = async (orderId, newStatus, reason = null) => {
     try {
       const currentOrder = orders.find(o => o.id === orderId);
       if (!currentOrder) return;
 
-      const updatePayload = { 
-        status: newStatus, 
-        updated_at: new Date().toISOString() 
-      };
-      
+      const updatePayload = { status: newStatus, updated_at: new Date().toISOString() };
       if (newStatus === 'processing') updatePayload.processing_at = new Date().toISOString();
-      if (newStatus === 'cancelled') updatePayload.cancelled_at = new Date().toISOString();
+      if (newStatus === 'cancelled') {
+        updatePayload.cancelled_at = new Date().toISOString();
+        updatePayload.cancellation_reason = reason; 
+      }
 
-      const { data, error } = await supabase
-        .from('orders')
-        .update(updatePayload)
-        .eq('id', orderId)
-        .eq('status', currentOrder.status)
-        .select();
-        
+      const { data, error } = await supabase.from('orders').update(updatePayload).eq('id', orderId).eq('status', currentOrder.status).select();
       if (error) throw error; 
 
       if (data && data.length === 0) {
@@ -179,17 +181,196 @@ export default function AdminOrders() {
 
       setNotification({ show: true, isError: false, message: newStatus === 'processing' ? 'Order sent to warehouse.' : 'Order rejected.' });
       window.dispatchEvent(new Event('orderStatusChanged'));
-    } catch (error) { 
-      setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` }); 
-    }
+    } catch (error) { setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` }); }
   };
 
   const handleStatusChangeClick = (orderId, newStatus) => {
     setConfirmAction({
       show: true, title: newStatus === 'processing' ? 'Accept Order?' : 'Reject Order?',
       message: newStatus === 'processing' ? 'Approve and send to warehouse?' : 'Cancel and reject this order?',
-      onConfirm: () => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); executeOrderStatusUpdate(orderId, newStatus); }
+      onConfirm: (reason) => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); executeOrderStatusUpdate(orderId, newStatus, reason); }
     });
+  };
+
+  // 🚀 ITEM-LEVEL: ADD NEW PRODUCT (WITH TOTAL BASE UNITS)
+  const executeItemAdd = async () => {
+    const { order, newQty } = itemAction;
+    try {
+      if (!selectedSubstitute) throw new Error("Please select a product to add.");
+      const parsedQty = parseInt(newQty, 10);
+      if (isNaN(parsedQty) || parsedQty <= 0) throw new Error("Please enter a valid quantity.");
+
+      const newUnitPrice = Number(selectedSubstitute.price || 0);
+      const newLineTotal = parsedQty * newUnitPrice;
+
+      let newSubtotal = newLineTotal; 
+      order.order_items.forEach(oi => {
+        if (oi.status !== 'cancelled') {
+          newSubtotal += Number(oi.line_total || 0);
+        }
+      });
+
+      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+
+      const { data: newItemData, error: itemError } = await supabase
+        .from('order_items')
+        .insert([{
+          order_id: order.id,
+          product_variant_id: selectedSubstitute.id,
+          quantity_variants: parsedQty,
+          unit_price: newUnitPrice,
+          line_total: newLineTotal,
+          status: 'active',
+          total_base_units: parsedQty // 🚀 Fixed constraint error
+        }])
+        .select()
+        .single();
+
+      if (itemError) throw itemError;
+
+      const { error: orderError } = await supabase
+        .from('orders')
+        .update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() })
+        .eq('id', order.id);
+
+      if (orderError) throw orderError;
+
+      const optimisticItem = { ...newItemData, product_variants: selectedSubstitute };
+      setOrders(prevOrders => prevOrders.map(o => {
+        if (o.id === order.id) {
+          return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: [...o.order_items, optimisticItem] };
+        }
+        return o;
+      }));
+
+      setNotification({ show: true, isError: false, message: 'Product added successfully!' });
+      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+      setSelectedSubstitute(null);
+      setSubstituteSearch('');
+    } catch (error) { setNotification({ show: true, isError: true, message: error.message }); }
+  };
+
+  // 🚀 ITEM-LEVEL: EDIT QUANTITY (WITH TOTAL BASE UNITS)
+  const executeItemEdit = async () => {
+    const { order, item, newQty } = itemAction;
+    try {
+      const parsedQty = parseInt(newQty, 10);
+      if (isNaN(parsedQty) || parsedQty <= 0) throw new Error("Please enter a valid quantity greater than 0.");
+
+      const unitPrice = Number(item.unit_price || 0);
+      const newLineTotal = parsedQty * unitPrice;
+
+      let newSubtotal = 0;
+      order.order_items.forEach(oi => {
+        if (oi.id === item.id) {
+          newSubtotal += newLineTotal; 
+        } else if (oi.status !== 'cancelled') {
+          newSubtotal += Number(oi.line_total || 0); 
+        }
+      });
+
+      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+
+      const { error: itemError } = await supabase.from('order_items')
+        .update({ 
+          quantity_variants: parsedQty, 
+          line_total: newLineTotal,
+          total_base_units: parsedQty // 🚀 Fixed constraint error
+        }).eq('id', item.id);
+      
+      if (itemError) throw itemError;
+
+      const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
+      if (orderError) throw orderError;
+
+      setOrders(prevOrders => prevOrders.map(o => {
+        if (o.id === order.id) {
+          const updatedItems = o.order_items.map(oi => oi.id === item.id ? { ...oi, quantity_variants: parsedQty, line_total: newLineTotal } : oi);
+          return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: updatedItems };
+        }
+        return o;
+      }));
+
+      setNotification({ show: true, isError: false, message: 'Item quantity and totals updated!' });
+      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+    } catch (error) { setNotification({ show: true, isError: true, message: error.message }); }
+  };
+
+  // 🚀 ITEM-LEVEL: SUBSTITUTE PRODUCT (WITH TOTAL BASE UNITS)
+  const executeItemSubstitute = async () => {
+    const { order, item } = itemAction;
+    try {
+      if (!selectedSubstitute) throw new Error("Please select a product to substitute.");
+      
+      const newUnitPrice = Number(selectedSubstitute.price || 0);
+      const qty = Number(item.quantity_variants || 1);
+      const newLineTotal = qty * newUnitPrice;
+
+      let newSubtotal = 0;
+      order.order_items.forEach(oi => {
+        if (oi.id === item.id) {
+          newSubtotal += newLineTotal;
+        } else if (oi.status !== 'cancelled') {
+          newSubtotal += Number(oi.line_total || 0);
+        }
+      });
+
+      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+
+      const { error: itemError } = await supabase
+        .from('order_items')
+        .update({ 
+          product_variant_id: selectedSubstitute.id, 
+          unit_price: newUnitPrice, 
+          line_total: newLineTotal,
+          total_base_units: qty // 🚀 Fixed constraint error
+        })
+        .eq('id', item.id);
+      
+      if (itemError) throw itemError;
+      
+      const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
+      if (orderError) throw orderError;
+
+      setOrders(prevOrders => prevOrders.map(o => {
+        if (o.id === order.id) {
+          const updatedItems = o.order_items.map(oi => oi.id === item.id ? { ...oi, unit_price: newUnitPrice, line_total: newLineTotal, product_variants: selectedSubstitute } : oi);
+          return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: updatedItems };
+        }
+        return o;
+      }));
+
+      setNotification({ show: true, isError: false, message: 'Product successfully substituted!' });
+      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+      setSelectedSubstitute(null);
+      setSubstituteSearch('');
+    } catch (error) { setNotification({ show: true, isError: true, message: error.message }); }
+  };
+
+  // 🚀 ITEM-LEVEL: CANCEL LOGIC
+  const executeItemCancel = async () => {
+    const { order, item, reason } = itemAction;
+    setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+
+    try {
+      let newSubtotal = 0;
+      order.order_items.forEach(oi => {
+        if (oi.id !== item.id && oi.status !== 'cancelled') {
+          newSubtotal += Number(oi.line_total || 0);
+        }
+      });
+
+      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+
+      const { error: itemError } = await supabase.from('order_items').update({ status: 'cancelled', cancellation_reason: reason }).eq('id', item.id);
+      if (itemError) throw itemError;
+
+      const { error: deductError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
+      if (deductError) throw deductError;
+
+      setNotification({ show: true, isError: false, message: 'Item cancelled and totals updated.' });
+      fetchOrdersAndDrivers();
+    } catch (error) { setNotification({ show: true, isError: true, message: `Cancel failed: ${error.message}` }); }
   };
 
   const executeMarkAsPaid = async (orderId) => {
@@ -198,9 +379,7 @@ export default function AdminOrders() {
       if (error) throw error;
       setNotification({ show: true, isError: false, message: 'Order successfully marked as Paid!' });
       window.dispatchEvent(new Event('orderStatusChanged'));
-    } catch (error) { 
-      setNotification({ show: true, isError: true, message: `Failed to update: ${error.message}` }); 
-    }
+    } catch (error) { setNotification({ show: true, isError: true, message: `Failed to update: ${error.message}` }); }
   };
 
   const handleMarkAsPaid = (orderId) => {
@@ -216,10 +395,8 @@ export default function AdminOrders() {
       img.crossOrigin = "Anonymous";
       img.onload = () => {
         const canvas = document.createElement("canvas");
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0);
+        canvas.width = img.width; canvas.height = img.height;
+        const ctx = canvas.getContext("2d"); ctx.drawImage(img, 0, 0);
         resolve({ dataURL: canvas.toDataURL("image/png"), width: img.width, height: img.height });
       };
       img.onerror = () => resolve(null);
@@ -234,12 +411,10 @@ export default function AdminOrders() {
 
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
     if (logoData) {
-      const imgWidth = 45; 
-      const imgHeight = (logoData.height * imgWidth) / logoData.width; 
+      const imgWidth = 45; const imgHeight = (logoData.height * imgWidth) / logoData.width; 
       doc.addImage(logoData.dataURL, 'PNG', 14, 12, imgWidth, imgHeight); 
     } else {
-      doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
-      doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
+      doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
     }
     
     doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
@@ -249,23 +424,15 @@ export default function AdminOrders() {
     doc.setFont("helvetica", "bold"); doc.text(`${docType === 'receipt' ? 'Receipt' : 'Invoice'} #: INV-${orderNum}`, 140, 24);
     doc.setFont("helvetica", "normal"); doc.text(`Date: ${datePlaced}`, 140, 29);
     
-    if (docType === 'receipt') {
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(16, 185, 129); 
-      doc.text("Status: PAID IN FULL", 140, 34);
-      doc.setTextColor(15, 23, 42); 
-    } else {
-      doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34);
-    }
+    if (docType === 'receipt') { doc.setFont("helvetica", "bold"); doc.setTextColor(16, 185, 129); doc.text("Status: PAID IN FULL", 140, 34); doc.setTextColor(15, 23, 42); } 
+    else { doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34); }
 
     const isB2B = !!order.company_id;
     const up = Array.isArray(order.user_profiles) ? order.user_profiles[0] : order.user_profiles;
 
     const billName = isB2B ? (order.companies?.name || 'Agency') : (up?.full_name || order.shipping_name || 'Retail Customer');
     const billAddress = isB2B ? (order.companies?.address || '') : (order.shipping_address || '');
-    const billCityState = isB2B 
-      ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
-      : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
+    const billCityState = isB2B ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
     const billPhone = isB2B ? (order.companies?.phone || '') : (order.shipping_phone || up?.contact_number || '');
     const billEmail = isB2B ? (order.companies?.email || '') : (order.shipping_email || up?.email || '');
 
@@ -275,22 +442,17 @@ export default function AdminOrders() {
     const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || up?.contact_number || '';
     const shipEmail = order.shipping_email || order.agency_patients?.email || up?.email || '';
 
-    doc.setFont("helvetica", "bold");
-    doc.text("BILL TO:", 14, 50); 
-    doc.text("SHIP TO:", 110, 50);
-    doc.setFont("helvetica", "normal");
+    doc.setFont("helvetica", "bold"); doc.text("BILL TO:", 14, 50); doc.text("SHIP TO:", 110, 50); doc.setFont("helvetica", "normal");
     
     let currentYBill = 56;
-    doc.setFont("helvetica", "bold"); doc.text(billName, 14, currentYBill); currentYBill += 5;
-    doc.setFont("helvetica", "normal");
+    doc.setFont("helvetica", "bold"); doc.text(billName, 14, currentYBill); currentYBill += 5; doc.setFont("helvetica", "normal");
     if (billAddress && billAddress !== 'No billing address provided') { doc.text(billAddress, 14, currentYBill); currentYBill += 5; }
     if (billCityState) { doc.text(billCityState, 14, currentYBill); currentYBill += 5; }
     if (billPhone) { doc.text(`Phone: ${billPhone}`, 14, currentYBill); currentYBill += 5; }
     if (billEmail) { doc.text(`Email: ${billEmail}`, 14, currentYBill); currentYBill += 5; }
 
     let currentYShip = 56;
-    doc.setFont("helvetica", "bold"); doc.text(shipName, 110, currentYShip); currentYShip += 5;
-    doc.setFont("helvetica", "normal");
+    doc.setFont("helvetica", "bold"); doc.text(shipName, 110, currentYShip); currentYShip += 5; doc.setFont("helvetica", "normal");
     if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
     if (shipCityState) { doc.text(shipCityState, 110, currentYShip); currentYShip += 5; }
     if (shipPhone) { doc.text(`Phone: ${shipPhone}`, 110, currentYShip); currentYShip += 5; }
@@ -335,7 +497,7 @@ export default function AdminOrders() {
     doc.text("info@tricoremedicalsupply.com", 105, pageHeight - 14, { align: "center" });
     doc.text("www.tricoremedicalsupply.com", 105, pageHeight - 9, { align: "center" });
 
-    doc.save(`${docType === 'receipt' ? 'Receipt' : 'Invoice'}_${orderNum}.pdf`);
+    doc.save(`${docType === 'receipt' ? 'Invoice' : 'Invoice'}_${orderNum}.pdf`);
   };
 
   const getDisplayName = (order) => {
@@ -351,18 +513,12 @@ export default function AdminOrders() {
   };
 
   const getPaymentBadge = (paymentStatus, orderStatus) => {
-    // If the order is cancelled, show a grayed-out 'Voided' badge
-    if (orderStatus === 'cancelled') {
-      return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-400 border border-slate-200 shadow-sm">Voided</span>;
-    }
+    if (orderStatus === 'cancelled') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-400 border border-slate-200 shadow-sm">Voided</span>;
     if (paymentStatus === 'paid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-700 border border-emerald-200 shadow-sm">Paid</span>;
     return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200 shadow-sm">Unpaid</span>;
   };
 
-  const format12hr = (dateString) => {
-    if (!dateString) return '';
-    return new Date(dateString).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
-  };
+  const format12hr = (dateString) => dateString ? new Date(dateString).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12 relative">
@@ -383,8 +539,14 @@ export default function AdminOrders() {
           <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-600 hover:bg-blue-50'}`}>Processing ({tabCounts.processing})</button>
           <button onClick={() => setActiveTab('shipped')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'shipped' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>Shipped ({tabCounts.shipped})</button>
           <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>Completed ({tabCounts.completed})</button>
-          <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>{tabCounts.due > 0 && <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>}Due ({tabCounts.due})</button>
-          <button onClick={() => setActiveTab('paid')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'paid' ? 'bg-slate-800 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200'}`}><Receipt size={14}/> Paid ({tabCounts.paid})</button>
+          
+          {!isWarehouse && (
+            <>
+              <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>{tabCounts.due > 0 && <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>}Due ({tabCounts.due})</button>
+              <button onClick={() => setActiveTab('paid')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'paid' ? 'bg-slate-800 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200'}`}><Receipt size={14}/> Paid ({tabCounts.paid})</button>
+            </>
+          )}
+
           <button onClick={() => setActiveTab('cancelled')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>Cancelled ({tabCounts.cancelled})</button>
         </div>
         <div className="relative w-full xl:w-64 shrink-0"><Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" /></div>
@@ -419,9 +581,7 @@ export default function AdminOrders() {
                   const billEmail = isB2B ? order.companies?.email : (order.shipping_email || up?.email);
                   const billPhone = isB2B ? order.companies?.phone : (order.shipping_phone || up?.contact_number);
                   const billAddress = isB2B ? (order.companies?.address || '') : (order.shipping_address || '');
-                  const billCityState = isB2B 
-                    ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
-                    : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
+                  const billCityState = isB2B ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
 
                   const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
                   const shipEmail = order.shipping_email || order.agency_patients?.email || up?.email;
@@ -440,34 +600,24 @@ export default function AdminOrders() {
                   }
 
                   const isNet30 = order.payment_method === 'net_30';
-                  let isOverdue = false;
-                  let isDueSoon = false;
-                  let dueDateDisplay = '';
+                  let isOverdue = false; let isDueSoon = false; let dueDateDisplay = '';
 
                   if (isNet30) {
                     const placedDate = new Date(order.created_at);
-                    const dueDate = new Date(placedDate);
-                    dueDate.setDate(dueDate.getDate() + 30);
+                    const dueDate = new Date(placedDate); dueDate.setDate(dueDate.getDate() + 30);
                     dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
                     const diffDays = (dueDate - new Date()) / (1000 * 60 * 60 * 24);
-                    // Only check for overdue if it's unpaid AND not cancelled
                     if (order.payment_status === 'unpaid' && order.status !== 'cancelled') {
-                      if (diffDays < 0) isOverdue = true;
-                      else if (diffDays <= 5) isDueSoon = true;
+                      if (diffDays < 0) isOverdue = true; else if (diffDays <= 5) isDueSoon = true;
                     }
                   }
 
                   return (
                     <React.Fragment key={order.id}>
-                      <tr 
-                        onClick={() => toggleOrderDetails(order.id)}
-                        className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-900' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}
-                      >
+                      <tr onClick={() => toggleOrderDetails(order.id)} className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-900' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}>
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-4">
-                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border transition-colors shadow-sm ${isExpanded ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
-                              <Package size={18} />
-                            </div>
+                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border transition-colors shadow-sm ${isExpanded ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-100 text-slate-500 border-slate-200'}`}><Package size={18} /></div>
                             <div>
                               <p className="font-mono font-bold text-slate-900 text-sm tracking-tight">{shortId}</p>
                               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Hash size={10}/> Order ID</p>
@@ -480,18 +630,12 @@ export default function AdminOrders() {
                         </td>
                         <td className="px-6 py-4">
                           <p className="font-bold text-slate-900">{getDisplayName(order)}</p>
-                          <span className={`inline-flex mt-1 px-1.5 py-0.5 text-[9px] uppercase tracking-widest font-bold rounded shadow-sm ${isB2B ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>
-                            {isB2B ? 'B2B Agency' : 'Retail'}
-                          </span>
+                          <span className={`inline-flex mt-1 px-1.5 py-0.5 text-[9px] uppercase tracking-widest font-bold rounded shadow-sm ${isB2B ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>{isB2B ? 'B2B Agency' : 'Retail'}</span>
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1">
-                            {/* Cross out the text and make it gray if cancelled */}
-                            <p className={`font-extrabold text-base ${order.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
-                              ${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}
-                            </p>
+                            <p className={`font-extrabold text-base ${order.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
                             <div className="flex items-center gap-2">
-                              {/* Pass order.status to the badge */}
                               {getPaymentBadge(order.payment_status, order.status)}
                               {isOverdue && <span className="text-[9px] font-bold text-red-600 uppercase tracking-widest flex items-center gap-1"><AlertCircle size={10} /> Overdue</span>}
                               {isDueSoon && <span className="text-[9px] font-bold text-amber-600 uppercase tracking-widest flex items-center gap-1"><Clock size={10} /> Due Soon</span>}
@@ -501,42 +645,30 @@ export default function AdminOrders() {
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1.5">
                             {getStatusBadge(order.status)}
-                            {order.status === 'delivered' && (order.delivered_at || order.updated_at) && (
-                              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                <CheckCircle2 size={10} /> {new Date(order.delivered_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.delivered_at || order.updated_at)}
-                              </span>
-                            )}
-                            {order.status === 'cancelled' && (order.cancelled_at || order.updated_at) && (
-                              <span className="text-[9px] font-bold text-red-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                <XCircle size={10} /> {new Date(order.cancelled_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.cancelled_at || order.updated_at)}
-                              </span>
-                            )}
-                            {['processing', 'ready_for_delivery', 'shipped'].includes(order.status) && (
-                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                    <Clock size={10} /> Updated at {format12hr(order.shipped_at || order.processing_at || order.updated_at)}
-                                </span>
-                            )}
+                            {order.status === 'delivered' && (order.delivered_at || order.updated_at) && (<span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><CheckCircle2 size={10} /> {new Date(order.delivered_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.delivered_at || order.updated_at)}</span>)}
+                            {order.status === 'cancelled' && (order.cancelled_at || order.updated_at) && (<span className="text-[9px] font-bold text-red-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><XCircle size={10} /> {new Date(order.cancelled_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.cancelled_at || order.updated_at)}</span>)}
+                            {['processing', 'ready_for_delivery', 'shipped'].includes(order.status) && (<span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><Clock size={10} /> Updated at {format12hr(order.shipped_at || order.processing_at || order.updated_at)}</span>)}
                           </div>
                         </td>
                         <td className="px-6 py-4 text-right">
-                          <button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}>
-                            <ChevronDown size={20} />
-                          </button>
+                          <button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}><ChevronDown size={20} /></button>
                         </td>
                       </tr>
                       {isExpanded && (
                         <tr className="bg-slate-50 shadow-inner">
                           <td colSpan="6" className="p-0 border-b border-slate-200">
                             <div className="p-6 sm:p-8 pl-[72px] animate-in slide-in-from-top-2 fade-in duration-200">
+                              
                               {order.status === 'cancelled' && order.cancellation_reason && (
                                 <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-3 shadow-sm">
                                   <AlertTriangle size={20} className="text-red-600 mt-0.5 shrink-0" />
                                   <div>
-                                    <h4 className="text-sm font-black text-red-900 tracking-tight">Delivery Cancelled by Driver</h4>
+                                    <h4 className="text-sm font-black text-red-900 tracking-tight">Order Cancelled</h4>
                                     <p className="text-sm text-red-700 mt-1 font-medium leading-relaxed">{order.cancellation_reason}</p>
                                   </div>
                                 </div>
                               )}
+
                               <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 mb-6 border-b border-slate-200 pb-4">
                                 <div>
                                   <h3 className="text-xl font-bold text-slate-900 tracking-tight">Order Management Panel</h3>
@@ -545,28 +677,24 @@ export default function AdminOrders() {
                                 <div className="flex flex-wrap gap-2">
                                   {order.status === 'pending' && (
                                     <>
-                                      <button onClick={() => handleStatusChangeClick(order.id, 'cancelled')} className="px-5 py-2 bg-white border border-red-200 text-red-600 text-sm font-bold rounded-xl shadow-sm hover:bg-red-50 active:scale-95 transition-all">Reject</button>
-                                      <button onClick={() => handleStatusChangeClick(order.id, 'processing')} className="px-5 py-2 bg-slate-900 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-slate-800 active:scale-95 transition-all flex items-center gap-2"><CheckCircle2 size={16} /> Approve to Warehouse</button>
+                                      <button onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(order.id, 'cancelled'); }} className="px-5 py-2 bg-white border border-red-200 text-red-600 text-sm font-bold rounded-xl shadow-sm hover:bg-red-50 active:scale-95 transition-all">Reject</button>
+                                      <button onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(order.id, 'processing'); }} className="px-5 py-2 bg-slate-900 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-slate-800 active:scale-95 transition-all flex items-center gap-2"><CheckCircle2 size={16} /> Approve to Warehouse</button>
                                     </>
                                   )}
                                   
                                   {order.status === 'delivered' && (
                                     <>
-                                      <button onClick={() => generatePDF(order, order.payment_status === 'paid' ? 'receipt' : 'invoice')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2">
-                                        <FileDown size={16} className="text-slate-400" /> {order.payment_status === 'paid' ? 'Download Receipt' : 'Download Invoice'}
-                                      </button>
-                                      {order.payment_status === 'unpaid' && (
-                                        <button onClick={() => handleMarkAsPaid(order.id)} className="px-5 py-2 bg-emerald-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-emerald-700 active:scale-95 transition-all flex items-center gap-2">
-                                          <CheckCircle2 size={16} /> Mark as Paid
-                                        </button>
+                                      {!isWarehouse && (
+                                        <button onClick={() => generatePDF(order, order.payment_status === 'paid' ? 'receipt' : 'invoice')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2"><FileDown size={16} className="text-slate-400" /> {order.payment_status === 'paid' ? 'Download Receipt' : 'Download Invoice'}</button>
+                                      )}
+                                      {order.payment_status === 'unpaid' && !isWarehouse && (
+                                        <button onClick={() => handleMarkAsPaid(order.id)} className="px-5 py-2 bg-emerald-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-emerald-700 active:scale-95 transition-all flex items-center gap-2"><CheckCircle2 size={16} /> Mark as Paid</button>
                                       )}
                                     </>
                                   )}
 
-                                  {order.status === 'cancelled' && order.payment_status === 'paid' && (
-                                      <button onClick={() => generatePDF(order, 'receipt')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2">
-                                        <FileDown size={16} className="text-slate-400" /> Download Receipt
-                                      </button>
+                                  {order.status === 'cancelled' && order.payment_status === 'paid' && !isWarehouse && (
+                                      <button onClick={() => generatePDF(order, 'receipt')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2"><FileDown size={16} className="text-slate-400" /> Download Receipt</button>
                                   )}
                                 </div>
                               </div>
@@ -583,10 +711,7 @@ export default function AdminOrders() {
                                         </div>
                                         <div className="flex items-start gap-2 pt-2 border-t border-slate-100 mt-2">
                                           <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
-                                          <div className="whitespace-normal leading-relaxed text-sm">
-                                            <p>{billAddress}</p>
-                                            {billCityState && <p>{billCityState}</p>}
-                                          </div>
+                                          <div className="whitespace-normal leading-relaxed text-sm"><p>{billAddress}</p>{billCityState && <p>{billCityState}</p>}</div>
                                         </div>
                                       </div>
                                     </div>
@@ -600,30 +725,54 @@ export default function AdminOrders() {
                                         </div>
                                         <div className="flex items-start gap-2 pt-2 border-t border-slate-100 mt-2">
                                           <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
-                                          <div className="whitespace-normal leading-relaxed text-sm">
-                                            <p>{shipAddress}</p>
-                                            {shipCityState && <p>{shipCityState}</p>}
-                                          </div>
+                                          <div className="whitespace-normal leading-relaxed text-sm"><p>{shipAddress}</p>{shipCityState && <p>{shipCityState}</p>}</div>
                                         </div>
                                       </div>
                                     </div>
                                   </div>
+                                  
                                   <div className="space-y-3">
-                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider"><FileText size={16} className="text-slate-400" /> Order Items</h4>
+                                    <div className="flex items-center justify-between mb-3">
+                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
+                                        <FileText size={16} className="text-slate-400" /> Order Items
+                                      </h4>
+                                      {order.status === 'pending' && (
+                                        <button 
+                                          onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'add', order, item: null, reason: '', newQty: '1', newVariantId: '' }); }} 
+                                          className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 text-white text-xs font-bold rounded-lg shadow-sm hover:bg-slate-800 active:scale-95 transition-all"
+                                        >
+                                          <Plus size={14} /> Add Product
+                                        </button>
+                                      )}
+                                    </div>
+
                                     <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
                                       <table className="w-full text-left text-sm whitespace-normal">
                                         <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest">
-                                          <tr><th className="px-5 py-3 font-bold w-full">Product</th><th className="px-5 py-3 font-bold text-center">Qty</th><th className="px-5 py-3 font-bold text-right">Total</th></tr>
+                                          <tr><th className="px-5 py-3 font-bold w-full">Product</th><th className="px-5 py-3 font-bold text-center">Qty</th><th className="px-5 py-3 font-bold text-right">Total</th>{order.status === 'pending' && <th className="px-5 py-3"></th>}</tr>
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
                                           {order.order_items?.map((item) => (
-                                            <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                                            <tr key={item.id} className={`hover:bg-slate-50 transition-colors group ${item.status === 'cancelled' ? 'opacity-50' : ''}`}>
                                               <td className="px-5 py-4">
-                                                <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name || item.product_variants?.name}</p>
+                                                <p className={`font-bold text-slate-900 leading-snug ${item.status === 'cancelled' ? 'line-through' : ''}`}>{item.product_variants?.products?.name || item.product_variants?.name}</p>
                                                 <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}</span></p>
+                                                {item.status === 'cancelled' && <p className="text-[10px] text-red-600 font-bold mt-1 uppercase tracking-widest">Cancelled: {item.cancellation_reason}</p>}
                                               </td>
                                               <td className="px-5 py-4 text-center"><span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span></td>
                                               <td className="px-5 py-4 text-right font-extrabold text-slate-900">${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                                              
+                                              {/* ALWAYS VISIBLE ACTIONS */}
+                                              {order.status === 'pending' && item.status !== 'cancelled' && (
+                                                <td className="px-5 py-4 text-right w-10">
+                                                  <div className="flex items-center justify-end gap-1 transition-opacity">
+                                                    <button title="Edit Quantity" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'edit', order, item, reason: '', newQty: item.quantity_variants, newVariantId: '' })}} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
+                                                    <button title="Substitute" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'substitute', order, item, reason: '', newQty: '', newVariantId: '' })}} className="p-1.5 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"><RefreshCw size={16} /></button>
+                                                    <button title="Cancel Item" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'cancel', order, item, reason: '', newQty: '', newVariantId: '' })}} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><XCircle size={16} /></button>
+                                                  </div>
+                                                </td>
+                                              )}
+                                              {order.status === 'pending' && item.status === 'cancelled' && <td className="px-5 py-4 w-10"></td>}
                                             </tr>
                                           ))}
                                         </tbody>
@@ -643,7 +792,6 @@ export default function AdminOrders() {
                                     </div>
                                     <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-medium text-slate-500">
                                       <div className="flex items-center gap-2"><CreditCard size={14} className="text-slate-400 shrink-0" /><span className="font-bold text-slate-700 capitalize">{order.payment_method.replace('_', ' ')}</span></div>
-                                      {/* Pass order.status here as well */}
                                       {getPaymentBadge(order.payment_status, order.status)}
                                     </div>
                                     {isNet30 && (<div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100"><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Due Date</span><span className={`text-xs font-bold px-2 py-0.5 rounded ${isOverdue ? 'bg-red-100 text-red-700 border border-red-200 shadow-sm' : isDueSoon ? 'bg-amber-100 text-amber-700 border border-amber-200 shadow-sm' : 'text-slate-700 bg-slate-100 border border-slate-200'}`}>{dueDateDisplay}</span></div>)}
@@ -693,16 +841,205 @@ export default function AdminOrders() {
         </div>
       )}
 
+      {/* 🚀 MAIN ORDER REJECT MODAL */}
       {confirmAction.show && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
             <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm ${confirmAction.title.includes('Reject') ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-900 border-slate-200'}`}>{confirmAction.title.includes('Reject') ? <XCircle size={32} /> : <CheckCircle2 size={32} />}</div>
             <h4 className="text-xl font-bold text-slate-900 tracking-tight">{confirmAction.title}</h4>
             <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">{confirmAction.message}</p>
+            
+            {confirmAction.title.includes('Reject') && (
+              <div className="mt-4 text-left">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Cancellation Reason</label>
+                <textarea 
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  placeholder="e.g., 0 Inventory, Out of Stock..."
+                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500 outline-none resize-none h-20"
+                />
+              </div>
+            )}
+
             <div className="flex gap-3 pt-5">
-              <button onClick={() => setConfirmAction({ show: false, title: '', message: '', onConfirm: null })} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button>
-              <button onClick={confirmAction.onConfirm} className={`w-full py-3 text-sm text-white font-bold rounded-xl shadow-md active:scale-95 transition-all ${confirmAction.title.includes('Reject') ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-900 hover:bg-slate-800'}`}>Confirm</button>
+              <button onClick={() => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); setCancelReason(''); }} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button>
+              <button 
+                onClick={() => { confirmAction.onConfirm(cancelReason); setCancelReason(''); }} 
+                disabled={confirmAction.title.includes('Reject') && !cancelReason.trim()}
+                className={`w-full py-3 text-sm text-white font-bold rounded-xl shadow-md active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed ${confirmAction.title.includes('Reject') ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-900 hover:bg-slate-800'}`}
+              >
+                Confirm
+              </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🚀 ITEM-LEVEL ACTION MODALS */}
+      {itemAction.show && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
+            
+            {/* 🚀 ADD PRODUCT MODAL */}
+            {itemAction.type === 'add' && (
+              <>
+                <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-emerald-50 text-emerald-600 border-emerald-100"><Plus size={32} /></div>
+                <h4 className="text-xl font-bold text-slate-900 tracking-tight">Add Product</h4>
+                <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">Search and add a new product to this order.</p>
+                
+                <div className="mt-4 text-left">
+                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Search Product</label>
+                  
+                  {!selectedSubstitute ? (
+                    <div className="relative">
+                      <div className="relative">
+                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input type="text" value={substituteSearch} onChange={(e) => setSubstituteSearch(e.target.value)} placeholder="Search by name or SKU..." className="w-full pl-9 pr-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+                      </div>
+                      
+                      {substituteSearch.trim() !== '' && (
+                        <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto divide-y divide-slate-100 text-left">
+                          {availableVariants.filter(v => {
+                            const searchLower = substituteSearch.toLowerCase();
+                            return (v.name && v.name.toLowerCase().includes(searchLower)) ||
+                                   (v.sku && v.sku.toLowerCase().includes(searchLower)) ||
+                                   (v.products?.name && v.products.name.toLowerCase().includes(searchLower)) ||
+                                   (v.products?.base_sku && v.products.base_sku.toLowerCase().includes(searchLower));
+                          }).map(variant => (
+                            <button key={variant.id} onClick={() => setSelectedSubstitute(variant)} className="w-full text-left px-4 py-2.5 hover:bg-emerald-50 transition-colors flex flex-col gap-0.5">
+                              <span className="text-sm font-bold text-slate-900">{variant.products?.name} - {variant.name}</span>
+                              <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">SKU: <span className="text-slate-700 font-mono">{variant.sku || variant.products?.base_sku || 'N/A'}</span> | Price: ${Number(variant.price).toFixed(2)}</span>
+                            </button>
+                          ))}
+                          {availableVariants.filter(v => {
+                            const searchLower = substituteSearch.toLowerCase();
+                            return (v.name && v.name.toLowerCase().includes(searchLower)) || (v.sku && v.sku.toLowerCase().includes(searchLower)) || (v.products?.name && v.products.name.toLowerCase().includes(searchLower)) || (v.products?.base_sku && v.products.base_sku.toLowerCase().includes(searchLower));
+                          }).length === 0 && (
+                            <div className="px-4 py-3 text-sm text-slate-500 text-center italic">No products found.</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between shadow-sm">
+                        <div>
+                          <p className="font-bold text-emerald-900 text-sm leading-tight">{selectedSubstitute.products?.name} - {selectedSubstitute.name}</p>
+                          <p className="text-[11px] font-bold text-emerald-600 uppercase tracking-widest mt-1">SKU: {selectedSubstitute.sku || selectedSubstitute.products?.base_sku || 'N/A'} | ${Number(selectedSubstitute.price).toFixed(2)}</p>
+                        </div>
+                        <button onClick={() => { setSelectedSubstitute(null); setSubstituteSearch(''); }} className="p-1.5 bg-white rounded-lg text-emerald-400 hover:text-emerald-600 hover:bg-emerald-100 transition-colors shrink-0 shadow-sm"><X size={16} /></button>
+                      </div>
+                      
+                      <div>
+                        <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Quantity</label>
+                        <input type="number" min="1" value={itemAction.newQty} onChange={(e) => setItemAction({...itemAction, newQty: e.target.value})} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+                      </div>
+                    </div>
+                  )}
+                  <p className="text-xs text-slate-400 mt-3 font-medium">The order subtotal and total amount will recalculate automatically.</p>
+                </div>
+
+                <div className="flex gap-3 pt-5">
+                  <button onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all">Cancel</button>
+                  <button onClick={executeItemAdd} disabled={!selectedSubstitute || !itemAction.newQty || itemAction.newQty <= 0} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 active:scale-95 transition-all">Add to Order</button>
+                </div>
+              </>
+            )}
+
+            {/* CANCEL MODAL */}
+            {itemAction.type === 'cancel' && (
+              <>
+                <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-red-50 text-red-600 border-red-100"><XCircle size={32} /></div>
+                <h4 className="text-xl font-bold text-slate-900 tracking-tight">Cancel Item</h4>
+                <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">Remove <span className="font-bold text-slate-700">{itemAction.item?.product_variants?.name}</span> from the order?</p>
+                <div className="mt-4 text-left">
+                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Cancellation Reason</label>
+                  <textarea value={itemAction.reason} onChange={(e) => setItemAction({...itemAction, reason: e.target.value})} placeholder="Reason for canceling this item..." className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500 outline-none resize-none h-20"/>
+                </div>
+                <div className="flex gap-3 pt-5">
+                  <button onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-all">Go Back</button>
+                  <button onClick={executeItemCancel} disabled={!itemAction.reason.trim()} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-red-600 hover:bg-red-700 disabled:opacity-50 transition-all">Confirm Cancel</button>
+                </div>
+              </>
+            )}
+
+            {/* EDIT QUANTITY MODAL */}
+            {itemAction.type === 'edit' && (
+              <>
+                <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-blue-50 text-blue-600 border-blue-100"><Edit3 size={32} /></div>
+                <h4 className="text-xl font-bold text-slate-900 tracking-tight">Edit Quantity</h4>
+                <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">Update the quantity for <span className="font-bold text-slate-700">{itemAction.item?.product_variants?.name}</span>.</p>
+                <div className="mt-4 text-left">
+                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">New Quantity</label>
+                  <input type="number" min="1" value={itemAction.newQty} onChange={(e) => setItemAction({...itemAction, newQty: e.target.value})} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                  <p className="text-xs text-slate-400 mt-2">The order subtotal and total amount will recalculate automatically.</p>
+                </div>
+                <div className="flex gap-3 pt-5">
+                  <button onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-all">Cancel</button>
+                  <button onClick={executeItemEdit} disabled={!itemAction.newQty || itemAction.newQty <= 0} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition-all">Update Quantity</button>
+                </div>
+              </>
+            )}
+
+            {/* 🚀 SEARCHABLE SUBSTITUTE PRODUCT MODAL */}
+            {itemAction.type === 'substitute' && (
+              <>
+                <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-purple-50 text-purple-600 border-purple-100"><RefreshCw size={32} /></div>
+                <h4 className="text-xl font-bold text-slate-900 tracking-tight">Substitute Product</h4>
+                <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">Replace <span className="font-bold text-slate-700">{itemAction.item?.product_variants?.name}</span> with a different item.</p>
+                
+                <div className="mt-4 text-left">
+                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Search Replacement</label>
+                  
+                  {!selectedSubstitute ? (
+                    <div className="relative">
+                      <div className="relative">
+                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input type="text" value={substituteSearch} onChange={(e) => setSubstituteSearch(e.target.value)} placeholder="Search by name or SKU..." className="w-full pl-9 pr-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 outline-none" />
+                      </div>
+                      
+                      {substituteSearch.trim() !== '' && (
+                        <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto divide-y divide-slate-100 text-left">
+                          {availableVariants.filter(v => {
+                            const searchLower = substituteSearch.toLowerCase();
+                            return (v.name && v.name.toLowerCase().includes(searchLower)) ||
+                                   (v.sku && v.sku.toLowerCase().includes(searchLower)) ||
+                                   (v.products?.name && v.products.name.toLowerCase().includes(searchLower)) ||
+                                   (v.products?.base_sku && v.products.base_sku.toLowerCase().includes(searchLower));
+                          }).map(variant => (
+                            <button key={variant.id} onClick={() => setSelectedSubstitute(variant)} className="w-full text-left px-4 py-2.5 hover:bg-purple-50 transition-colors flex flex-col gap-0.5">
+                              <span className="text-sm font-bold text-slate-900">{variant.products?.name} - {variant.name}</span>
+                              <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">SKU: <span className="text-slate-700 font-mono">{variant.sku || variant.products?.base_sku || 'N/A'}</span> | Price: ${Number(variant.price).toFixed(2)}</span>
+                            </button>
+                          ))}
+                          {availableVariants.filter(v => {
+                            const searchLower = substituteSearch.toLowerCase();
+                            return (v.name && v.name.toLowerCase().includes(searchLower)) || (v.sku && v.sku.toLowerCase().includes(searchLower)) || (v.products?.name && v.products.name.toLowerCase().includes(searchLower)) || (v.products?.base_sku && v.products.base_sku.toLowerCase().includes(searchLower));
+                          }).length === 0 && (
+                            <div className="px-4 py-3 text-sm text-slate-500 text-center italic">No products found.</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl flex items-center justify-between shadow-sm">
+                      <div>
+                        <p className="font-bold text-purple-900 text-sm leading-tight">{selectedSubstitute.products?.name} - {selectedSubstitute.name}</p>
+                        <p className="text-[11px] font-bold text-purple-600 uppercase tracking-widest mt-1">SKU: {selectedSubstitute.sku || selectedSubstitute.products?.base_sku || 'N/A'} | ${Number(selectedSubstitute.price).toFixed(2)}</p>
+                      </div>
+                      <button onClick={() => { setSelectedSubstitute(null); setSubstituteSearch(''); }} className="p-1.5 bg-white rounded-lg text-purple-400 hover:text-purple-600 hover:bg-purple-100 transition-colors shrink-0 shadow-sm"><X size={16} /></button>
+                    </div>
+                  )}
+                  <p className="text-xs text-slate-400 mt-3 font-medium">The order subtotal and total amount will recalculate automatically based on the new item's price.</p>
+                </div>
+
+                <div className="flex gap-3 pt-5">
+                  <button onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all">Cancel</button>
+                  <button onClick={executeItemSubstitute} disabled={!selectedSubstitute} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-purple-600 hover:bg-purple-700 disabled:opacity-50 active:scale-95 transition-all">Confirm Swap</button>
+                </div>
+              </>
+            )}
+
           </div>
         </div>
       )}
