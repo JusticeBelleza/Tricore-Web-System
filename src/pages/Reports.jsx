@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { 
   Calendar, Download, DollarSign, ShoppingCart, 
   TrendingUp, FileText, Search, ArrowRight, Package, FileDown, FileBarChart,
-  ChevronLeft, ChevronRight, Loader2, ChevronDown, Percent, CreditCard
+  ChevronLeft, ChevronRight, Loader2, ChevronDown, Percent, CreditCard, Lock
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -12,6 +12,9 @@ export default function Reports() {
   const [reportType, setReportType] = useState('itemized'); 
   const [staffName, setStaffName] = useState('Staff Member');
   const [userRole, setUserRole] = useState(null); 
+  const [authLoading, setAuthLoading] = useState(true); 
+  
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   
   const [tableData, setTableData] = useState([]);
   const [kpis, setKpis] = useState({ rev: 0, tax: 0, ship: 0, gross: 0, caS: 0, outS: 0, caT: 0, orderCount: 0 });
@@ -41,21 +44,28 @@ export default function Reports() {
   const [pageSize, setPageSize] = useState(10);
   const [totalCount, setTotalCount] = useState(0);
 
+  const adminReportOptions = [
+    { value: 'itemized', label: 'Itemized Sales Summary' },
+    { value: 'ca_tax', label: 'California Sales Tax Report' },
+    { value: 'top_products', label: 'Top 100 Products Analytics' },
+    { value: 'profitability', label: 'Product Profitability Report' },
+    { value: 'warehouse_summary', label: 'Warehouse Order Summary' }
+  ];
+
   useEffect(() => {
     const fetchUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        // Fetching the user's role from user_profiles
         const { data } = await supabase.from('user_profiles').select('full_name, role').eq('id', user.id).single();
         if (data?.full_name) setStaffName(data.full_name);
         if (data?.role) {
           setUserRole(data.role);
-          // If the role is warehouse, lock them to the warehouse summary
           if (data.role === 'warehouse') {
             setReportType('warehouse_summary');
           }
         }
       }
+      setAuthLoading(false);
     };
     fetchUser();
   }, []);
@@ -73,6 +83,8 @@ export default function Reports() {
   }, [reportType, startDate, endDate, pageSize]);
 
   useEffect(() => {
+    if (authLoading) return;
+
     fetchKPIs();
     if (reportType === 'top_products') {
       fetchTopProductsAnalytics();
@@ -84,8 +96,7 @@ export default function Reports() {
       fetchTableData();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startDate, endDate, reportType, debouncedSearch, currentPage, pageSize]);
-
+  }, [startDate, endDate, reportType, debouncedSearch, currentPage, pageSize, authLoading]);
 
   const fetchKPIs = async () => {
     const adjustedEndDate = new Date(endDate);
@@ -236,7 +247,7 @@ export default function Reports() {
         );
       }
 
-      setTopProductsData(sortedProducts.slice(0, 100)); // Keep top 100
+      setTopProductsData(sortedProducts.slice(0, 100)); 
       setTotalCount(Math.min(sortedProducts.length, 100));
     } catch (error) {
       console.error('Error generating analytics:', error);
@@ -334,14 +345,15 @@ export default function Reports() {
       adjustedEndDate.setHours(23, 59, 59, 999);
 
       let query = supabase.from('orders').select(`
-        id, status, company_id,
+        id, status, company_id, created_at,
         shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
         companies ( name, address, city, state, zip ),
         order_items ( quantity_variants, status, product_variant_id, product_variants ( name, sku, products ( name ) ) )
       `)
       .neq('status', 'cancelled')
       .gte('created_at', new Date(startDate).toISOString())
-      .lte('created_at', adjustedEndDate.toISOString());
+      .lte('created_at', adjustedEndDate.toISOString())
+      .order('created_at', { ascending: false });
 
       let allData = [];
       let currentOffset = 0;
@@ -370,7 +382,16 @@ export default function Reports() {
         const custKey = `${custName}_${fullAddress}`;
 
         if (!customerMap[custKey]) {
-          customerMap[custKey] = { name: custName, address: fullAddress, items: {} };
+          customerMap[custKey] = { 
+            name: custName, 
+            address: fullAddress, 
+            items: {}, 
+            latestOrder: order.created_at
+          };
+        } else {
+          if (new Date(order.created_at) > new Date(customerMap[custKey].latestOrder)) {
+            customerMap[custKey].latestOrder = order.created_at;
+          }
         }
 
         const patientName = order.shipping_name ? String(order.shipping_name).trim().toUpperCase() : '';
@@ -399,7 +420,7 @@ export default function Reports() {
           if (b.patientName === '' && a.patientName !== '') return 1;
           return a.patientName.localeCompare(b.patientName) || a.name.localeCompare(b.name);
         })
-      })).sort((a, b) => a.name.localeCompare(b.name));
+      })).sort((a, b) => new Date(b.latestOrder) - new Date(a.latestOrder));
 
       if (debouncedSearch) {
         const s = debouncedSearch.toLowerCase();
@@ -483,7 +504,7 @@ export default function Reports() {
     let query = supabase.from('orders').select(`
       id, created_at, status, subtotal, shipping_amount, tax_amount, total_amount, company_id,
       shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
-      companies ( name )
+      companies ( name, address, city, state, zip )
       ${reportType === 'itemized' ? `, order_items ( quantity_variants, unit_price, line_total, product_variants ( name, sku, products ( name, base_sku ) ) )` : ''}
     `)
     .neq('status', 'cancelled')
@@ -511,6 +532,7 @@ export default function Reports() {
     return formatData(allData);
   };
 
+  // 🚀 FIXED: Added back the paginated slices for the analytical reports!
   const paginatedTopProducts = topProductsData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const paginatedProfitability = profitabilityData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const paginatedWarehouse = warehouseData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -539,14 +561,15 @@ export default function Reports() {
         fileName = `Tricore_Profitability_Report_${startDate}_to_${endDate}.csv`;
         
       } else if (reportType === 'warehouse_summary') {
-        const headers = ["Customer/Agency", "Address", "Patient Name", "Item Qty", "Product Name", "Variant", "SKU"];
+        const headers = ["Customer/Agency", "Address", "Patient Name", "Item Qty", "Variant", "Product Name", "SKU"];
         const rows = [];
         warehouseData.forEach(cust => {
           cust.patients.forEach(p => {
             p.items.forEach(item => {
+              const variantStr = (item.variant && item.variant !== 'Default') ? item.variant : '';
               rows.push([
                 `"${cust.name}"`, `"${cust.address}"`, `"${p.patientName}"`,
-                item.qty, `"${item.name}"`, `"${item.variant}"`, `"${item.sku}"`
+                item.qty, `"${variantStr}"`, `"${item.name}"`, `"${item.sku}"`
               ]);
             });
           });
@@ -678,11 +701,11 @@ export default function Reports() {
           }
           
           p.items.forEach(item => {
-            const variantStr = (item.variant && !item.variant.includes('1x') && item.variant !== 'Default') ? ` [${item.variant}]` : '';
+            const variantText = (item.variant && item.variant !== 'Default') ? item.variant : '';
             tableRows.push([
-              '[   ]',
               item.qty.toString(),
-              `${item.name}${variantStr}`,
+              variantText,
+              item.name,
               item.sku || ''
             ]);
           });
@@ -692,12 +715,15 @@ export default function Reports() {
 
       autoTable(doc, {
         startY: tableStartY,
-        head: [["PICK", "QTY", "PRODUCT & VARIANT", "SKU"]],
+        head: [["QTY", "VARIANT", "PRODUCT", "SKU"]],
         body: tableRows,
         theme: 'plain', 
         headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
         styles: { fontSize: 9, cellPadding: 2.5 }, 
-        columnStyles: { 0: { cellWidth: 15, halign: 'center', font: 'courier', textColor: [150, 150, 150] }, 1: { cellWidth: 15, halign: 'center', fontStyle: 'bold' } },
+        columnStyles: { 
+          0: { cellWidth: 15, halign: 'center', fontStyle: 'bold' }, 
+          1: { cellWidth: 30, halign: 'center', textColor: [100, 100, 100] } 
+        },
         didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
         margin: { top: tableStartY, bottom: 20 } 
       });
@@ -774,96 +800,147 @@ export default function Reports() {
   const maxPages = Math.ceil(totalCount / pageSize) || 1;
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto pb-12 relative">
+    <div className="space-y-6 max-w-7xl mx-auto pb-12 relative px-4 sm:px-6">
       
       {/* --- HEADER --- */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 pb-2">
         <div className="flex items-center gap-4">
-          <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md">
+          <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md shrink-0">
             <FileBarChart size={28} strokeWidth={1.5} />
           </div>
           <div>
-            <h2 className="text-3xl font-bold text-slate-900 tracking-tight">System Reports</h2>
-            <p className="text-sm text-slate-500 mt-1 font-medium">Generate itemized summaries, tax reports, and product analytics.</p>
+            <h2 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">System Reports</h2>
+            <p className="text-xs md:text-sm text-slate-500 mt-1 font-medium">Manage and generate location-based order summaries.</p>
           </div>
         </div>
       </div>
 
       {/* --- CONTROL PANEL --- */}
-      <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+      <div className="bg-white p-4 md:p-6 rounded-3xl border border-slate-200 shadow-sm space-y-6">
         <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-6">
           
-          {/* Responsive container for filters */}
-          <div className="flex flex-col md:flex-row gap-4 md:gap-6 items-start md:items-center w-full xl:w-auto">
+          <div className="flex flex-col md:flex-row gap-6 items-start md:items-center w-full xl:w-auto">
             
-            {/* 🚀 RESPONSIVE DROPDOWN: Uses w-full on mobile, min-w on tablet, and fixed w on desktop */}
-            <div className="w-full md:min-w-[240px] lg:w-80 shrink-0">
-              <label className="block text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-1.5 ml-1">Report Type</label>
-              <div className="relative">
-                <FileText className="absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-500" size={16} />
-                <select 
-                  value={reportType} 
-                  onChange={(e) => { 
-                    setTableData([]); 
-                    setTopProductsData([]);
-                    setProfitabilityData([]);
-                    setWarehouseData([]);
-                    setReportType(e.target.value); 
-                    setSearchTerm(''); 
-                  }} 
-                  disabled={userRole === 'warehouse'}
-                  // 🚀 TRUNCATE added to prevent long text from breaking layout on small screens
-                  className={`w-full pl-10 pr-10 py-2.5 bg-blue-50 border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 text-sm font-bold text-blue-900 transition-all shadow-sm appearance-none truncate ${userRole === 'warehouse' ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}
-                >
-                  {userRole !== 'warehouse' && <option value="itemized">Itemized Sales Summary</option>}
-                  {userRole !== 'warehouse' && <option value="ca_tax">California Sales Tax Report</option>}
-                  {userRole !== 'warehouse' && <option value="top_products">Top 100 Products Analytics</option>}
-                  {userRole !== 'warehouse' && <option value="profitability">Product Profitability Report</option>}
-                  
-                  <option value="warehouse_summary">Warehouse Order Summary</option>
-                </select>
-                <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none" size={16} />
-              </div>
-            </div>
+            {/* 🚀 CONDITIONAL REPORT DROPDOWN/BADGE */}
+            {authLoading ? (
+              // Loading Skeleton to prevent Dropdown FOUC
+              <div className="w-full md:w-72 lg:w-80 h-[46px] bg-slate-100 animate-pulse rounded-2xl shrink-0"></div>
+            ) : (
+              <div className="w-full md:w-72 lg:w-80 shrink-0 relative z-20">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">
+                  Report Type
+                </label>
+                
+                {userRole === 'warehouse' ? (
+                  // 🚀 Perfectly aligned locked badge
+                  <div className="relative w-full flex items-center justify-between pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-500 shadow-sm cursor-not-allowed">
+                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 flex items-center justify-center">
+                      <FileText size={18} />
+                    </div>
+                    <span className="truncate pr-2">Warehouse Order Summary</span>
+                    <div className="text-slate-400 shrink-0 flex items-center justify-center">
+                      <Lock size={16} />
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <button 
+                      type="button"
+                      onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                      className={`
+                        relative w-full flex items-center justify-between pl-11 pr-4 py-3 
+                        bg-blue-50 border border-blue-200 
+                        rounded-2xl outline-none transition-all 
+                        focus:ring-4 focus:ring-blue-100 focus:border-blue-400
+                        text-sm font-bold text-blue-900 shadow-sm cursor-pointer hover:bg-blue-100/50
+                      `}
+                    >
+                      <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-500 pointer-events-none">
+                        <FileText size={18} />
+                      </div>
+                      
+                      <span className="truncate pr-2">
+                        {adminReportOptions.find(o => o.value === reportType)?.label || 'Select Report'}
+                      </span>
+                      
+                      <div className="text-blue-400 pointer-events-none shrink-0">
+                        <ChevronDown size={18} className={`transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`} />
+                      </div>
+                    </button>
 
-            <div className="hidden md:block w-px h-10 bg-slate-200 mx-2"></div>
+                    {isDropdownOpen && (
+                      <>
+                        <div 
+                          className="fixed inset-0 z-30" 
+                          onClick={() => setIsDropdownOpen(false)}
+                        ></div>
+                        
+                        <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-blue-100 rounded-2xl shadow-xl overflow-hidden z-40 py-1">
+                          {adminReportOptions.map((option) => (
+                            <button
+                              key={option.value}
+                              onClick={() => {
+                                setTableData([]); 
+                                setWarehouseData([]);
+                                setTopProductsData([]);
+                                setProfitabilityData([]);
+                                setReportType(option.value); 
+                                setSearchTerm(''); 
+                                setIsDropdownOpen(false);
+                              }}
+                              className={`
+                                w-full text-left px-4 py-3 text-sm font-bold transition-colors
+                                ${reportType === option.value 
+                                  ? 'bg-blue-600 text-white' 
+                                  : 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'
+                                }
+                              `}
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="hidden md:block w-px h-12 bg-slate-100 mx-2"></div>
 
             <div className="flex flex-col sm:flex-row gap-4 items-center w-full md:w-auto">
               <div className="w-full sm:w-auto">
                 <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Start Date</label>
                 <div className="relative">
                   <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full sm:w-40 pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-700 transition-all cursor-pointer" />
+                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full sm:w-40 pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-700" />
                 </div>
               </div>
-              <ArrowRight className="hidden sm:block text-slate-300 mt-5" size={20} />
+              <ArrowRight className="hidden sm:block text-slate-300 mt-5" size={18} />
               <div className="w-full sm:w-auto">
                 <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">End Date</label>
                 <div className="relative">
                   <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full sm:w-40 pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-700 transition-all cursor-pointer" />
+                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full sm:w-40 pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-700" />
                 </div>
               </div>
             </div>
           </div>
 
-          <div className="flex gap-3 w-full xl:w-auto">
-            <button onClick={exportToCSV} disabled={totalCount === 0 || loading || isExporting} className="flex-1 xl:flex-none px-6 py-2.5 bg-white text-slate-700 border border-slate-200 text-sm font-bold rounded-xl hover:bg-slate-50 active:scale-95 disabled:opacity-50 transition-all shadow-sm flex items-center justify-center gap-2 md:w-32">
-              {isExporting ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />} 
-              {isExporting ? '...' : 'CSV'}
+          <div className="flex gap-3 w-full xl:w-auto shrink-0">
+            <button onClick={exportToCSV} disabled={totalCount === 0 || loading || isExporting} className="flex-1 xl:flex-none px-5 py-3 bg-white text-slate-700 border border-slate-200 text-sm font-bold rounded-2xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm flex items-center justify-center gap-2 min-w-[100px] disabled:opacity-50">
+              {isExporting ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />} CSV
             </button>
-            <button onClick={exportToPDF} disabled={totalCount === 0 || loading || isExporting} className="flex-1 xl:flex-none px-6 py-2.5 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all shadow-md flex items-center justify-center gap-2 md:w-36">
-              {isExporting ? <Loader2 className="animate-spin" size={16} /> : <FileDown size={16} />} 
-              {isExporting ? 'Gen...' : 'Print PDF'}
+            <button onClick={exportToPDF} disabled={totalCount === 0 || loading || isExporting} className="flex-1 xl:flex-none px-5 py-3 bg-slate-900 text-white text-sm font-bold rounded-2xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center justify-center gap-2 min-w-[130px] disabled:opacity-50">
+              {isExporting ? <Loader2 className="animate-spin" size={16} /> : <FileDown size={16} />} Print PDF
             </button>
           </div>
         </div>
 
-        <div className="h-px w-full bg-slate-100 my-2"></div>
-
-        <div className="flex items-center">
+        <div className="pt-2 relative z-10">
           <div className="relative w-full">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
             <input 
               type="text" 
               placeholder={
@@ -874,7 +951,7 @@ export default function Reports() {
               }
               value={searchTerm} 
               onChange={(e) => setSearchTerm(e.target.value)} 
-              className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all shadow-sm" 
+              className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-slate-900 focus:bg-white outline-none text-sm font-medium transition-all shadow-sm" 
             />
           </div>
         </div>
@@ -882,7 +959,7 @@ export default function Reports() {
 
       {/* --- DYNAMIC KPI CARDS --- */}
       {reportType !== 'warehouse_summary' && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 relative z-0">
           {reportType === 'top_products' ? (
             <>
               <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden group hover:border-emerald-300">
@@ -1016,7 +1093,7 @@ export default function Reports() {
       )}
 
       {/* --- DYNAMIC REPORT TABLE --- */}
-      <div className={`bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col overflow-hidden`}>
+      <div className={`bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col overflow-hidden relative z-0`}>
         
         {reportType !== 'warehouse_summary' && (
           <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
@@ -1061,37 +1138,32 @@ export default function Reports() {
               <thead className="bg-white border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest">
                 <tr>
                   <th className="px-6 py-4 font-bold text-center w-24">Qty</th>
-                  <th className="px-6 py-4 font-bold">Product & Variant</th>
+                  <th className="px-6 py-4 font-bold text-center w-32">Variant</th>
+                  <th className="px-6 py-4 font-bold">Product</th>
                   <th className="px-6 py-4 font-bold font-mono">SKU</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {paginatedWarehouse.map((cust, i) => (
                   <React.Fragment key={i}>
-                    {/* Agency/Customer Header Row */}
                     <tr className="bg-slate-100/80 border-t-2 border-slate-200">
-                      <td colSpan="3" className="px-6 py-4">
+                      <td colSpan="4" className="px-6 py-4">
                         <div className="font-black text-slate-900 text-base tracking-tight uppercase">{cust.name}</div>
                         <div className="text-xs font-medium text-slate-500 mt-0.5">{cust.address}</div>
                       </td>
                     </tr>
                     
-                    {/* Patients List Loop */}
                     {cust.patients.map((p, pIdx) => (
                       <React.Fragment key={`${i}-${pIdx}`}>
-                        
-                        {/* ONLY render a subheader if there is a patient name */}
                         {p.patientName !== '' && (
                           <tr className="bg-white border-b border-slate-50">
-                            <td colSpan="3" className="px-6 pt-4 pb-2">
+                            <td colSpan="4" className="px-6 pt-4 pb-2">
                               <span className="text-[11px] font-bold uppercase tracking-widest flex items-center gap-1.5 text-blue-600">
                                 {p.patientName}
                               </span>
                             </td>
                           </tr>
                         )}
-
-                        {/* Patient's Items List */}
                         {p.items.map((item, itemIdx) => (
                           <tr key={`${i}-${pIdx}-${itemIdx}`} className="hover:bg-slate-50/50 transition-colors group cursor-pointer border-b border-slate-50 last:border-0">
                             <td className="px-6 py-2.5 text-center">
@@ -1099,13 +1171,13 @@ export default function Reports() {
                                 {item.qty}
                               </span>
                             </td>
+                            <td className="px-6 py-2.5 text-center">
+                              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                                {(item.variant && item.variant !== 'Default') ? item.variant : '-'}
+                              </span>
+                            </td>
                             <td className="px-6 py-2.5">
                               <span className="font-bold text-slate-900">{item.name}</span>
-                              {item.variant && item.variant !== 'Default' && !item.variant.includes('1x') && (
-                                <span className="ml-2 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                                  [{item.variant}]
-                                </span>
-                              )}
                             </td>
                             <td className="px-6 py-2.5 font-mono text-xs font-bold text-slate-500">
                               {item.sku || 'N/A'}

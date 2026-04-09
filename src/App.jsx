@@ -129,7 +129,6 @@ export default function App() {
               <Products />
             </RoleProtectedRoute>
           } />
-          {/* 🚀 FIXED: Added Warehouse to the allowed roles for Fleet Management */}
           <Route path="fleet" element={
             <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
               <FleetManagement />
@@ -141,15 +140,17 @@ export default function App() {
             </RoleProtectedRoute>
           } />
           
+          {/* 🚀 FIXED: Added 'warehouse' to allowed roles for Reports! */}
+          <Route path="admin/reports" element={
+            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
+              <Reports />
+            </RoleProtectedRoute>
+          } />
+          
           {/* 🚀 STRICT ROLE PROTECTION: Admin Only */}
           <Route path="admin/users" element={
             <RoleProtectedRoute allowedRoles={['admin']}>
               <AdminUsers />
-            </RoleProtectedRoute>
-          } />
-          <Route path="admin/reports" element={
-            <RoleProtectedRoute allowedRoles={['admin']}>
-              <Reports />
             </RoleProtectedRoute>
           } />
 

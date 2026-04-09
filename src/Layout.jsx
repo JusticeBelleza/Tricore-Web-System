@@ -247,7 +247,6 @@ export default function Layout() {
                 
                 {(profile?.role === 'admin' || profile?.role === 'warehouse') && (
                   <>
-                    {/* 🚀 PERFECTLY REORDERED LIST */}
                     {/* 1. All Orders */}
                     <Link to="/admin/orders" onClick={closeMobileMenu} className={navItemClass('/admin/orders')}>
                       <ShoppingCart size={18} /> 
@@ -295,7 +294,7 @@ export default function Layout() {
                       <Package size={18} /> Manage Products
                     </Link>
 
-                    {/* 5. Fleet Management (Moved up for Warehouse access) */}
+                    {/* 5. Fleet Management */}
                     <Link to="/fleet" onClick={closeMobileMenu} className={navItemClass('/fleet')}>
                       <Car size={18} /> Fleet Management
                     </Link>
@@ -304,9 +303,15 @@ export default function Layout() {
                     <Link to="/purchase-orders" onClick={closeMobileMenu} className={navItemClass('/purchase-orders')}>
                       <ClipboardList size={18} /> Purchase Orders
                     </Link>
+
+                    {/* 🚀 7. Reports (Moved up so Warehouse staff can access it) */}
+                    <Link to="/admin/reports" onClick={closeMobileMenu} className={navItemClass('/admin/reports')}>
+                      <BarChart3 size={18} /> Reports
+                    </Link>
                   </>
                 )}
 
+                {/* Administration is now strictly for Admin tasks like User Management */}
                 {profile?.role === 'admin' && (
                   <>
                     <div className="pt-4 pb-2">
@@ -315,10 +320,6 @@ export default function Layout() {
 
                     <Link to="/admin/users" onClick={closeMobileMenu} className={navItemClass('/admin/users')}>
                       <Users size={18} /> User Management
-                    </Link>
-                    
-                    <Link to="/admin/reports" onClick={closeMobileMenu} className={navItemClass('/admin/reports')}>
-                      <BarChart3 size={18} /> Reports
                     </Link>
                   </>
                 )}
