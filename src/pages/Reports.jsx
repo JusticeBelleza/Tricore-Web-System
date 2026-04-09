@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { 
   Calendar, Download, DollarSign, ShoppingCart, 
   TrendingUp, FileText, Search, ArrowRight, Package, FileDown, FileBarChart,
-  ChevronLeft, ChevronRight, Loader2, ChevronDown, Percent, CreditCard, Box
+  ChevronLeft, ChevronRight, Loader2, ChevronDown, Percent, CreditCard
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -11,6 +11,7 @@ import autoTable from 'jspdf-autotable';
 export default function Reports() {
   const [reportType, setReportType] = useState('itemized'); 
   const [staffName, setStaffName] = useState('Staff Member');
+  const [userRole, setUserRole] = useState(null); 
   
   const [tableData, setTableData] = useState([]);
   const [kpis, setKpis] = useState({ rev: 0, tax: 0, ship: 0, gross: 0, caS: 0, outS: 0, caT: 0, orderCount: 0 });
@@ -44,8 +45,16 @@ export default function Reports() {
     const fetchUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        const { data } = await supabase.from('user_profiles').select('full_name').eq('id', user.id).single();
+        // Fetching the user's role from user_profiles
+        const { data } = await supabase.from('user_profiles').select('full_name, role').eq('id', user.id).single();
         if (data?.full_name) setStaffName(data.full_name);
+        if (data?.role) {
+          setUserRole(data.role);
+          // If the role is warehouse, lock them to the warehouse summary
+          if (data.role === 'warehouse') {
+            setReportType('warehouse_summary');
+          }
+        }
       }
     };
     fetchUser();
@@ -63,7 +72,6 @@ export default function Reports() {
     setCurrentPage(1);
   }, [reportType, startDate, endDate, pageSize]);
 
-  // Note: Removed currentPage and pageSize dependencies so we only fetch on date/type change
   useEffect(() => {
     fetchKPIs();
     if (reportType === 'top_products') {
@@ -75,16 +83,8 @@ export default function Reports() {
     } else {
       fetchTableData();
     }
-  }, [startDate, endDate, reportType]);
-
-  // Client-side filtering when search term changes
-  useEffect(() => {
-    if (reportType === 'itemized' || reportType === 'ca_tax') fetchTableData();
-    else if (reportType === 'top_products') fetchTopProductsAnalytics();
-    else if (reportType === 'profitability') fetchProfitabilityReport();
-    else if (reportType === 'warehouse_summary') fetchWarehouseSummary();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearch]);
+  }, [startDate, endDate, reportType, debouncedSearch, currentPage, pageSize]);
 
 
   const fetchKPIs = async () => {
@@ -92,26 +92,20 @@ export default function Reports() {
     adjustedEndDate.setHours(23, 59, 59, 999);
 
     let query = supabase.from('orders')
-      .select('id, total_amount, tax_amount, shipping_amount, subtotal, shipping_state, shipping_name, patient_name, status')
+      .select('id, total_amount, tax_amount, shipping_amount, subtotal, shipping_state, shipping_name, status')
       .neq('status', 'cancelled')
       .gte('created_at', new Date(startDate).toISOString())
       .lte('created_at', adjustedEndDate.toISOString());
 
+    if (debouncedSearch) {
+      query = query.or(`id.ilike.%${debouncedSearch}%,shipping_name.ilike.%${debouncedSearch}%`);
+    }
+
     const { data, error } = await query;
     if (error) return console.error('Error fetching KPIs:', error);
 
-    let filteredData = data || [];
-    if (debouncedSearch) {
-      const s = debouncedSearch.toLowerCase();
-      filteredData = filteredData.filter(o => 
-        (o.id || '').toLowerCase().includes(s) || 
-        (o.shipping_name || '').toLowerCase().includes(s) || 
-        (o.patient_name || '').toLowerCase().includes(s)
-      );
-    }
-
     let rev = 0, tax = 0, ship = 0, gross = 0, caS = 0, outS = 0, caT = 0;
-    filteredData.forEach(o => {
+    (data || []).forEach(o => {
       rev += Number(o.total_amount || 0);
       tax += Number(o.tax_amount || 0);
       ship += Number(o.shipping_amount || 0);
@@ -125,7 +119,7 @@ export default function Reports() {
       }
     });
 
-    setKpis({ rev, tax, ship, gross, caS, outS, caT, orderCount: filteredData.length });
+    setKpis({ rev, tax, ship, gross, caS, outS, caT, orderCount: (data || []).length });
   };
 
   const fetchTableData = async () => {
@@ -134,45 +128,31 @@ export default function Reports() {
       const adjustedEndDate = new Date(endDate);
       adjustedEndDate.setHours(23, 59, 59, 999);
 
+      const from = (currentPage - 1) * pageSize;
+      const to = from + pageSize - 1;
+
       let query = supabase.from('orders').select(`
-        id, created_at, status, subtotal, shipping_amount, tax_amount, total_amount, company_id, patient_name,
+        id, created_at, status, subtotal, shipping_amount, tax_amount, total_amount, company_id,
         shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
         companies ( name )
         ${reportType === 'itemized' ? `, order_items ( quantity_variants, unit_price, line_total, product_variants ( name, sku, products ( name, base_sku ) ) )` : ''}
-      `)
+      `, { count: 'exact' })
       .neq('status', 'cancelled')
       .gte('created_at', new Date(startDate).toISOString())
       .lte('created_at', adjustedEndDate.toISOString())
       .order('created_at', { ascending: false });
 
-      let allData = [];
-      let currentOffset = 0;
-      const chunk = 1000;
-      let hasMore = true;
-
-      while (hasMore) {
-        const { data, error } = await query.range(currentOffset, currentOffset + chunk - 1);
-        if (error) throw error;
-        allData = [...allData, ...data];
-        if (data.length < chunk) hasMore = false;
-        currentOffset += chunk;
-      }
-
-      let formatted = formatData(allData);
-
       if (debouncedSearch) {
-        const s = debouncedSearch.toLowerCase();
-        formatted = formatted.filter(r => 
-          (r.orderId || r.id || '').toLowerCase().includes(s) ||
-          (r.customer || '').toLowerCase().includes(s) ||
-          (r.patientName || '').toLowerCase().includes(s) ||
-          (r.product || '').toLowerCase().includes(s) ||
-          (r.sku || '').toLowerCase().includes(s)
-        );
+        query = query.or(`id.ilike.%${debouncedSearch}%,shipping_name.ilike.%${debouncedSearch}%`);
       }
+
+      const { data, count, error } = await query.range(from, to);
+      if (error) throw error;
+
+      let formatted = formatData(data || []);
 
       setTableData(formatted);
-      setTotalCount(formatted.length);
+      setTotalCount(count || 0); 
     } catch (error) {
       console.error('Error fetching table data:', error.message);
     } finally {
@@ -354,7 +334,7 @@ export default function Reports() {
       adjustedEndDate.setHours(23, 59, 59, 999);
 
       let query = supabase.from('orders').select(`
-        id, status, company_id, patient_name,
+        id, status, company_id,
         shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
         companies ( name, address, city, state, zip ),
         order_items ( quantity_variants, status, product_variant_id, product_variants ( name, sku, products ( name ) ) )
@@ -393,8 +373,7 @@ export default function Reports() {
           customerMap[custKey] = { name: custName, address: fullAddress, items: {} };
         }
 
-        // If no patient name, explicitly define as empty string
-        const patientName = order.patient_name ? String(order.patient_name).trim().toUpperCase() : '';
+        const patientName = order.shipping_name ? String(order.shipping_name).trim().toUpperCase() : '';
 
         order.order_items?.forEach(item => {
           if (item.status === 'cancelled') return;
@@ -429,7 +408,6 @@ export default function Reports() {
         );
       }
 
-      // Group items by patient for rendering
       const structuredData = finalData.map(c => {
         const patientsMap = {};
         c.items.forEach(item => {
@@ -474,7 +452,7 @@ export default function Reports() {
             orderId: order.id.substring(0, 8).toUpperCase(),
             date: new Date(order.created_at).toLocaleDateString(),
             customer,
-            patientName: order.patient_name || order.shipping_name || 'N/A',
+            patientName: order.shipping_name || 'N/A',
             product: item.product_variants?.products?.name || item.product_variants?.name || 'Unknown Product',
             variant: item.product_variants?.name || 'N/A',
             sku: item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A',
@@ -498,12 +476,44 @@ export default function Reports() {
     return formatted;
   };
 
-  // CLIENT-SIDE PAGINATION SLICES
-  const paginatedTableData = tableData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const fetchFullDataForExport = async () => {
+    const adjustedEndDate = new Date(endDate);
+    adjustedEndDate.setHours(23, 59, 59, 999);
+
+    let query = supabase.from('orders').select(`
+      id, created_at, status, subtotal, shipping_amount, tax_amount, total_amount, company_id,
+      shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
+      companies ( name )
+      ${reportType === 'itemized' ? `, order_items ( quantity_variants, unit_price, line_total, product_variants ( name, sku, products ( name, base_sku ) ) )` : ''}
+    `)
+    .neq('status', 'cancelled')
+    .gte('created_at', new Date(startDate).toISOString())
+    .lte('created_at', adjustedEndDate.toISOString())
+    .order('created_at', { ascending: false });
+
+    if (debouncedSearch) {
+      query = query.or(`id.ilike.%${debouncedSearch}%,shipping_name.ilike.%${debouncedSearch}%`);
+    }
+
+    let allData = [];
+    let currentOffset = 0;
+    const chunk = 1000;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data, error } = await query.range(currentOffset, currentOffset + chunk - 1);
+      if (error) throw error;
+      allData = [...allData, ...data];
+      if (data.length < chunk) hasMore = false;
+      currentOffset += chunk;
+    }
+
+    return formatData(allData);
+  };
+
   const paginatedTopProducts = topProductsData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const paginatedProfitability = profitabilityData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const paginatedWarehouse = warehouseData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-
 
   const exportToCSV = async () => {
     setIsExporting(true);
@@ -542,14 +552,16 @@ export default function Reports() {
           });
         });
         csvContent = [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
-        fileName = `Tricore_Master_Pick_List_${startDate}_to_${endDate}.csv`;
+        fileName = `Tricore_Warehouse_Order_Summary_${startDate}_to_${endDate}.csv`;
 
       } else {
+        const fullExportData = await fetchFullDataForExport();
+
         const headers = reportType === 'itemized' 
           ? ["Order ID", "Date", "Agency/Customer", "Patient Name", "Product", "Variant", "SKU", "Qty", "Street", "City", "State", "Zip"]
           : ["Order ID", "Date", "Customer", "Street", "City", "State", "Zip", "CA?", "Subtotal", "Shipping", "Tax", "Total"];
         
-        const rows = tableData.map(r => reportType === 'itemized'
+        const rows = fullExportData.map(r => reportType === 'itemized'
           ? [`"${r.orderId}"`, `"${r.date}"`, `"${r.customer}"`, `"${r.patientName}"`, `"${r.product}"`, `"${r.variant}"`, `"${r.sku}"`, r.qty, `"${r.streetAddress}"`, `"${r.city}"`, `"${r.state}"`, `"${r.zipCode}"`]
           : [`"${r.id}"`, `"${r.date}"`, `"${r.customer}"`, `"${r.streetAddress}"`, `"${r.city}"`, `"${r.state}"`, `"${r.zipCode}"`, r.isCA ? 'Yes' : 'No', r.subtotal, r.shipping, r.tax, r.total]
         );
@@ -626,7 +638,7 @@ export default function Reports() {
       if (reportType === 'ca_tax') title = "CALIFORNIA SALES TAX REPORT";
       if (reportType === 'top_products') title = "TOP 100 PRODUCTS ANALYTICS";
       if (reportType === 'profitability') title = "PRODUCT PROFITABILITY REPORT";
-      if (reportType === 'warehouse_summary') title = "MASTER PICK LIST";
+      if (reportType === 'warehouse_summary') title = "ORDER SUMMARY";
       
       doc.text(title, pageWidth - 14, 18, { align: "right" });
       
@@ -641,7 +653,6 @@ export default function Reports() {
 
     const drawFooter = () => {
       doc.setFontSize(9); doc.setFont("helvetica", "normal"); doc.setTextColor(150, 150, 150);
-      // 🚀 Generated By moved exclusively to the PDF footer!
       doc.text(`Generated by: ${staffName}`, 14, pageHeight - 10);
       doc.text(`Page ${doc.internal.getNumberOfPages()}`, pageWidth - 14, pageHeight - 10, { align: "right" });
       doc.text("TRICORE MEDICAL SUPPLY | CONFIDENTIAL REPORT", pageWidth / 2, pageHeight - 10, { align: "center" });
@@ -690,7 +701,7 @@ export default function Reports() {
         didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
         margin: { top: tableStartY, bottom: 20 } 
       });
-      doc.save(`Tricore_Master_Pick_List_${startDate}_to_${endDate}.pdf`);
+      doc.save(`Tricore_Warehouse_Order_Summary_${startDate}_to_${endDate}.pdf`);
 
     } else if (reportType === 'top_products') {
       const tableRows = topProductsData.map((p, i) => [ 
@@ -724,33 +735,37 @@ export default function Reports() {
       });
       doc.save(`Tricore_Profitability_Report_${startDate}_to_${endDate}.pdf`);
 
-    } else if (reportType === 'ca_tax') {
-      const tableRows = tableData.map(r => [ r.id, r.date, r.customer, r.streetAddress, r.city, r.state, r.zipCode, r.isCA ? 'Yes' : 'No', `$${Number(r.subtotal || 0).toFixed(2)}`, `$${Number(r.shipping || 0).toFixed(2)}`, `$${Number(r.tax || 0).toFixed(2)}`, `$${Number(r.total || 0).toFixed(2)}` ]);
-      autoTable(doc, {
-        startY: tableStartY,
-        head: [["ORDER ID", "DATE", "AGENCY", "STREET", "CITY", "ST", "ZIP", "CA?", "SUBTOTAL", "SHIPPING", "TAX", "TOTAL"]],
-        body: tableRows,
-        theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
-        styles: { fontSize: 7, cellPadding: 3 }, 
-        columnStyles: { 8: { halign: 'right' }, 9: { halign: 'right' }, 10: { halign: 'right' }, 11: { halign: 'right' } },
-        didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
-        margin: { top: tableStartY } 
-      });
-      doc.save(`Tricore_CA_Tax_Report_${startDate}_to_${endDate}.pdf`);
-      
     } else {
-      const tableRows = tableData.map(r => [ r.orderId, r.date, r.customer, r.patientName, r.product, r.variant, r.sku, r.qty, r.streetAddress, r.city, r.state, r.zipCode ]);
-      autoTable(doc, {
-        startY: tableStartY,
-        head: [["ORDER ID", "DATE", "AGENCY", "PATIENT NAME", "PRODUCT", "VARIANT", "SKU", "QTY", "STREET", "CITY", "ST", "ZIP"]],
-        body: tableRows,
-        theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
-        styles: { fontSize: 7, cellPadding: 3 }, 
-        columnStyles: { 7: { halign: 'center' } },
-        didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
-        margin: { top: tableStartY } 
-      });
-      doc.save(`Tricore_Itemized_Summary_${startDate}_to_${endDate}.pdf`);
+      const fullExportData = await fetchFullDataForExport();
+      
+      let tableRows = [];
+      if (reportType === 'ca_tax') {
+        tableRows = fullExportData.map(r => [ r.id, r.date, r.customer, r.streetAddress, r.city, r.state, r.zipCode, r.isCA ? 'Yes' : 'No', `$${Number(r.subtotal || 0).toFixed(2)}`, `$${Number(r.shipping || 0).toFixed(2)}`, `$${Number(r.tax || 0).toFixed(2)}`, `$${Number(r.total || 0).toFixed(2)}` ]);
+        autoTable(doc, {
+          startY: tableStartY,
+          head: [["ORDER ID", "DATE", "AGENCY", "STREET", "CITY", "ST", "ZIP", "CA?", "SUBTOTAL", "SHIPPING", "TAX", "TOTAL"]],
+          body: tableRows,
+          theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
+          styles: { fontSize: 7, cellPadding: 3 }, 
+          columnStyles: { 8: { halign: 'right' }, 9: { halign: 'right' }, 10: { halign: 'right' }, 11: { halign: 'right' } },
+          didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
+          margin: { top: tableStartY } 
+        });
+        doc.save(`Tricore_CA_Tax_Report_${startDate}_to_${endDate}.pdf`);
+      } else {
+        tableRows = fullExportData.map(r => [ r.orderId, r.date, r.customer, r.patientName, r.product, r.variant, r.sku, r.qty, r.streetAddress, r.city, r.state, r.zipCode ]);
+        autoTable(doc, {
+          startY: tableStartY,
+          head: [["ORDER ID", "DATE", "AGENCY", "PATIENT NAME", "PRODUCT", "VARIANT", "SKU", "QTY", "STREET", "CITY", "ST", "ZIP"]],
+          body: tableRows,
+          theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
+          styles: { fontSize: 7, cellPadding: 3 }, 
+          columnStyles: { 7: { halign: 'center' } },
+          didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
+          margin: { top: tableStartY } 
+        });
+        doc.save(`Tricore_Itemized_Summary_${startDate}_to_${endDate}.pdf`);
+      }
     }
     
     setIsExporting(false);
@@ -776,10 +791,13 @@ export default function Reports() {
 
       {/* --- CONTROL PANEL --- */}
       <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6">
+        <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-6">
           
-          <div className="flex flex-col md:flex-row gap-4 items-center w-full lg:w-auto">
-            <div className="w-full md:w-80 shrink-0">
+          {/* Responsive container for filters */}
+          <div className="flex flex-col md:flex-row gap-4 md:gap-6 items-start md:items-center w-full xl:w-auto">
+            
+            {/* 🚀 RESPONSIVE DROPDOWN: Uses w-full on mobile, min-w on tablet, and fixed w on desktop */}
+            <div className="w-full md:min-w-[240px] lg:w-80 shrink-0">
               <label className="block text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-1.5 ml-1">Report Type</label>
               <div className="relative">
                 <FileText className="absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-500" size={16} />
@@ -793,12 +811,15 @@ export default function Reports() {
                     setReportType(e.target.value); 
                     setSearchTerm(''); 
                   }} 
-                  className="w-full pl-10 pr-10 py-2.5 bg-blue-50 border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 text-sm font-bold text-blue-900 transition-all cursor-pointer shadow-sm appearance-none"
+                  disabled={userRole === 'warehouse'}
+                  // 🚀 TRUNCATE added to prevent long text from breaking layout on small screens
+                  className={`w-full pl-10 pr-10 py-2.5 bg-blue-50 border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 text-sm font-bold text-blue-900 transition-all shadow-sm appearance-none truncate ${userRole === 'warehouse' ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}
                 >
-                  <option value="itemized">Itemized Sales Summary</option>
-                  <option value="ca_tax">California Sales Tax Report</option>
-                  <option value="top_products">Top 100 Products Analytics</option>
-                  <option value="profitability">Product Profitability Report</option>
+                  {userRole !== 'warehouse' && <option value="itemized">Itemized Sales Summary</option>}
+                  {userRole !== 'warehouse' && <option value="ca_tax">California Sales Tax Report</option>}
+                  {userRole !== 'warehouse' && <option value="top_products">Top 100 Products Analytics</option>}
+                  {userRole !== 'warehouse' && <option value="profitability">Product Profitability Report</option>}
+                  
                   <option value="warehouse_summary">Warehouse Order Summary</option>
                 </select>
                 <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none" size={16} />
@@ -826,12 +847,12 @@ export default function Reports() {
             </div>
           </div>
 
-          <div className="flex gap-3 w-full lg:w-auto">
-            <button onClick={exportToCSV} disabled={totalCount === 0 || loading || isExporting} className="flex-1 lg:flex-none px-6 py-2.5 bg-white text-slate-700 border border-slate-200 text-sm font-bold rounded-xl hover:bg-slate-50 active:scale-95 disabled:opacity-50 transition-all shadow-sm flex items-center justify-center gap-2 w-32">
+          <div className="flex gap-3 w-full xl:w-auto">
+            <button onClick={exportToCSV} disabled={totalCount === 0 || loading || isExporting} className="flex-1 xl:flex-none px-6 py-2.5 bg-white text-slate-700 border border-slate-200 text-sm font-bold rounded-xl hover:bg-slate-50 active:scale-95 disabled:opacity-50 transition-all shadow-sm flex items-center justify-center gap-2 md:w-32">
               {isExporting ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />} 
               {isExporting ? '...' : 'CSV'}
             </button>
-            <button onClick={exportToPDF} disabled={totalCount === 0 || loading || isExporting} className="flex-1 lg:flex-none px-6 py-2.5 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all shadow-md flex items-center justify-center gap-2 w-36">
+            <button onClick={exportToPDF} disabled={totalCount === 0 || loading || isExporting} className="flex-1 xl:flex-none px-6 py-2.5 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all shadow-md flex items-center justify-center gap-2 md:w-36">
               {isExporting ? <Loader2 className="animate-spin" size={16} /> : <FileDown size={16} />} 
               {isExporting ? 'Gen...' : 'Print PDF'}
             </button>
@@ -1013,7 +1034,7 @@ export default function Reports() {
         {reportType === 'warehouse_summary' && (
           <div className="px-6 py-5 border-b border-slate-100 bg-white flex justify-between items-center">
             <div>
-              <h3 className="font-black text-slate-900 text-xl tracking-tight">Master Pick List</h3>
+              <h3 className="font-black text-slate-900 text-xl tracking-tight">Warehouse Order Summary</h3>
               <p className="text-xs font-medium text-slate-500 mt-0.5">Grouped by delivery location for easy picking.</p>
             </div>
             <span className="bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg text-[10px] uppercase tracking-widest font-bold shadow-sm border border-slate-200">
@@ -1036,7 +1057,6 @@ export default function Reports() {
             </div>
           ) : reportType === 'warehouse_summary' ? (
             
-            /* 🚀 WAREHOUSE SUMMARY TABLE UI - CLIENT PAGINATED */
             <table className="w-full text-left text-sm whitespace-nowrap">
               <thead className="bg-white border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest">
                 <tr>
@@ -1220,7 +1240,7 @@ export default function Reports() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {paginatedTableData.map((row, index) => (
+                {tableData.map((row, index) => (
                   <tr key={`item-${row.orderId}-${index}`} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-3 font-mono font-bold text-slate-900">{row.orderId}</td>
                     <td className="px-6 py-3 font-medium text-slate-600">{row.date}</td>
@@ -1261,7 +1281,7 @@ export default function Reports() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {paginatedTableData.map((row, index) => (
+                {tableData.map((row, index) => (
                   <tr key={`tax-${row.id}-${index}`} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-3 font-mono font-bold text-slate-900">{row.id}</td>
                     <td className="px-6 py-3 font-medium text-slate-600">{row.date}</td>
