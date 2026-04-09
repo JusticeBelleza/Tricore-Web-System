@@ -103,13 +103,26 @@ export default function Reports() {
     adjustedEndDate.setHours(23, 59, 59, 999);
 
     let query = supabase.from('orders')
-      .select('id, total_amount, tax_amount, shipping_amount, subtotal, shipping_state, shipping_name, status')
+      .select('id, total_amount, tax_amount, shipping_amount, subtotal, shipping_state, shipping_name, status, companies(name)')
       .neq('status', 'cancelled')
       .gte('created_at', new Date(startDate).toISOString())
       .lte('created_at', adjustedEndDate.toISOString());
 
     if (debouncedSearch) {
-      query = query.or(`id.ilike.%${debouncedSearch}%,shipping_name.ilike.%${debouncedSearch}%`);
+      const cleanSearch = debouncedSearch.trim();
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanSearch);
+      
+      const { data: compData } = await supabase
+        .from('companies')
+        .select('id')
+        .ilike('name', `%${cleanSearch}%`);
+      const compIds = compData?.map(c => c.id) || [];
+
+      const orFilters = [`shipping_name.ilike.%${cleanSearch}%`];
+      if (isUUID) orFilters.push(`id.eq.${cleanSearch}`);
+      if (compIds.length > 0) orFilters.push(`company_id.in.(${compIds.join(',')})`);
+
+      query = query.or(orFilters.join(','));
     }
 
     const { data, error } = await query;
@@ -154,7 +167,20 @@ export default function Reports() {
       .order('created_at', { ascending: false });
 
       if (debouncedSearch) {
-        query = query.or(`id.ilike.%${debouncedSearch}%,shipping_name.ilike.%${debouncedSearch}%`);
+        const cleanSearch = debouncedSearch.trim();
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanSearch);
+        
+        const { data: compData } = await supabase
+          .from('companies')
+          .select('id')
+          .ilike('name', `%${cleanSearch}%`);
+        const compIds = compData?.map(c => c.id) || [];
+
+        const orFilters = [`shipping_name.ilike.%${cleanSearch}%`];
+        if (isUUID) orFilters.push(`id.eq.${cleanSearch}`);
+        if (compIds.length > 0) orFilters.push(`company_id.in.(${compIds.join(',')})`);
+
+        query = query.or(orFilters.join(','));
       }
 
       const { data, count, error } = await query.range(from, to);
@@ -177,10 +203,11 @@ export default function Reports() {
       const adjustedEndDate = new Date(endDate);
       adjustedEndDate.setHours(23, 59, 59, 999);
 
+      // FIX: Added base_sku to the products fetch request!
       let query = supabase.from('order_items').select(`
         quantity_variants, line_total, status, product_variant_id,
         orders!inner ( id, created_at, status, shipping_name, companies(name), user_profiles(full_name) ),
-        product_variants ( name, sku, products(name) )
+        product_variants ( name, sku, products(name, base_sku) )
       `)
       .neq('status', 'cancelled')
       .neq('orders.status', 'cancelled')
@@ -210,7 +237,9 @@ export default function Reports() {
         const up = Array.isArray(row.orders.user_profiles) ? row.orders.user_profiles[0] : row.orders.user_profiles;
         const buyerName = isB2B ? row.orders.companies.name : (up?.full_name || row.orders.shipping_name || 'Retail Customer');
         const pName = row.product_variants?.products?.name || row.product_variants?.name || 'Unknown';
-        const pSku = row.product_variants?.sku || '';
+        
+        // FIX: Now securely assigns base_sku if variant sku is missing!
+        const pSku = row.product_variants?.sku || row.product_variants?.products?.base_sku || '';
 
         uniqueOrders.add(row.orders.id);
         const qty = Number(row.quantity_variants || 0);
@@ -241,9 +270,12 @@ export default function Reports() {
       }).sort((a, b) => b.totalQty - a.totalQty);
 
       if (debouncedSearch) {
-        const s = debouncedSearch.toLowerCase();
+        // FIX: Now cleanly searches Name, SKU (including base), AND Buyers!
+        const s = debouncedSearch.trim().toLowerCase();
         sortedProducts = sortedProducts.filter(p => 
-          p.name.toLowerCase().includes(s) || p.sku.toLowerCase().includes(s)
+          (p.name && p.name.toLowerCase().includes(s)) || 
+          (p.sku && p.sku.toLowerCase().includes(s)) ||
+          (p.topBuyersArray && p.topBuyersArray.some(b => b.name && b.name.toLowerCase().includes(s)))
         );
       }
 
@@ -262,75 +294,29 @@ export default function Reports() {
       const adjustedEndDate = new Date(endDate);
       adjustedEndDate.setHours(23, 59, 59, 999);
 
-      let query = supabase.from('order_items').select(`
-        quantity_variants, line_total, status, product_variant_id,
-        orders!inner ( id, created_at, status, shipping_name, companies(name), user_profiles(full_name) ),
-        product_variants ( name, sku, unit_cost, products(name) )
-      `)
-      .neq('status', 'cancelled')
-      .neq('orders.status', 'cancelled')
-      .gte('orders.created_at', new Date(startDate).toISOString())
-      .lte('orders.created_at', adjustedEndDate.toISOString());
+      const { data, error } = await supabase.rpc('get_profitability_report', {
+        p_start_date: new Date(startDate).toISOString(),
+        p_end_date: adjustedEndDate.toISOString(),
+        p_search: debouncedSearch.trim() || ''
+      });
 
-      let allData = [];
-      let currentOffset = 0;
-      const chunk = 1000;
-      let hasMore = true;
-
-      while (hasMore) {
-        const { data, error } = await query.range(currentOffset, currentOffset + chunk - 1);
-        if (error) throw error;
-        allData = [...allData, ...data];
-        if (data.length < chunk) hasMore = false;
-        currentOffset += chunk;
-      }
+      if (error) throw error;
 
       let rev = 0;
       let cogs = 0;
-      const productMap = {};
-
-      allData.forEach(row => {
-        const pName = row.product_variants?.products?.name || row.product_variants?.name || 'Unknown';
-        const pSku = row.product_variants?.sku || '';
-
-        const qty = Number(row.quantity_variants || 0);
-        const lineTotal = Number(row.line_total || 0);
-        const unitCost = Number(row.product_variants?.unit_cost || 0);
-        const lineCogs = qty * unitCost;
-
-        rev += lineTotal;
-        cogs += lineCogs;
-
-        const vId = row.product_variant_id;
-        if (!productMap[vId]) {
-          productMap[vId] = { id: vId, name: pName, sku: pSku, totalQty: 0, totalRevenue: 0, totalCogs: 0 };
-        }
-
-        productMap[vId].totalQty += qty;
-        productMap[vId].totalRevenue += lineTotal;
-        productMap[vId].totalCogs += lineCogs;
+      
+      (data || []).forEach(product => {
+        rev += Number(product.totalRevenue || 0);
+        cogs += Number(product.totalCogs || 0);
       });
 
       const profit = rev - cogs;
       const avgMargin = rev > 0 ? ((profit / rev) * 100) : 0;
       
       setProfitabilityKpis({ revenue: rev, cogs, profit, avgMargin });
+      setProfitabilityData(data || []);
+      setTotalCount((data || []).length);
 
-      let sortedProducts = Object.values(productMap).map(p => {
-        p.grossProfit = p.totalRevenue - p.totalCogs;
-        p.margin = p.totalRevenue > 0 ? ((p.grossProfit / p.totalRevenue) * 100) : 0;
-        return p;
-      }).sort((a, b) => b.grossProfit - a.grossProfit);
-
-      if (debouncedSearch) {
-        const s = debouncedSearch.toLowerCase();
-        sortedProducts = sortedProducts.filter(p => 
-          p.name.toLowerCase().includes(s) || p.sku.toLowerCase().includes(s)
-        );
-      }
-
-      setProfitabilityData(sortedProducts);
-      setTotalCount(sortedProducts.length);
     } catch (error) {
       console.error('Error generating profitability:', error);
     } finally {
@@ -344,11 +330,12 @@ export default function Reports() {
       const adjustedEndDate = new Date(endDate);
       adjustedEndDate.setHours(23, 59, 59, 999);
 
+      // FIX: Added base_sku to this request too to keep everything identical!
       let query = supabase.from('orders').select(`
         id, status, company_id, created_at,
         shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
         companies ( name, address, city, state, zip ),
-        order_items ( quantity_variants, status, product_variant_id, product_variants ( name, sku, products ( name ) ) )
+        order_items ( quantity_variants, status, product_variant_id, product_variants ( name, sku, products ( name, base_sku ) ) )
       `)
       .neq('status', 'cancelled')
       .gte('created_at', new Date(startDate).toISOString())
@@ -402,7 +389,9 @@ export default function Reports() {
           const qty = Number(item.quantity_variants || 0);
           const pName = item.product_variants?.products?.name || 'Unknown Item';
           const vName = item.product_variants?.name || '';
-          const sku = item.product_variants?.sku || '';
+          
+          // FIX: Added base_sku fallback here too!
+          const sku = item.product_variants?.sku || item.product_variants?.products?.base_sku || '';
           
           const itemKey = `${sku}_${pName}_${patientName}`; 
 
@@ -423,7 +412,7 @@ export default function Reports() {
       })).sort((a, b) => new Date(b.latestOrder) - new Date(a.latestOrder));
 
       if (debouncedSearch) {
-        const s = debouncedSearch.toLowerCase();
+        const s = debouncedSearch.trim().toLowerCase();
         finalData = finalData.filter(cust => 
           cust.name.toLowerCase().includes(s) || cust.address.toLowerCase().includes(s)
         );
@@ -513,7 +502,20 @@ export default function Reports() {
     .order('created_at', { ascending: false });
 
     if (debouncedSearch) {
-      query = query.or(`id.ilike.%${debouncedSearch}%,shipping_name.ilike.%${debouncedSearch}%`);
+      const cleanSearch = debouncedSearch.trim();
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanSearch);
+      
+      const { data: compData } = await supabase
+        .from('companies')
+        .select('id')
+        .ilike('name', `%${cleanSearch}%`);
+      const compIds = compData?.map(c => c.id) || [];
+
+      const orFilters = [`shipping_name.ilike.%${cleanSearch}%`];
+      if (isUUID) orFilters.push(`id.eq.${cleanSearch}`);
+      if (compIds.length > 0) orFilters.push(`company_id.in.(${compIds.join(',')})`);
+
+      query = query.or(orFilters.join(','));
     }
 
     let allData = [];
@@ -532,7 +534,6 @@ export default function Reports() {
     return formatData(allData);
   };
 
-  // 🚀 FIXED: Added back the paginated slices for the analytical reports!
   const paginatedTopProducts = topProductsData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const paginatedProfitability = profitabilityData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const paginatedWarehouse = warehouseData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
