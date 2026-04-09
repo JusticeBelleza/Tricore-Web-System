@@ -16,7 +16,7 @@ export default function Products() {
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  // 🚀 SERVER-SIDE PAGINATION, SEARCH, & TABS
+  // SERVER-SIDE PAGINATION, SEARCH, & TABS
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const pageSize = 20;
@@ -43,7 +43,7 @@ export default function Products() {
 
   // Form State
   const [formData, setFormData] = useState({
-    name: '', description: '', base_sku: '', retail_base_price: '',
+    name: '', description: '', base_sku: '', retail_base_price: '', unit_cost: '',
     base_unit_name: '', manufacturer: '', category: '', continue_selling: false, initial_stock: 0
   });
 
@@ -88,6 +88,14 @@ export default function Products() {
     }
   }, [showForm, formData.description]); 
 
+  // Margin Calculator Helper
+  const calculateMargin = (price, cost) => {
+    const p = Number(price) || 0;
+    const c = Number(cost) || 0;
+    if (p <= 0) return 0;
+    return (((p - c) / p) * 100).toFixed(1);
+  };
+
   const fetchCategories = async () => {
     try {
       const { data } = await supabase.from('products').select('category').neq('category', null);
@@ -103,11 +111,12 @@ export default function Products() {
   const fetchProducts = async () => {
     setLoading(true);
     try {
-      // 🚀 FIXED: Using 'multiplier' to match your database, and inner join on inventory for filtering
+      // EXPLICIT FETCH: Asking for unit_cost to bypass lazy cache
       let query = supabase.from('products').select(`
           *,
+          unit_cost,
           inventory!inner ( base_units_on_hand, base_units_reserved ),
-          product_variants ( id, name, multiplier, sku, price )
+          product_variants ( id, name, multiplier, sku, price, unit_cost )
         `, { count: 'exact' });
 
       if (debouncedSearch) {
@@ -118,7 +127,6 @@ export default function Products() {
         query = query.eq('category', selectedCategory);
       }
 
-      // 🚀 FIXED: Replaced supabase.raw with a static number (10) for Low Stock
       if (activeTab === 'low_stock') {
         query = query.gt('inventory.base_units_on_hand', 0).lte('inventory.base_units_on_hand', 10);
       } else if (activeTab === 'out_of_stock') {
@@ -152,8 +160,8 @@ export default function Products() {
   };
 
   const downloadTemplate = () => {
-    const headers = "Name,Base_SKU,Retail_Price,Base_Unit,Category,Manufacturer,Initial_Stock\n";
-    const sample = "Premium Nitrile Gloves,GLV-NIT-01,15.99,Each,PPE,Tricore,100\n";
+    const headers = "Name,Base_SKU,Unit_Cost,Retail_Price,Base_Unit,Category,Manufacturer,Initial_Stock\n";
+    const sample = "Premium Nitrile Gloves,GLV-NIT-01,8.50,15.99,Each,PPE,Tricore,100\n";
     const blob = new Blob([headers + sample], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "product_import_template.csv"; a.click();
@@ -164,13 +172,13 @@ export default function Products() {
     setExporting(true);
     showToast('Exporting...', 'Gathering all catalog data for export.');
     try {
-      const { data, error } = await supabase.from('products').select('*, inventory(base_units_on_hand)').order('name');
+      const { data, error } = await supabase.from('products').select('*, unit_cost, inventory(base_units_on_hand)').order('name');
       if (error) throw error;
 
-      const headers = ["Name", "Base SKU", "Category", "Manufacturer", "Retail Price", "Stock On Hand"];
+      const headers = ["Name", "Base SKU", "Category", "Manufacturer", "Unit Cost", "Retail Price", "Stock On Hand"];
       const rows = data.map(p => [
         `"${p.name.replace(/"/g, '""')}"`, p.base_sku, `"${(p.category || '').replace(/"/g, '""')}"`,
-        `"${(p.manufacturer || '').replace(/"/g, '""')}"`, p.retail_base_price, p.inventory?.base_units_on_hand || 0
+        `"${(p.manufacturer || '').replace(/"/g, '""')}"`, p.unit_cost || 0, p.retail_base_price, p.inventory?.base_units_on_hand || 0
       ]);
       const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
       const blob = new Blob([csvContent], { type: "text/csv" });
@@ -192,11 +200,12 @@ export default function Products() {
       const text = await file.text();
       const lines = text.split('\n').filter(line => line.trim() !== '');
       for (let i = 1; i < lines.length; i++) {
-        const [name, base_sku, price, unit, category, manufacturer, stock] = lines[i].split(',');
+        const [name, base_sku, cost, price, unit, category, manufacturer, stock] = lines[i].split(',');
         if (!name || !base_sku) continue;
 
         const { data: newProduct, error: productError } = await supabase.from('products').insert({
-          name: name.trim(), base_sku: base_sku.trim(), retail_base_price: Number(price) || 0,
+          name: name.trim(), base_sku: base_sku.trim(), 
+          unit_cost: Number(cost) || 0, retail_base_price: Number(price) || 0,
           base_unit_name: unit?.trim() || 'Each', category: category?.trim() || '',
           manufacturer: manufacturer?.trim() || '', continue_selling: false
         }).select().single();
@@ -204,7 +213,10 @@ export default function Products() {
         if (productError) continue;
 
         await supabase.from('inventory').insert({ product_id: newProduct.id, base_units_on_hand: Number(stock) || 0, base_units_reserved: 0 });
-        await supabase.from('product_variants').insert({ product_id: newProduct.id, name: `1x ${unit?.trim() || 'Each'}`, sku: `${base_sku.trim()}-1`, multiplier: 1, price: Number(price) || 0 });
+        await supabase.from('product_variants').insert({ 
+          product_id: newProduct.id, name: `1x ${unit?.trim() || 'Each'}`, sku: `${base_sku.trim()}-1`, 
+          multiplier: 1, unit_cost: Number(cost) || 0, price: Number(price) || 0 
+        });
       }
       showToast('Import Complete', 'Products imported successfully!');
       fetchProducts();
@@ -219,7 +231,7 @@ export default function Products() {
 
   const openCreateForm = () => {
     setEditingId(null);
-    setFormData({ name: '', description: '', base_sku: '', retail_base_price: '', base_unit_name: '', manufacturer: '', category: '', continue_selling: false, initial_stock: 0 });
+    setFormData({ name: '', description: '', base_sku: '', retail_base_price: '', unit_cost: '', base_unit_name: '', manufacturer: '', category: '', continue_selling: false, initial_stock: 0 });
     setExistingPhotos([]); setVariants([]); setDeletedVariantIds([]);
     setActiveFormats({ bold: false, italic: false, underline: false, unorderedList: false, orderedList: false, alignLeft: false, alignCenter: false, alignRight: false });
     setShowForm(true);
@@ -228,10 +240,16 @@ export default function Products() {
   const openEditForm = (product) => {
     setEditingId(product.id);
     setFormData({
-      name: product.name, description: product.description || '', base_sku: product.base_sku,
-      retail_base_price: product.retail_base_price, base_unit_name: product.base_unit_name,
-      manufacturer: product.manufacturer || '', category: product.category || '',
-      continue_selling: product.continue_selling, initial_stock: product.inventory?.base_units_on_hand || 0
+      name: product.name, 
+      description: product.description || '', 
+      base_sku: product.base_sku,
+      retail_base_price: product.retail_base_price, 
+      unit_cost: product.unit_cost ?? '', 
+      base_unit_name: product.base_unit_name, 
+      manufacturer: product.manufacturer || '', 
+      category: product.category || '',
+      continue_selling: product.continue_selling, 
+      initial_stock: product.inventory?.base_units_on_hand || 0
     });
     setExistingPhotos(product.image_urls || []);
     setVariants(product.product_variants || []);
@@ -312,7 +330,7 @@ export default function Products() {
     });
   };
 
-  const addVariant = () => setVariants([...variants, { name: '', sku: '', multiplier: '', price: '' }]);
+  const addVariant = () => setVariants([...variants, { name: '', sku: '', multiplier: '', unit_cost: '', price: '' }]);
   const updateVariant = (index, field, value) => { const newVariants = [...variants]; newVariants[index][field] = value; setVariants(newVariants); };
   const removeVariant = (index) => { const v = variants[index]; if (v.id) setDeletedVariantIds(prev => [...prev, v.id]); setVariants(variants.filter((_, i) => i !== index)); };
 
@@ -349,21 +367,39 @@ export default function Products() {
     setSaving(true);
     try {
       let productId = editingId;
+      
+      const parsedUnitCost = formData.unit_cost === '' || formData.unit_cost === null ? 0 : Number(formData.unit_cost);
+      
+      const productPayload = {
+        name: formData.name, 
+        description: formData.description, 
+        base_sku: formData.base_sku,
+        retail_base_price: Number(formData.retail_base_price) || 0, 
+        unit_cost: parsedUnitCost, 
+        base_unit_name: formData.base_unit_name, 
+        manufacturer: formData.manufacturer, 
+        category: formData.category, 
+        continue_selling: formData.continue_selling, 
+        image_urls: existingPhotos
+      };
 
       if (editingId) {
-        const { error: updateError } = await supabase.from('products').update({
-          name: formData.name, description: formData.description, base_sku: formData.base_sku,
-          retail_base_price: Number(formData.retail_base_price), base_unit_name: formData.base_unit_name,
-          manufacturer: formData.manufacturer, category: formData.category, continue_selling: formData.continue_selling, image_urls: existingPhotos
-        }).eq('id', editingId);
+        const { data: updateData, error: updateError } = await supabase
+          .from('products')
+          .update(productPayload)
+          .eq('id', editingId)
+          .select();
+          
         if (updateError) throw new Error(updateError.message);
+        
+        // FAILSAFE: Alert if RLS blocked the update
+        if (!updateData || updateData.length === 0) {
+           throw new Error("Update blocked by database security (RLS). Ensure your SQL policies are updated.");
+        }
+        
         await supabase.from('inventory').update({ base_units_on_hand: Number(formData.initial_stock) }).eq('product_id', editingId);
       } else {
-        const { data: newProduct, error: productError } = await supabase.from('products').insert({
-          name: formData.name, description: formData.description, base_sku: formData.base_sku,
-          retail_base_price: Number(formData.retail_base_price), base_unit_name: formData.base_unit_name,
-          manufacturer: formData.manufacturer, category: formData.category, continue_selling: formData.continue_selling, image_urls: existingPhotos
-        }).select().single();
+        const { data: newProduct, error: productError } = await supabase.from('products').insert(productPayload).select().single();
         if (productError) throw new Error(productError.message);
         productId = newProduct.id;
         await supabase.from('inventory').insert({ product_id: productId, base_units_on_hand: Number(formData.initial_stock), base_units_reserved: 0 });
@@ -372,8 +408,18 @@ export default function Products() {
       if (deletedVariantIds.length > 0) await supabase.from('product_variants').delete().in('id', deletedVariantIds);
 
       if (variants.length > 0) {
-        const existingVariants = variants.filter(v => v.id).map(v => ({ id: v.id, product_id: productId, name: v.name, sku: v.sku, multiplier: Number(v.multiplier), price: v.price ? Number(v.price) : 0 }));
-        const newVariants = variants.filter(v => !v.id).map(v => ({ product_id: productId, name: v.name, sku: v.sku, multiplier: Number(v.multiplier), price: v.price ? Number(v.price) : 0 }));
+        const existingVariants = variants.filter(v => v.id).map(v => ({ 
+          id: v.id, product_id: productId, name: v.name, sku: v.sku, 
+          multiplier: Number(v.multiplier), 
+          unit_cost: v.unit_cost === '' ? 0 : Number(v.unit_cost), 
+          price: v.price === '' ? 0 : Number(v.price) 
+        }));
+        const newVariants = variants.filter(v => !v.id).map(v => ({ 
+          product_id: productId, name: v.name, sku: v.sku, 
+          multiplier: Number(v.multiplier), 
+          unit_cost: v.unit_cost === '' ? 0 : Number(v.unit_cost), 
+          price: v.price === '' ? 0 : Number(v.price) 
+        }));
         if (existingVariants.length > 0) {
           const { error: existingError } = await supabase.from('product_variants').upsert(existingVariants);
           if (existingError) throw new Error(existingError.message);
@@ -384,7 +430,10 @@ export default function Products() {
         }
       } else if (!editingId) {
         const { error: variantError } = await supabase.from('product_variants').insert({
-          product_id: productId, name: `1x ${formData.base_unit_name || 'Unit'}`, sku: `${formData.base_sku}-1`, multiplier: 1, price: formData.retail_base_price ? Number(formData.retail_base_price) : 0
+          product_id: productId, name: `1x ${formData.base_unit_name || 'Unit'}`, sku: `${formData.base_sku}-1`, 
+          multiplier: 1, 
+          unit_cost: parsedUnitCost, 
+          price: formData.retail_base_price === '' ? 0 : Number(formData.retail_base_price)
         });
         if (variantError) throw new Error(variantError.message);
       }
@@ -418,9 +467,8 @@ export default function Products() {
     });
   };
 
-  // UI Class Helpers
   const inputClass = "w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 outline-none text-sm font-medium transition-all placeholder:text-slate-400";
-  const labelClass = "block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5";
+  const labelClass = "block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 min-h-[20px]";
   const getFormatClass = (isActive) => `p-1.5 rounded-lg transition-all ${isActive ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-200 hover:text-slate-900'}`;
   
   const tabBaseClass = "flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95";
@@ -534,27 +582,40 @@ export default function Products() {
                           <td colSpan="5" className="p-0 border-b border-slate-200">
                             <div className="p-6 sm:p-8 pl-[84px] animate-in slide-in-from-top-2 fade-in duration-200">
                               <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2"><Layers size={14}/> Product Variants & Pricing</h4>
-                              <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm inline-block min-w-full lg:min-w-[60%]">
+                              <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm inline-block min-w-full lg:min-w-[80%]">
                                 <table className="w-full text-left text-sm">
                                   <thead className="bg-slate-50/80 border-b border-slate-200">
                                     <tr className="text-slate-500 text-[10px] uppercase tracking-widest">
                                       <th className="px-5 py-3 font-bold">Packaging / Variant</th>
                                       <th className="px-5 py-3 font-bold">SKU Identifier</th>
-                                      <th className="px-5 py-3 font-bold text-center">Base Multiplier</th>
+                                      <th className="px-5 py-3 font-bold text-center">Multiplier</th>
+                                      <th className="px-5 py-3 font-bold text-right">Unit Cost</th>
                                       <th className="px-5 py-3 font-bold text-right">Selling Price</th>
+                                      <th className="px-5 py-3 font-bold text-right">Margin</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-100">
-                                    {product.product_variants?.map(v => (
-                                      <tr key={v.id} className="hover:bg-slate-50/50 transition-colors">
-                                        <td className="px-5 py-4 font-bold text-slate-900 flex items-center gap-2"><Box size={14} className="text-slate-400"/> {v.name}</td>
-                                        <td className="px-5 py-4 font-mono text-xs font-medium text-slate-600">{v.sku}</td>
-                                        <td className="px-5 py-4 text-center"><span className="px-2.5 py-1 bg-slate-100 border border-slate-200 rounded-lg text-slate-700 font-bold shadow-sm">{v.multiplier}</span> <span className="text-slate-400 text-[10px] font-bold uppercase tracking-wider ml-1">{product.base_unit_name}s</span></td>
-                                        <td className="px-5 py-4 text-right font-extrabold text-slate-900 text-base">${Number(v.price).toFixed(2)}</td>
-                                      </tr>
-                                    ))}
+                                    {product.product_variants?.map(v => {
+                                      const margin = calculateMargin(v.price, v.unit_cost);
+                                      return (
+                                        <tr key={v.id} className="hover:bg-slate-50/50 transition-colors">
+                                          <td className="px-5 py-4 font-bold text-slate-900 flex items-center gap-2"><Box size={14} className="text-slate-400"/> {v.name}</td>
+                                          <td className="px-5 py-4 font-mono text-xs font-medium text-slate-600">{v.sku}</td>
+                                          <td className="px-5 py-4 text-center">
+                                            <span className="px-2.5 py-1 bg-slate-100 border border-slate-200 rounded-lg text-slate-700 font-bold shadow-sm">{v.multiplier}</span>
+                                          </td>
+                                          <td className="px-5 py-4 text-right font-medium text-slate-500">${Number(v.unit_cost || 0).toFixed(2)}</td>
+                                          <td className="px-5 py-4 text-right font-extrabold text-slate-900">${Number(v.price).toFixed(2)}</td>
+                                          <td className="px-5 py-4 text-right">
+                                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider shadow-sm border ${margin >= 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                                              {margin}%
+                                            </span>
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
                                     {(!product.product_variants || product.product_variants.length === 0) && (
-                                      <tr><td colSpan="4" className="px-5 py-6 text-slate-400 italic text-center font-medium">No variants configured for this product.</td></tr>
+                                      <tr><td colSpan="6" className="px-5 py-6 text-slate-400 italic text-center font-medium">No variants configured for this product.</td></tr>
                                     )}
                                   </tbody>
                                 </table>
@@ -606,20 +667,62 @@ export default function Products() {
 
             <div className="flex-1 overflow-y-auto p-8 space-y-8">
               
-              {/* Basic Details */}
+              {/* Clean & Professional Core Information Layout */}
               <div>
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2"><Tag size={14}/> Core Information</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                  <div><label className={labelClass}>Product Name</label><input type="text" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className={inputClass} /></div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div><label className={labelClass}>Base SKU</label><input type="text" required value={formData.base_sku} onChange={e => setFormData({...formData, base_sku: e.target.value})} className={`${inputClass} font-mono uppercase`} /></div>
-                    <div><label className={labelClass}>Retail Price ($)</label><input type="number" step="0.01" required value={formData.retail_base_price} onChange={e => setFormData({...formData, retail_base_price: e.target.value})} className={inputClass} /></div>
+                
+                <div className="space-y-5">
+                  {/* Row 1: Product Name */}
+                  <div>
+                    <label className={labelClass}>Product Name</label>
+                    <input type="text" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className={inputClass} placeholder="e.g. Premium Nitrile Gloves" />
                   </div>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 mt-5">
-                  <div><label className={labelClass}>Base Unit (e.g. Box, Each)</label><input type="text" required value={formData.base_unit_name} onChange={e => setFormData({...formData, base_unit_name: e.target.value})} className={inputClass} /></div>
-                  <div><label className={labelClass}>Category</label><input type="text" value={formData.category} onChange={e => setFormData({...formData, category: e.target.value})} className={inputClass} /></div>
-                  <div><label className={labelClass}>Manufacturer</label><input type="text" value={formData.manufacturer} onChange={e => setFormData({...formData, manufacturer: e.target.value})} className={inputClass} /></div>
+                  
+                  {/* Row 2: SKU, Cost, Price */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+                    <div>
+                      <label className="flex items-center text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 min-h-[20px]">
+                        Base SKU
+                      </label>
+                      <input type="text" required value={formData.base_sku} onChange={e => setFormData({...formData, base_sku: e.target.value})} className={`${inputClass} font-mono uppercase`} placeholder="SKU-123" />
+                    </div>
+                    
+                    <div>
+                      <label className="flex items-center text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 min-h-[20px]">
+                        Unit Cost
+                      </label>
+                      <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                          <span className="text-slate-400 font-bold text-sm">$</span>
+                        </div>
+                        <input type="number" step="0.01" min="0" value={formData.unit_cost} onChange={e => setFormData({...formData, unit_cost: e.target.value})} className={`${inputClass} pl-8`} placeholder="0.00" />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="flex items-center justify-between text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 min-h-[20px]">
+                        <span>Retail Price</span>
+                        {formData.retail_base_price > 0 && (
+                          <span className={`px-2 py-0.5 rounded text-[9px] font-black tracking-wider border shadow-sm ${calculateMargin(formData.retail_base_price, formData.unit_cost) >= 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                            {calculateMargin(formData.retail_base_price, formData.unit_cost)}% MARGIN
+                          </span>
+                        )}
+                      </label>
+                      <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                          <span className="text-slate-400 font-bold text-sm">$</span>
+                        </div>
+                        <input type="number" step="0.01" required value={formData.retail_base_price} onChange={e => setFormData({...formData, retail_base_price: e.target.value})} className={`${inputClass} pl-8`} placeholder="0.00" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Row 3: Base Unit, Category, Manufacturer */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 pt-2">
+                    <div><label className={labelClass}>Base Unit (e.g. Box, Each)</label><input type="text" required value={formData.base_unit_name} onChange={e => setFormData({...formData, base_unit_name: e.target.value})} className={inputClass} placeholder="Box" /></div>
+                    <div><label className={labelClass}>Category</label><input type="text" value={formData.category} onChange={e => setFormData({...formData, category: e.target.value})} className={inputClass} placeholder="PPE" /></div>
+                    <div><label className={labelClass}>Manufacturer</label><input type="text" value={formData.manufacturer} onChange={e => setFormData({...formData, manufacturer: e.target.value})} className={inputClass} placeholder="TriCore" /></div>
+                  </div>
                 </div>
               </div>
 
@@ -675,34 +778,50 @@ export default function Products() {
                 <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end mb-4 gap-2">
                   <div>
                     <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2"><Layers size={14}/> Product Variants</h4>
-                    <p className="text-xs text-slate-500 mt-1 font-medium">Define packaging options (e.g., Box of 50). Multiplier = total base units per variant.</p>
+                    <p className="text-xs text-slate-500 mt-1 font-medium">Define packaging options and independent costs.</p>
                   </div>
                   <button type="button" onClick={addVariant} className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2 bg-slate-100 border border-slate-200 text-slate-900 text-xs font-bold rounded-xl hover:bg-slate-200 active:scale-95 transition-all shadow-sm"><Plus size={14} /> Add Variant</button>
                 </div>
                 <div className="space-y-3">
-                  {variants.map((v, i) => (
-                    <div key={i} className="grid grid-cols-2 sm:grid-cols-12 gap-4 items-end bg-slate-50 p-4 rounded-2xl border border-slate-200 shadow-sm w-full">
-                      <div className="col-span-2 sm:col-span-4">
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Variant Name</label>
-                        <input type="text" placeholder="Variant Name (e.g. Box of 50)" value={v.name} onChange={e => updateVariant(i, 'name', e.target.value)} required className={inputClass} />
-                      </div>
-                      <div className="col-span-2 sm:col-span-3">
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Variant SKU</label>
-                        <input type="text" placeholder="Variant SKU" value={v.sku} onChange={e => updateVariant(i, 'sku', e.target.value)} required className={`${inputClass} font-mono uppercase`} />
-                      </div>
-                      <div className="col-span-1 sm:col-span-2">
-                        <label className="block text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-1.5">Qty Multiplier</label>
-                        <input type="number" placeholder="Qty Multiplier" value={v.multiplier} onChange={e => updateVariant(i, 'multiplier', e.target.value)} required min="1" className={inputClass} />
-                      </div>
-                      <div className="col-span-1 sm:col-span-3">
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">$ Selling Price</label>
-                        <div className="flex gap-2">
-                          <input type="number" step="0.01" placeholder="$ Selling Price" value={v.price} onChange={e => updateVariant(i, 'price', e.target.value)} required className={`${inputClass} w-full`} />
-                          <button type="button" onClick={() => removeVariant(i)} className="shrink-0 px-3 text-red-500 bg-white border border-slate-200 hover:bg-red-50 hover:border-red-200 active:scale-90 rounded-xl transition-all shadow-sm flex items-center justify-center"><Trash2 size={16}/></button>
+                  {variants.map((v, i) => {
+                    const varMargin = calculateMargin(v.price, v.unit_cost);
+                    return (
+                      <div key={i} className="grid grid-cols-2 sm:grid-cols-12 gap-4 items-end bg-slate-50 p-4 rounded-2xl border border-slate-200 shadow-sm w-full relative">
+                        <div className="col-span-2 sm:col-span-3">
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Variant Name</label>
+                          <input type="text" placeholder="e.g. Box of 50" value={v.name} onChange={e => updateVariant(i, 'name', e.target.value)} required className={inputClass} />
+                        </div>
+                        <div className="col-span-1 sm:col-span-2">
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">SKU</label>
+                          <input type="text" placeholder="SKU" value={v.sku} onChange={e => updateVariant(i, 'sku', e.target.value)} required className={`${inputClass} font-mono uppercase`} />
+                        </div>
+                        <div className="col-span-1 sm:col-span-2">
+                          <label className="block text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-1.5">Qty Mult.</label>
+                          <input type="number" placeholder="Multi" value={v.multiplier} onChange={e => updateVariant(i, 'multiplier', e.target.value)} required min="1" className={inputClass} />
+                        </div>
+                        
+                        <div className="col-span-1 sm:col-span-2">
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Unit Cost ($)</label>
+                          <input type="number" step="0.01" placeholder="Cost" value={v.unit_cost || ''} onChange={e => updateVariant(i, 'unit_cost', e.target.value)} className={inputClass} />
+                        </div>
+                        
+                        <div className="col-span-1 sm:col-span-3">
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 flex justify-between min-h-[20px]">
+                            <span>Selling Price</span>
+                            {v.price > 0 && (
+                              <span className={`px-2 py-0.5 rounded text-[9px] font-black tracking-wider border shadow-sm ${varMargin >= 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                                {varMargin}%
+                              </span>
+                            )}
+                          </label>
+                          <div className="flex gap-2">
+                            <input type="number" step="0.01" placeholder="Price" value={v.price} onChange={e => updateVariant(i, 'price', e.target.value)} required className={`${inputClass} w-full`} />
+                            <button type="button" onClick={() => removeVariant(i)} className="shrink-0 px-3 text-red-500 bg-white border border-slate-200 hover:bg-red-50 hover:border-red-200 active:scale-90 rounded-xl transition-all shadow-sm flex items-center justify-center"><Trash2 size={16}/></button>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {variants.length === 0 && <div className="p-6 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50 text-center"><p className="text-sm text-slate-500 font-medium">No variants added. A default 1x unit will be generated automatically.</p></div>}
                 </div>
               </div>

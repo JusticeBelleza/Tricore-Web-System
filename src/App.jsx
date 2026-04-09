@@ -49,7 +49,7 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
-// 🚀 NEW: Component to strictly enforce Role-Based Access Control (RBAC)
+// Component to strictly enforce Role-Based Access Control (RBAC)
 const RoleProtectedRoute = ({ allowedRoles, children }) => {
   const { profile } = useAuth();
   
@@ -109,19 +109,14 @@ export default function App() {
           <Route path="/profile" element={<Profile />} />
           
           {/* 🚀 STRICT ROLE PROTECTION: Admin & Warehouse Only */}
+          <Route path="admin/orders" element={
+            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
+              <AdminOrders />
+            </RoleProtectedRoute>
+          } />
           <Route path="warehouse" element={
             <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
               <Warehouse />
-            </RoleProtectedRoute>
-          } />
-          <Route path="purchase-orders" element={
-            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
-              <PurchaseOrders />
-            </RoleProtectedRoute>
-          } />
-          <Route path="admin/products" element={
-            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
-              <Products />
             </RoleProtectedRoute>
           } />
           <Route path="dispatch" element={
@@ -129,18 +124,24 @@ export default function App() {
               <DispatchMonitor />
             </RoleProtectedRoute>
           } />
-          
-          {/* 🚀 STRICT ROLE PROTECTION: Admin Only */}
-          <Route path="admin/orders" element={
-            <RoleProtectedRoute allowedRoles={['admin']}>
-              <AdminOrders />
+          <Route path="admin/products" element={
+            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
+              <Products />
             </RoleProtectedRoute>
           } />
+          {/* 🚀 FIXED: Added Warehouse to the allowed roles for Fleet Management */}
           <Route path="fleet" element={
-            <RoleProtectedRoute allowedRoles={['admin']}>
+            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
               <FleetManagement />
             </RoleProtectedRoute>
           } />
+          <Route path="purchase-orders" element={
+            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
+              <PurchaseOrders />
+            </RoleProtectedRoute>
+          } />
+          
+          {/* 🚀 STRICT ROLE PROTECTION: Admin Only */}
           <Route path="admin/users" element={
             <RoleProtectedRoute allowedRoles={['admin']}>
               <AdminUsers />

@@ -5,7 +5,7 @@ import { useAuth } from '../lib/AuthContext';
 import { 
   Package, Receipt, ChevronDown, Calendar, Hash, Building, MapPin, Mail,
   CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2,
-  ChevronLeft, ChevronRight, PackageCheck, XCircle, Clock
+  ChevronLeft, ChevronRight, PackageCheck, XCircle, Clock, AlertTriangle 
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -34,18 +34,18 @@ export default function MyOrders() {
       let query = supabase
         .from('orders')
         .select(`
-          id, status, created_at, updated_at, processing_at, shipped_at, delivered_at, cancelled_at, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
+          id, status, created_at, updated_at, processing_at, shipped_at, delivered_at, cancelled_at, cancellation_reason, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
           driver_name, vehicle_name, vehicle_license,
           shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, company_id,
           companies ( name, address, city, state, zip, phone, email ),
           agency_patients ( contact_number, email ),
           user_profiles ( full_name, contact_number, email ),
           order_items (
-            id, quantity_variants, unit_price, line_total,
+            id, quantity_variants, unit_price, line_total, status, cancellation_reason,
             product_variants ( name, sku, products ( name, base_sku ) ) 
           )
         `, { count: 'exact' })
-        .order('created_at', { ascending: false }); // Always sort by newest order placed
+        .order('created_at', { ascending: false }); 
 
       if (profile?.company_id) {
         query = query.eq('company_id', profile.company_id);
@@ -93,14 +93,12 @@ export default function MyOrders() {
   };
 
   const getPaymentStatusBadge = (paymentStatus, orderStatus) => {
-    // Return Voided if the order is cancelled
     if (orderStatus === 'cancelled') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-400 border border-slate-200 shadow-sm">Voided</span>;
     if (paymentStatus === 'paid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-600 border border-emerald-200 shadow-sm">Paid</span>;
     if (paymentStatus === 'unpaid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-50 text-amber-600 border border-amber-200 shadow-sm">Unpaid</span>;
     return null;
   };
 
-  // Helper to format 12hr time consistently
   const format12hr = (dateString) => {
     if (!dateString) return '';
     return new Date(dateString).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
@@ -112,10 +110,8 @@ export default function MyOrders() {
       img.crossOrigin = "Anonymous";
       img.onload = () => {
         const canvas = document.createElement("canvas");
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0);
+        canvas.width = img.width; canvas.height = img.height;
+        const ctx = canvas.getContext("2d"); ctx.drawImage(img, 0, 0);
         resolve({ dataURL: canvas.toDataURL("image/png"), width: img.width, height: img.height });
       };
       img.onerror = () => resolve(null);
@@ -130,12 +126,10 @@ export default function MyOrders() {
 
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
     if (logoData) {
-      const imgWidth = 45; 
-      const imgHeight = (logoData.height * imgWidth) / logoData.width; 
+      const imgWidth = 45; const imgHeight = (logoData.height * imgWidth) / logoData.width; 
       doc.addImage(logoData.dataURL, 'PNG', 14, 12, imgWidth, imgHeight); 
     } else {
-      doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
-      doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
+      doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
     }
     
     doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
@@ -145,22 +139,14 @@ export default function MyOrders() {
     doc.setFont("helvetica", "bold"); doc.text(`${docType === 'receipt' ? 'Receipt' : 'Invoice'} #: INV-${orderNum}`, 140, 24);
     doc.setFont("helvetica", "normal"); doc.text(`Date: ${datePlaced}`, 140, 29);
     
-    if (docType === 'receipt') {
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(16, 185, 129);
-      doc.text("Status: PAID IN FULL", 140, 34);
-      doc.setTextColor(15, 23, 42); 
-    } else {
-      doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34);
-    }
+    if (docType === 'receipt') { doc.setFont("helvetica", "bold"); doc.setTextColor(16, 185, 129); doc.text("Status: PAID IN FULL", 140, 34); doc.setTextColor(15, 23, 42); } 
+    else { doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34); }
 
     const isB2B = !!order.company_id || !!profile?.company_id;
 
     const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || 'Retail Customer');
     const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
-    const billCityState = isB2B 
-      ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
-      : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
+    const billCityState = isB2B ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
     const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '');
     const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || profile?.email || '');
 
@@ -170,25 +156,17 @@ export default function MyOrders() {
     const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
     const shipEmail = order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
 
-    doc.setFont("helvetica", "bold");
-    doc.text("BILL TO:", 14, 50); 
-    doc.text("SHIP TO:", 110, 50);
-    
-    doc.setFont("helvetica", "normal");
+    doc.setFont("helvetica", "bold"); doc.text("BILL TO:", 14, 50); doc.text("SHIP TO:", 110, 50); doc.setFont("helvetica", "normal");
     
     let currentYBill = 56;
-    doc.setFont("helvetica", "bold");
-    doc.text(billName, 14, currentYBill); currentYBill += 5;
-    doc.setFont("helvetica", "normal");
+    doc.setFont("helvetica", "bold"); doc.text(billName, 14, currentYBill); currentYBill += 5; doc.setFont("helvetica", "normal");
     if (billAddress && billAddress !== 'No billing address provided') { doc.text(billAddress, 14, currentYBill); currentYBill += 5; }
     if (billCityState) { doc.text(billCityState, 14, currentYBill); currentYBill += 5; }
     if (billPhone) { doc.text(`Phone: ${billPhone}`, 14, currentYBill); currentYBill += 5; }
     if (billEmail) { doc.text(`Email: ${billEmail}`, 14, currentYBill); currentYBill += 5; }
 
     let currentYShip = 56;
-    doc.setFont("helvetica", "bold");
-    doc.text(shipName, 110, currentYShip); currentYShip += 5;
-    doc.setFont("helvetica", "normal");
+    doc.setFont("helvetica", "bold"); doc.text(shipName, 110, currentYShip); currentYShip += 5; doc.setFont("helvetica", "normal");
     if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
     if (shipCityState) { doc.text(shipCityState, 110, currentYShip); currentYShip += 5; }
     if (shipPhone) { doc.text(`Phone: ${shipPhone}`, 110, currentYShip); currentYShip += 5; }
@@ -289,6 +267,9 @@ export default function MyOrders() {
                   const isExpanded = expandedOrderId === order.id;
                   const shortId = order.id.split('-')[0].toUpperCase();
                   const isB2B = !!order.company_id || !!profile?.company_id;
+                  
+                  // Check if any items in this order were cancelled
+                  const hasAdjustments = order.order_items?.some(item => item.status === 'cancelled');
 
                   const rawDriverName = order.driver_name || '';
                   const driverParts = rawDriverName.split('|').map(s => s.trim());
@@ -323,7 +304,6 @@ export default function MyOrders() {
                     const dueDate = new Date(baseDate);
                     dueDate.setDate(dueDate.getDate() + 30);
                     dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-                    // Prevent cancelled orders from showing as overdue
                     isOverdue = order.payment_status === 'unpaid' && order.status !== 'cancelled' && new Date() > dueDate;
                   }
                   
@@ -351,14 +331,12 @@ export default function MyOrders() {
                         </td>
                         
                         <td className="px-6 py-4">
-                          {/* Cross out the text and make it gray if cancelled */}
                           <p className={`font-extrabold text-base ${order.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
                             ${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}
                           </p>
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1">
-                            {/* Pass order.status to check for cancelled state */}
                             {getPaymentStatusBadge(order.payment_status, order.status)}
                             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
                               <CreditCard size={10} /> {order.payment_method.replace(/_/g, ' ')}
@@ -370,7 +348,6 @@ export default function MyOrders() {
                           <div className="flex flex-col items-start gap-1.5">
                             {getStatusBadge(order.status)}
                             
-                            {/* 🚀 FIXED: 12-hour format explicitly using new fields */}
                             {order.status === 'delivered' && (order.delivered_at || order.updated_at) && (
                               <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
                                 <CheckCircle2 size={10} /> {new Date(order.delivered_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.delivered_at || order.updated_at)}
@@ -407,6 +384,29 @@ export default function MyOrders() {
                         <tr className="bg-slate-50 shadow-inner">
                           <td colSpan="6" className="p-0 border-b border-slate-200">
                             <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
+                              
+                              {/* 🚀 OVERALL ORDER CANCELLATION WARNING */}
+                              {order.status === 'cancelled' && order.cancellation_reason && (
+                                <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-3 shadow-sm">
+                                  <AlertTriangle size={20} className="text-red-600 mt-0.5 shrink-0" />
+                                  <div>
+                                    <h4 className="text-sm font-black text-red-900 tracking-tight">Order Cancelled</h4>
+                                    <p className="text-sm text-red-700 mt-1 font-medium leading-relaxed">{order.cancellation_reason}</p>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* 🚀 NEW: ITEM ADJUSTMENT WARNING BANNER */}
+                              {hasAdjustments && order.status !== 'cancelled' && (
+                                <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3 shadow-sm">
+                                  <AlertCircle size={20} className="text-amber-600 mt-0.5 shrink-0" />
+                                  <div>
+                                    <h4 className="text-sm font-black text-amber-900 tracking-tight">Order Adjusted</h4>
+                                    <p className="text-sm text-amber-700 mt-1 font-medium leading-relaxed">Some items in this order were cancelled or adjusted by our warehouse team. Please review your updated totals below.</p>
+                                  </div>
+                                </div>
+                              )}
+
                               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                                 <div className="lg:col-span-2 space-y-6">
                                   
@@ -469,16 +469,27 @@ export default function MyOrders() {
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
                                           {order.order_items?.map((item) => (
-                                            <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
+                                            <tr key={item.id} className={`hover:bg-slate-50/50 transition-colors ${item.status === 'cancelled' ? 'opacity-60 bg-red-50/30' : ''}`}>
                                               <td className="px-5 py-4">
-                                                {/* 🚀 FIXED: Displays the actual Product Name from the database */}
-                                                <p className="font-bold text-slate-900 leading-snug">{item.product_variants?.products?.name || item.product_variants?.name || 'Product'}</p>
+                                                {/* 🚀 FIXED: Displays exact visual cues for Cancelled items */}
+                                                <p className={`font-bold text-slate-900 leading-snug ${item.status === 'cancelled' ? 'line-through text-slate-500' : ''}`}>
+                                                  {item.product_variants?.products?.name || item.product_variants?.name || 'Product'}
+                                                </p>
                                                 <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku || item.product_variants?.sku}</span></p>
+                                                
+                                                {/* Show the cancellation reason to the customer */}
+                                                {item.status === 'cancelled' && (
+                                                  <p className="text-[10px] text-red-600 font-bold mt-1.5 uppercase tracking-widest flex items-center gap-1">
+                                                    <XCircle size={10} /> Cancelled: {item.cancellation_reason || 'Out of stock'}
+                                                  </p>
+                                                )}
                                               </td>
                                               <td className="px-5 py-4 text-center">
-                                                <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span>
+                                                <span className={`px-2.5 py-1 font-bold rounded-lg border shadow-sm ${item.status === 'cancelled' ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>
+                                                  {item.quantity_variants}
+                                                </span>
                                               </td>
-                                              <td className="px-5 py-4 text-right font-extrabold text-slate-900">
+                                              <td className={`px-5 py-4 text-right font-extrabold ${item.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
                                                 ${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}
                                               </td>
                                             </tr>
@@ -512,7 +523,6 @@ export default function MyOrders() {
                                         <CreditCard size={14} className="text-slate-400 shrink-0" />
                                         <span className="font-bold text-slate-700 capitalize">{order.payment_method.replace('_', ' ')}</span>
                                       </div>
-                                      {/* Pass order.status to check for cancelled state here as well */}
                                       {getPaymentStatusBadge(order.payment_status, order.status)}
                                     </div>
 
@@ -581,7 +591,6 @@ export default function MyOrders() {
                                     </div>
                                   )}
 
-                                  {/* 🚀 PROOF OF DELIVERY COMPONENT */}
                                   {order.status === 'delivered' && (order.photo_url || order.signature_url || order.received_by) && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                       <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
@@ -631,7 +640,6 @@ export default function MyOrders() {
             </table>
           </div>
 
-          {/* 🚀 PAGINATION CONTROLS */}
           {totalCount > pageSize && (
             <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
               <span className="text-sm font-medium text-slate-500">

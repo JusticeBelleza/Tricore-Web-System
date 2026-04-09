@@ -4,7 +4,7 @@ import { useAuth } from '../lib/AuthContext';
 import { 
   Search, Package, CheckCircle2, Truck, FileDown, 
   CheckSquare, Square, Box, ChevronDown, Hash, Calendar, MapPin, Building, User, Phone, Mail, Car,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, CheckCircle
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -96,7 +96,7 @@ export default function Warehouse() {
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( contact_number, email ),
-          order_items ( id, quantity_variants, unit_price, line_total, product_variants ( name, sku, products ( name ) ) )
+          order_items ( id, quantity_variants, unit_price, line_total, status, product_variants ( name, sku, products ( name ) ) )
         `, { count: 'exact' });
 
       if (activeTab === 'processing') {
@@ -147,6 +147,15 @@ export default function Warehouse() {
 
   const togglePickItem = (itemId) => { 
     setPickedItems(prev => ({ ...prev, [itemId]: !prev[itemId] })); 
+  };
+
+  // 🚀 NEW: Function to handle the "Select All" click
+  const toggleSelectAll = (activeItems, isAllPicked) => {
+    const newPickedState = { ...pickedItems };
+    activeItems.forEach(item => {
+      newPickedState[item.id] = !isAllPicked; // If all picked, unpick. If not, pick all.
+    });
+    setPickedItems(newPickedState);
   };
 
   const markAsReady = async (orderId) => {
@@ -238,7 +247,9 @@ export default function Warehouse() {
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    const tableRows = order.order_items.map(item => [
+    // 🚀 FIXED: Only print active items on the packing slip
+    const activeItems = order.order_items?.filter(item => item.status !== 'cancelled') || [];
+    const tableRows = activeItems.map(item => [
       item.product_variants?.products?.name || item.product_variants?.name || 'Item',
       item.product_variants?.name || 'N/A',
       item.product_variants?.sku || 'N/A',
@@ -335,8 +346,11 @@ export default function Warehouse() {
                 const isB2B = !!order.company_id;
                 const isOrderDone = order.status === 'ready_for_delivery' || order.status === 'shipped';
                 
-                const currentPickedCount = isOrderDone ? (order.order_items?.length || 0) : Object.values(pickedItems).filter(Boolean).length;
-                const allItemsPicked = order.order_items?.every(item => pickedItems[item.id]) || false;
+                // 🚀 FIXED: Filter out cancelled items before calculating lists and totals
+                const activeItems = order.order_items?.filter(item => item.status !== 'cancelled') || [];
+                
+                const currentPickedCount = isOrderDone ? activeItems.length : Object.values(pickedItems).filter(Boolean).length;
+                const allItemsPicked = activeItems.length > 0 && activeItems.every(item => pickedItems[item.id]);
                 
                 const billName = order.companies?.name || 'Retail Customer';
                 const shipName = order.shipping_name || billName;
@@ -363,7 +377,7 @@ export default function Warehouse() {
                         <p className="font-bold text-slate-900">{getDisplayName(order)}</p>
                         <span className={`inline-flex mt-1 px-1.5 py-0.5 text-[9px] uppercase tracking-widest font-bold rounded shadow-sm ${isB2B ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>{isB2B ? 'B2B Agency' : 'Retail'}</span>
                       </td>
-                      <td className="px-6 py-4 text-center"><span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-100 text-slate-700 font-extrabold text-xs shadow-inner border border-slate-200">{order.order_items?.length || 0}</span></td>
+                      <td className="px-6 py-4 text-center"><span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-100 text-slate-700 font-extrabold text-xs shadow-inner border border-slate-200">{activeItems.length}</span></td>
                       <td className="px-6 py-4">{getStatusBadge(order.status)}</td>
                       <td className="px-6 py-4 text-right"><button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}><ChevronDown size={20} /></button></td>
                     </tr>
@@ -376,22 +390,43 @@ export default function Warehouse() {
                               <div className="lg:col-span-2 space-y-4">
                                 <div className="flex justify-between items-end mb-4 border-b border-slate-200 pb-2">
                                   <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider"><CheckSquare size={16} className="text-slate-400" /> Items to Pick</h4>
-                                  <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">{currentPickedCount} / {order.order_items?.length} Picked</span>
+                                  
+                                  {/* 🚀 NEW: Select All Checkbox Logic added to the header */}
+                                  <div className="flex items-center gap-4">
+                                    <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">{currentPickedCount} / {activeItems.length} Picked</span>
+                                    
+                                    {order.status === 'processing' && activeItems.length > 0 && (
+                                      <button 
+                                        onClick={(e) => { e.stopPropagation(); toggleSelectAll(activeItems, allItemsPicked); }}
+                                        className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold rounded-lg border shadow-sm transition-all active:scale-95 ${allItemsPicked ? 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'}`}
+                                      >
+                                        <CheckCircle size={14} className={allItemsPicked ? 'text-slate-400' : 'text-emerald-500'} />
+                                        {allItemsPicked ? 'Deselect All' : 'Select All'}
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                                 <div className="space-y-3">
-                                  {order.order_items?.map(item => {
-                                    const isPicked = pickedItems[item.id];
-                                    const isDone = order.status === 'ready_for_delivery' || order.status === 'shipped';
-                                    return (
-                                      <div key={item.id} onClick={() => order.status === 'processing' && togglePickItem(item.id)} className={`flex items-center justify-between p-4 sm:px-5 sm:py-4 rounded-2xl border transition-all ${order.status === 'processing' ? 'cursor-pointer active:scale-[0.99]' : ''} ${isPicked || isDone ? 'bg-emerald-50/80 border-emerald-200 shadow-sm' : 'bg-white border-slate-200 hover:border-slate-300 shadow-sm'}`}>
-                                        <div className="flex items-center gap-4 sm:gap-5">
-                                          <div className={`transition-colors ${isPicked || isDone ? 'text-emerald-500' : 'text-slate-300'}`}>{isPicked || isDone ? <CheckSquare size={26} strokeWidth={2} /> : <Square size={26} strokeWidth={2} />}</div>
-                                          <div><p className={`font-bold text-slate-900 leading-snug text-sm sm:text-base transition-all ${isPicked || isDone ? 'line-through decoration-emerald-500/40 text-slate-500' : ''}`}>{item.product_variants?.products?.name || item.product_variants?.name || 'Item'}</p><p className="text-xs font-mono text-slate-500 mt-1">SKU: {item.product_variants?.sku}</p></div>
+                                  {/* 🚀 FIXED: Now maps over `activeItems` instead of `order.order_items` */}
+                                  {activeItems.length === 0 ? (
+                                    <div className="p-6 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white">
+                                      <p className="text-slate-500 font-medium">All items in this order have been cancelled.</p>
+                                    </div>
+                                  ) : (
+                                    activeItems.map(item => {
+                                      const isPicked = pickedItems[item.id];
+                                      const isDone = order.status === 'ready_for_delivery' || order.status === 'shipped';
+                                      return (
+                                        <div key={item.id} onClick={() => order.status === 'processing' && togglePickItem(item.id)} className={`flex items-center justify-between p-4 sm:px-5 sm:py-4 rounded-2xl border transition-all ${order.status === 'processing' ? 'cursor-pointer active:scale-[0.99]' : ''} ${isPicked || isDone ? 'bg-emerald-50/80 border-emerald-200 shadow-sm' : 'bg-white border-slate-200 hover:border-slate-300 shadow-sm'}`}>
+                                          <div className="flex items-center gap-4 sm:gap-5">
+                                            <div className={`transition-colors ${isPicked || isDone ? 'text-emerald-500' : 'text-slate-300'}`}>{isPicked || isDone ? <CheckSquare size={26} strokeWidth={2} /> : <Square size={26} strokeWidth={2} />}</div>
+                                            <div><p className={`font-bold text-slate-900 leading-snug text-sm sm:text-base transition-all ${isPicked || isDone ? 'line-through decoration-emerald-500/40 text-slate-500' : ''}`}>{item.product_variants?.products?.name || item.product_variants?.name || 'Item'}</p><p className="text-xs font-mono text-slate-500 mt-1">SKU: {item.product_variants?.sku}</p></div>
+                                          </div>
+                                          <div className="text-center bg-slate-50 px-4 py-2 rounded-xl border border-slate-100 shrink-0"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-1">Qty</p><p className={`text-lg font-extrabold leading-none ${isPicked || isDone ? 'text-emerald-700' : 'text-slate-900'}`}>{item.quantity_variants}</p></div>
                                         </div>
-                                        <div className="text-center bg-slate-50 px-4 py-2 rounded-xl border border-slate-100 shrink-0"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-1">Qty</p><p className={`text-lg font-extrabold leading-none ${isPicked || isDone ? 'text-emerald-700' : 'text-slate-900'}`}>{item.quantity_variants}</p></div>
-                                      </div>
-                                    );
-                                  })}
+                                      );
+                                    })
+                                  )}
                                 </div>
                               </div>
 
@@ -426,8 +461,21 @@ export default function Warehouse() {
                                 )}
 
                                 <div className="space-y-3">
-                                  {order.status === 'processing' && (<button onClick={() => setConfirmReady({ show: true, orderId: order.id })} disabled={!allItemsPicked} className={`w-full py-4 text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-all shadow-md ${allItemsPicked ? 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}><Box size={18} /> {allItemsPicked ? 'Mark as Ready for Delivery' : 'Pick all items to continue'}</button>)}
-                                  {(order.status === 'ready_for_delivery' || order.status === 'shipped') && (<button onClick={() => generatePackingSlip(order)} className="w-full py-4 text-sm bg-white border border-slate-200 text-slate-900 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-slate-50 active:scale-95 transition-all shadow-sm"><FileDown size={18} className="text-slate-400"/> Print Packing Slip</button>)}
+                                  {order.status === 'processing' && (
+                                    <button 
+                                      onClick={() => setConfirmReady({ show: true, orderId: order.id })} 
+                                      disabled={!allItemsPicked || activeItems.length === 0} 
+                                      className={`w-full py-4 text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-all shadow-md ${allItemsPicked && activeItems.length > 0 ? 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                                    >
+                                      <Box size={18} /> {allItemsPicked && activeItems.length > 0 ? 'Mark as Ready for Delivery' : 'Pick all items to continue'}
+                                    </button>
+                                  )}
+                                  
+                                  {(order.status === 'ready_for_delivery' || order.status === 'shipped') && (
+                                    <button onClick={() => generatePackingSlip(order)} className="w-full py-4 text-sm bg-white border border-slate-200 text-slate-900 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
+                                      <FileDown size={18} className="text-slate-400"/> Print Packing Slip
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                             </div>

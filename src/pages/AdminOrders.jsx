@@ -128,7 +128,7 @@ export default function AdminOrders() {
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( full_name, contact_number, email ),
-          order_items ( id, quantity_variants, unit_price, line_total, status, cancellation_reason, product_variants ( id, name, sku, price, products(name, base_sku) ) )
+          order_items ( id, product_variant_id, quantity_variants, unit_price, line_total, status, cancellation_reason, product_variants ( id, name, sku, price, products(name, base_sku) ) )
         `, { count: 'exact' }); 
 
       if (activeTab === 'pending') query = query.eq('status', 'pending');
@@ -192,7 +192,7 @@ export default function AdminOrders() {
     });
   };
 
-  // 🚀 ITEM-LEVEL: ADD NEW PRODUCT (WITH TOTAL BASE UNITS)
+  // 🚀 ITEM-LEVEL: ADD NEW PRODUCT (SMART MERGE LOGIC)
   const executeItemAdd = async () => {
     const { order, newQty } = itemAction;
     try {
@@ -201,56 +201,105 @@ export default function AdminOrders() {
       if (isNaN(parsedQty) || parsedQty <= 0) throw new Error("Please enter a valid quantity.");
 
       const newUnitPrice = Number(selectedSubstitute.price || 0);
-      const newLineTotal = parsedQty * newUnitPrice;
 
-      let newSubtotal = newLineTotal; 
-      order.order_items.forEach(oi => {
-        if (oi.status !== 'cancelled') {
-          newSubtotal += Number(oi.line_total || 0);
-        }
-      });
+      // Check if the item already exists in the active order
+      const existingItem = order.order_items.find(
+        oi => oi.product_variants?.id === selectedSubstitute.id && oi.status !== 'cancelled'
+      );
 
-      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+      if (existingItem) {
+        // --- PATH 1: ITEM ALREADY EXISTS (Merge and Update Quantity) ---
+        const updatedQty = Number(existingItem.quantity_variants) + parsedQty;
+        const updatedLineTotal = updatedQty * newUnitPrice;
 
-      const { data: newItemData, error: itemError } = await supabase
-        .from('order_items')
-        .insert([{
-          order_id: order.id,
-          product_variant_id: selectedSubstitute.id,
-          quantity_variants: parsedQty,
-          unit_price: newUnitPrice,
-          line_total: newLineTotal,
-          status: 'active',
-          total_base_units: parsedQty // 🚀 Fixed constraint error
-        }])
-        .select()
-        .single();
+        let newSubtotal = 0;
+        order.order_items.forEach(oi => {
+          if (oi.id === existingItem.id) {
+            newSubtotal += updatedLineTotal; 
+          } else if (oi.status !== 'cancelled') {
+            newSubtotal += Number(oi.line_total || 0); 
+          }
+        });
 
-      if (itemError) throw itemError;
+        const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
 
-      const { error: orderError } = await supabase
-        .from('orders')
-        .update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() })
-        .eq('id', order.id);
+        const { data: updateData, error: itemError } = await supabase.from('order_items').update({ 
+          quantity_variants: updatedQty, 
+          line_total: updatedLineTotal,
+          total_base_units: updatedQty 
+        }).eq('id', existingItem.id).select(); // 🚀 Added .select() to catch silent failures
+        
+        if (itemError) throw itemError;
+        if (!updateData || updateData.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
 
-      if (orderError) throw orderError;
+        const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
+        if (orderError) throw orderError;
 
-      const optimisticItem = { ...newItemData, product_variants: selectedSubstitute };
-      setOrders(prevOrders => prevOrders.map(o => {
-        if (o.id === order.id) {
-          return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: [...o.order_items, optimisticItem] };
-        }
-        return o;
-      }));
+        setOrders(prevOrders => prevOrders.map(o => {
+          if (o.id === order.id) {
+            const updatedItems = o.order_items.map(oi => oi.id === existingItem.id ? { ...oi, quantity_variants: updatedQty, line_total: updatedLineTotal } : oi);
+            return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: updatedItems };
+          }
+          return o;
+        }));
 
-      setNotification({ show: true, isError: false, message: 'Product added successfully!' });
+        setNotification({ show: true, isError: false, message: 'Quantity updated for existing product!' });
+
+      } else {
+        // --- PATH 2: ITEM DOES NOT EXIST (Insert New Row) ---
+        const newLineTotal = parsedQty * newUnitPrice;
+        let newSubtotal = newLineTotal; 
+        order.order_items.forEach(oi => {
+          if (oi.status !== 'cancelled') {
+            newSubtotal += Number(oi.line_total || 0);
+          }
+        });
+
+        const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+
+        const { data: newItemData, error: itemError } = await supabase
+          .from('order_items')
+          .insert([{
+            order_id: order.id,
+            product_variant_id: selectedSubstitute.id, 
+            quantity_variants: parsedQty,
+            unit_price: newUnitPrice,
+            line_total: newLineTotal,
+            status: 'active',
+            total_base_units: parsedQty 
+          }])
+          .select()
+          .single();
+
+        if (itemError) throw itemError;
+
+        const { error: orderError } = await supabase
+          .from('orders')
+          .update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() })
+          .eq('id', order.id);
+
+        if (orderError) throw orderError;
+
+        const optimisticItem = { ...newItemData, product_variants: selectedSubstitute };
+        setOrders(prevOrders => prevOrders.map(o => {
+          if (o.id === order.id) {
+            return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: [...o.order_items, optimisticItem] };
+          }
+          return o;
+        }));
+
+        setNotification({ show: true, isError: false, message: 'Product added successfully!' });
+      }
+
+      // Common Cleanup
       setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
       setSelectedSubstitute(null);
       setSubstituteSearch('');
+      
     } catch (error) { setNotification({ show: true, isError: true, message: error.message }); }
   };
 
-  // 🚀 ITEM-LEVEL: EDIT QUANTITY (WITH TOTAL BASE UNITS)
+  // 🚀 ITEM-LEVEL: EDIT QUANTITY (SAFE MATH RECALCULATION)
   const executeItemEdit = async () => {
     const { order, item, newQty } = itemAction;
     try {
@@ -271,14 +320,15 @@ export default function AdminOrders() {
 
       const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
 
-      const { error: itemError } = await supabase.from('order_items')
+      const { data, error: itemError } = await supabase.from('order_items')
         .update({ 
           quantity_variants: parsedQty, 
           line_total: newLineTotal,
-          total_base_units: parsedQty // 🚀 Fixed constraint error
-        }).eq('id', item.id);
+          total_base_units: parsedQty
+        }).eq('id', item.id).select(); // 🚀 Added .select() to catch silent failures
       
       if (itemError) throw itemError;
+      if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
 
       const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
       if (orderError) throw orderError;
@@ -296,7 +346,7 @@ export default function AdminOrders() {
     } catch (error) { setNotification({ show: true, isError: true, message: error.message }); }
   };
 
-  // 🚀 ITEM-LEVEL: SUBSTITUTE PRODUCT (WITH TOTAL BASE UNITS)
+  // 🚀 ITEM-LEVEL: SUBSTITUTE PRODUCT (SAFE MATH RECALCULATION)
   const executeItemSubstitute = async () => {
     const { order, item } = itemAction;
     try {
@@ -317,17 +367,19 @@ export default function AdminOrders() {
 
       const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
 
-      const { error: itemError } = await supabase
+      const { data, error: itemError } = await supabase
         .from('order_items')
         .update({ 
           product_variant_id: selectedSubstitute.id, 
           unit_price: newUnitPrice, 
           line_total: newLineTotal,
-          total_base_units: qty // 🚀 Fixed constraint error
+          total_base_units: qty
         })
-        .eq('id', item.id);
+        .eq('id', item.id)
+        .select(); // 🚀 Added .select() to catch silent failures
       
       if (itemError) throw itemError;
+      if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
       
       const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
       if (orderError) throw orderError;
@@ -362,14 +414,27 @@ export default function AdminOrders() {
 
       const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
 
-      const { error: itemError } = await supabase.from('order_items').update({ status: 'cancelled', cancellation_reason: reason }).eq('id', item.id);
+      const { data, error: itemError } = await supabase.from('order_items')
+        .update({ status: 'cancelled', cancellation_reason: reason })
+        .eq('id', item.id)
+        .select(); // 🚀 Added .select() to catch silent failures
+        
       if (itemError) throw itemError;
+      if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
 
       const { error: deductError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
       if (deductError) throw deductError;
 
+      // 🚀 ADDED: Optimistic UI for cancelling items so it updates instantly!
+      setOrders(prevOrders => prevOrders.map(o => {
+        if (o.id === order.id) {
+          const updatedItems = o.order_items.map(oi => oi.id === item.id ? { ...oi, status: 'cancelled', cancellation_reason: reason } : oi);
+          return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: updatedItems };
+        }
+        return o;
+      }));
+
       setNotification({ show: true, isError: false, message: 'Item cancelled and totals updated.' });
-      fetchOrdersAndDrivers();
     } catch (error) { setNotification({ show: true, isError: true, message: `Cancel failed: ${error.message}` }); }
   };
 
