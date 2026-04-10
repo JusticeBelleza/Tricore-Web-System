@@ -63,12 +63,13 @@ export default function Layout() {
         const threshold = new Date();
         threshold.setDate(threshold.getDate() - 25); 
         
+        // 🚀 FIXED: Now strictly ensures the order is 'delivered' before counting it as due
         let query = supabase
           .from('orders')
           .select('*', { count: 'exact', head: true })
+          .eq('status', 'delivered') 
           .eq('payment_status', 'unpaid')
           .eq('payment_method', 'net_30')
-          .neq('status', 'cancelled') 
           .lte('created_at', threshold.toISOString());
 
         if (profile.company_id) {
@@ -91,7 +92,7 @@ export default function Layout() {
         // Refresh badges for staff
         fetchBadges();
         
-        // 🚀 Real-time notifications specifically for the Customer
+        // Real-time notifications specifically for the Customer
         if (isCustomer && payload.eventType === 'UPDATE') {
           const oldData = payload.old;
           const newData = payload.new;
@@ -282,8 +283,9 @@ export default function Layout() {
                       {needsDispatchCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75 animate-ping"></span>
+                          {/* 🚀 FIXED: Changed text to "New" */}
                           <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-bold text-white bg-purple-600 rounded-full shadow-sm">
-                            {needsDispatchCount} To Route
+                            {needsDispatchCount} New
                           </span>
                         </div>
                       )}
@@ -304,7 +306,7 @@ export default function Layout() {
                       <ClipboardList size={18} /> Purchase Orders
                     </Link>
 
-                    {/* 🚀 7. Reports (Moved up so Warehouse staff can access it) */}
+                    {/* 7. Reports (Moved up so Warehouse staff can access it) */}
                     <Link to="/admin/reports" onClick={closeMobileMenu} className={navItemClass('/admin/reports')}>
                       <BarChart3 size={18} /> Reports
                     </Link>

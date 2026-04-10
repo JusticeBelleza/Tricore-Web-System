@@ -3,9 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { 
-  Package, Receipt, ChevronDown, Calendar, Hash, Building, MapPin, Mail,
+  Package, Receipt, ChevronDown, Calendar, Hash, MapPin, Mail,
   CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2,
-  ChevronLeft, ChevronRight, PackageCheck, XCircle, Clock, AlertTriangle 
+  ChevronLeft, ChevronRight, PackageCheck, XCircle, Clock, AlertTriangle, RefreshCw 
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -18,15 +18,61 @@ export default function MyOrders() {
   const [loading, setLoading] = useState(true);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
 
+  // 🚀 SERVER-SIDE PAGINATION & TABS
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
-  const pageSize = 20;
+  const pageSize = 10;
+  
+  const [activeTab, setActiveTab] = useState('all'); 
+  const [tabCounts, setTabCounts] = useState({ all: 0, delivered: 0, due: 0, paid: 0, cancelled: 0, returned: 0 });
+
+  // Reset page when tab changes
+  useEffect(() => {
+    setPage(0);
+    setExpandedOrderId(null);
+  }, [activeTab]);
 
   useEffect(() => {
     if (profile?.company_id || profile?.id) {
       fetchMyOrders();
+      fetchTabCounts();
     }
-  }, [profile?.company_id, profile?.id, page]);
+  }, [profile?.company_id, profile?.id, page, activeTab]);
+
+  const fetchTabCounts = async () => {
+    try {
+      const thresholdDate = new Date();
+      thresholdDate.setDate(thresholdDate.getDate() - 25);
+
+      const baseQuery = () => {
+        let q = supabase.from('orders').select('*', { count: 'exact', head: true });
+        if (profile?.company_id) q = q.eq('company_id', profile.company_id);
+        else if (profile?.id) q = q.eq('user_id', profile.id);
+        return q;
+      };
+
+      const [allReq, deliveredReq, dueReq, paidReq, cancelledReq, returnedReq] = await Promise.all([
+        baseQuery(),
+        baseQuery().eq('status', 'delivered'),
+        // 🚀 FIXED: Only count unpaid Net 30 orders older than 25 days
+        baseQuery().eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
+        baseQuery().eq('payment_status', 'paid'),
+        baseQuery().eq('status', 'cancelled'),
+        baseQuery().in('status', ['restocked', 'attempted'])
+      ]);
+
+      setTabCounts({
+        all: allReq.count || 0,
+        delivered: deliveredReq.count || 0,
+        due: dueReq.count || 0,
+        paid: paidReq.count || 0,
+        cancelled: cancelledReq.count || 0,
+        returned: returnedReq.count || 0
+      });
+    } catch (error) {
+      console.error('Error counting tabs:', error);
+    }
+  };
 
   const fetchMyOrders = async () => {
     setLoading(true);
@@ -44,15 +90,33 @@ export default function MyOrders() {
             id, quantity_variants, unit_price, line_total, status, cancellation_reason,
             product_variants ( name, sku, products ( name, base_sku ) ) 
           )
-        `, { count: 'exact' })
-        .order('created_at', { ascending: false }); 
+        `, { count: 'exact' });
 
+      // Apply User Security Filter
       if (profile?.company_id) {
         query = query.eq('company_id', profile.company_id);
       } else if (profile?.id) {
         query = query.eq('user_id', profile.id);
       }
 
+      // Apply Tab Filters
+      if (activeTab === 'delivered') {
+        query = query.eq('status', 'delivered');
+      } else if (activeTab === 'due') {
+        // 🚀 FIXED: Only fetch unpaid Net 30 orders older than 25 days
+        const thresholdDate = new Date();
+        thresholdDate.setDate(thresholdDate.getDate() - 25);
+        query = query.eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
+      } else if (activeTab === 'paid') {
+        query = query.eq('payment_status', 'paid');
+      } else if (activeTab === 'cancelled') {
+        query = query.eq('status', 'cancelled');
+      } else if (activeTab === 'returned') {
+        query = query.in('status', ['restocked', 'attempted']);
+      }
+
+      // Apply Sorting & Pagination
+      query = query.order('created_at', { ascending: false });
       const from = page * pageSize;
       const to = from + pageSize - 1;
       query = query.range(from, to);
@@ -87,13 +151,19 @@ export default function MyOrders() {
       shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200',
       out_for_delivery: 'bg-orange-50 text-orange-700 border-orange-200',
       delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-      cancelled: 'bg-red-50 text-red-700 border-red-200'
+      cancelled: 'bg-red-50 text-red-700 border-red-200',
+      attempted: 'bg-amber-50 text-amber-700 border-amber-200',
+      restocked: 'bg-red-50 text-red-700 border-red-200' 
     };
-    return <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{status.replace(/_/g, ' ')}</span>;
+    
+    let displayStatus = status.replace(/_/g, ' ');
+    if (status === 'restocked') displayStatus = 'returned';
+
+    return <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{displayStatus}</span>;
   };
 
   const getPaymentStatusBadge = (paymentStatus, orderStatus) => {
-    if (orderStatus === 'cancelled') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-400 border border-slate-200 shadow-sm">Voided</span>;
+    if (['cancelled', 'restocked', 'attempted'].includes(orderStatus)) return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-400 border border-slate-200 shadow-sm">Voided</span>;
     if (paymentStatus === 'paid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-600 border border-emerald-200 shadow-sm">Paid</span>;
     if (paymentStatus === 'unpaid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-50 text-amber-600 border border-amber-200 shadow-sm">Unpaid</span>;
     return null;
@@ -153,8 +223,8 @@ export default function MyOrders() {
     const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
     const shipAddress = order.shipping_address || 'No shipping address provided';
     const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-    const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
-    const shipEmail = order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
+    const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
+    const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
 
     doc.setFont("helvetica", "bold"); doc.text("BILL TO:", 14, 50); doc.text("SHIP TO:", 110, 50); doc.setFont("helvetica", "normal");
     
@@ -215,15 +285,45 @@ export default function MyOrders() {
     doc.save(`${docType === 'receipt' ? 'Receipt' : 'Invoice'}_${orderNum}.pdf`);
   };
 
+  const tabBaseClass = "flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95";
+  const tabActiveClass = "bg-slate-900 text-white shadow-md";
+  const tabInactiveClass = "text-slate-500 hover:text-slate-900 hover:bg-slate-200/50";
+
   return (
-    <div className="space-y-6 max-w-6xl mx-auto pb-12">
-      <div className="flex items-center gap-4 pb-2">
-        <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md">
-          <Receipt size={28} strokeWidth={1.5} />
+    <div className="space-y-6 max-w-6xl mx-auto pb-12 relative">
+      
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2">
+        <div className="flex items-center gap-4">
+          <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md">
+            <Receipt size={28} strokeWidth={1.5} />
+          </div>
+          <div>
+            <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Order History</h2>
+            <p className="text-sm text-slate-500 mt-1 font-medium">View, track, and manage your previous purchases.</p>
+          </div>
         </div>
-        <div>
-          <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Order History</h2>
-          <p className="text-sm text-slate-500 mt-1 font-medium">View, track, and manage your previous purchases.</p>
+      </div>
+
+      <div className="flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full overflow-x-auto shrink-0">
+          <button onClick={() => setActiveTab('all')} className={`${tabBaseClass} ${activeTab === 'all' ? tabActiveClass : tabInactiveClass}`}>
+            <FileText size={16}/> All History ({tabCounts.all})
+          </button>
+          <button onClick={() => setActiveTab('delivered')} className={`${tabBaseClass} ${activeTab === 'delivered' ? tabActiveClass : tabInactiveClass}`}>
+            <PackageCheck size={16}/> Delivered ({tabCounts.delivered})
+          </button>
+          <button onClick={() => setActiveTab('due')} className={`${tabBaseClass} ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : tabInactiveClass}`}>
+            <AlertCircle size={16}/> Due ({tabCounts.due})
+          </button>
+          <button onClick={() => setActiveTab('paid')} className={`${tabBaseClass} ${activeTab === 'paid' ? 'bg-emerald-600 text-white shadow-md' : tabInactiveClass}`}>
+            <CheckCircle2 size={16}/> Paid ({tabCounts.paid})
+          </button>
+          <button onClick={() => setActiveTab('cancelled')} className={`${tabBaseClass} ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : tabInactiveClass}`}>
+            <XCircle size={16}/> Cancelled ({tabCounts.cancelled})
+          </button>
+          <button onClick={() => setActiveTab('returned')} className={`${tabBaseClass} ${activeTab === 'returned' ? 'bg-slate-600 text-white shadow-md' : tabInactiveClass}`}>
+            <RefreshCw size={16}/> Returned ({tabCounts.returned})
+          </button>
         </div>
       </div>
 
@@ -243,7 +343,7 @@ export default function MyOrders() {
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm mt-6">
           <Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" />
           <h3 className="text-xl font-bold text-slate-900 mb-2 tracking-tight">No orders found</h3>
-          <p className="text-slate-500 text-sm mb-8 max-w-md mx-auto">It looks like you haven't placed any orders yet. Browse our catalog to start stocking up.</p>
+          <p className="text-slate-500 text-sm mb-8 max-w-md mx-auto">There are no orders matching this category right now.</p>
           <button onClick={() => navigate('/catalog')} className="px-6 py-3 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center gap-2 mx-auto">
             <ShoppingCart size={16} /> Go to Catalog
           </button>
@@ -268,7 +368,6 @@ export default function MyOrders() {
                   const shortId = order.id.split('-')[0].toUpperCase();
                   const isB2B = !!order.company_id || !!profile?.company_id;
                   
-                  // Check if any items in this order were cancelled
                   const hasAdjustments = order.order_items?.some(item => item.status === 'cancelled');
 
                   const rawDriverName = order.driver_name || '';
@@ -292,19 +391,19 @@ export default function MyOrders() {
                   const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
                   const shipAddress = order.shipping_address || 'No shipping address provided';
                   const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-                  const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
-                  const shipEmail = order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
+                  const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
+                  const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
 
                   const isNet30 = order.payment_method === 'net_30';
                   let dueDateDisplay = '';
+                  
                   let isOverdue = false;
-
                   if (isNet30) {
                     const baseDate = new Date(order.created_at);
                     const dueDate = new Date(baseDate);
                     dueDate.setDate(dueDate.getDate() + 30);
                     dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-                    isOverdue = order.payment_status === 'unpaid' && order.status !== 'cancelled' && new Date() > dueDate;
+                    isOverdue = order.payment_status === 'unpaid' && !['cancelled', 'restocked', 'attempted'].includes(order.status) && new Date() > dueDate;
                   }
                   
                   return (
@@ -331,7 +430,7 @@ export default function MyOrders() {
                         </td>
                         
                         <td className="px-6 py-4">
-                          <p className={`font-extrabold text-base ${order.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                          <p className={`font-extrabold text-base ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
                             ${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}
                           </p>
                         </td>
@@ -354,9 +453,15 @@ export default function MyOrders() {
                               </span>
                             )}
                             
-                            {order.status === 'cancelled' && (order.cancelled_at || order.updated_at) && (
+                            {['cancelled', 'restocked'].includes(order.status) && (order.cancelled_at || order.updated_at) && (
                               <span className="text-[9px] font-bold text-red-500 uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                <XCircle size={10} /> {new Date(order.cancelled_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.cancelled_at || order.updated_at)}
+                                <XCircle size={10} /> {order.status === 'restocked' ? 'Returned' : 'Cancelled'} on {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}
+                              </span>
+                            )}
+
+                            {order.status === 'attempted' && order.updated_at && (
+                              <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest flex items-center gap-1 mt-0.5">
+                                <AlertTriangle size={10} /> Attempted on {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}
                               </span>
                             )}
 
@@ -385,19 +490,21 @@ export default function MyOrders() {
                           <td colSpan="6" className="p-0 border-b border-slate-200">
                             <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
                               
-                              {/* 🚀 OVERALL ORDER CANCELLATION WARNING */}
-                              {order.status === 'cancelled' && order.cancellation_reason && (
-                                <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-3 shadow-sm">
-                                  <AlertTriangle size={20} className="text-red-600 mt-0.5 shrink-0" />
+                              {['cancelled', 'attempted', 'restocked'].includes(order.status) && order.cancellation_reason && (
+                                <div className={`mb-6 p-4 border rounded-2xl flex items-start gap-3 shadow-sm ${order.status === 'attempted' ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200'}`}>
+                                  <AlertTriangle size={20} className={`${order.status === 'attempted' ? 'text-amber-600' : 'text-red-600'} mt-0.5 shrink-0`} />
                                   <div>
-                                    <h4 className="text-sm font-black text-red-900 tracking-tight">Order Cancelled</h4>
-                                    <p className="text-sm text-red-700 mt-1 font-medium leading-relaxed">{order.cancellation_reason}</p>
+                                    <h4 className={`text-sm font-black tracking-tight ${order.status === 'attempted' ? 'text-amber-900' : 'text-red-900'}`}>
+                                      {order.status === 'restocked' ? 'Order Returned' : order.status === 'attempted' ? 'Delivery Attempted (Failed)' : 'Order Cancelled'}
+                                    </h4>
+                                    <p className={`text-sm mt-1 font-medium leading-relaxed ${order.status === 'attempted' ? 'text-amber-700' : 'text-red-700'}`}>
+                                      {order.cancellation_reason}
+                                    </p>
                                   </div>
                                 </div>
                               )}
 
-                              {/* 🚀 NEW: ITEM ADJUSTMENT WARNING BANNER */}
-                              {hasAdjustments && order.status !== 'cancelled' && (
+                              {hasAdjustments && !['cancelled', 'attempted', 'restocked'].includes(order.status) && (
                                 <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3 shadow-sm">
                                   <AlertCircle size={20} className="text-amber-600 mt-0.5 shrink-0" />
                                   <div>
@@ -471,13 +578,11 @@ export default function MyOrders() {
                                           {order.order_items?.map((item) => (
                                             <tr key={item.id} className={`hover:bg-slate-50/50 transition-colors ${item.status === 'cancelled' ? 'opacity-60 bg-red-50/30' : ''}`}>
                                               <td className="px-5 py-4">
-                                                {/* 🚀 FIXED: Displays exact visual cues for Cancelled items */}
                                                 <p className={`font-bold text-slate-900 leading-snug ${item.status === 'cancelled' ? 'line-through text-slate-500' : ''}`}>
                                                   {item.product_variants?.products?.name || item.product_variants?.name || 'Product'}
                                                 </p>
                                                 <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku || item.product_variants?.sku}</span></p>
                                                 
-                                                {/* Show the cancellation reason to the customer */}
                                                 {item.status === 'cancelled' && (
                                                   <p className="text-[10px] text-red-600 font-bold mt-1.5 uppercase tracking-widest flex items-center gap-1">
                                                     <XCircle size={10} /> Cancelled: {item.cancellation_reason || 'Out of stock'}
@@ -512,7 +617,7 @@ export default function MyOrders() {
                                       <div className="h-px w-full bg-slate-200/60 my-2"></div>
                                       <div className="flex justify-between items-end">
                                         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
-                                        <span className={`text-2xl font-extrabold tracking-tight leading-none ${order.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                                        <span className={`text-2xl font-extrabold tracking-tight leading-none ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
                                           ${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}
                                         </span>
                                       </div>
@@ -554,7 +659,7 @@ export default function MyOrders() {
                                     )}
                                   </div>
                                   
-                                  {(order.status === 'ready_for_delivery' || order.status === 'shipped' || order.status === 'delivered') && order.driver_name && (
+                                  {['ready_for_delivery', 'shipped', 'delivered', 'attempted', 'restocked'].includes(order.status) && order.driver_name && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                       <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
                                         <Truck size={16} className="text-slate-400" /> Dispatch Info
@@ -640,14 +745,27 @@ export default function MyOrders() {
             </table>
           </div>
 
+          {/* 🚀 PAGINATION FOOTER */}
           {totalCount > pageSize && (
             <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
               <span className="text-sm font-medium text-slate-500">
-                Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> entries
+                Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> orders
               </span>
               <div className="flex gap-2">
-                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={18} /></button>
-                <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalCount} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={18} /></button>
+                <button 
+                  onClick={() => setPage(p => Math.max(0, p - 1))} 
+                  disabled={page === 0} 
+                  className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+                >
+                  <ChevronLeft size={18} />
+                </button>
+                <button 
+                  onClick={() => setPage(p => p + 1)} 
+                  disabled={(page + 1) * pageSize >= totalCount} 
+                  className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+                >
+                  <ChevronRight size={18} />
+                </button>
               </div>
             </div>
           )}

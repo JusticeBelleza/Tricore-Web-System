@@ -1,14 +1,98 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
+import { GoogleMap, useJsApiLoader, DirectionsRenderer } from '@react-google-maps/api';
 import { 
   MapPin, Phone, CheckCircle2, Camera, PenTool, X, 
   UploadCloud, Truck, Navigation, Route, PackageCheck, Package, DollarSign, AlertTriangle, XCircle
 } from 'lucide-react';
 
-// 🚀 DEFINE YOUR WAREHOUSE ADDRESS HERE
 const WAREHOUSE_ADDRESS = "2169 Harbor St, Pittsburg CA 94565";
 
+// 🚀 1. THE COST-SAVING MAP COMPONENT
+function DeliveryMap({ destination }) {
+  const { isLoaded } = useJsApiLoader({
+    id: 'google-map-script',
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY
+  });
+
+  const [directions, setDirections] = useState(null);
+  const [showMap, setShowMap] = useState(false);
+  const [isCalculating, setIsCalculating] = useState(false);
+
+  const handleShowRoute = () => {
+    // If we already calculated the route, just show it (0 cost!)
+    if (directions) {
+      setShowMap(true);
+      return;
+    }
+
+    setIsCalculating(true);
+    const directionsService = new window.google.maps.DirectionsService();
+    directionsService.route(
+      {
+        origin: WAREHOUSE_ADDRESS,
+        destination: destination,
+        travelMode: window.google.maps.TravelMode.DRIVING,
+      },
+      (result, status) => {
+        if (status === window.google.maps.DirectionsStatus.OK) {
+          setDirections(result);
+          setShowMap(true);
+        } else {
+          alert("Could not find a valid driving route for this address.");
+        }
+        setIsCalculating(false);
+      }
+    );
+  };
+
+  if (!isLoaded) return <div className="w-full h-12 bg-slate-100 rounded-xl animate-pulse"></div>;
+
+  // The button state (Costs $0 to display this)
+  if (!showMap) {
+    return (
+      <button 
+        onClick={handleShowRoute}
+        disabled={isCalculating}
+        className="w-full py-3 mt-3 bg-blue-50 text-blue-700 border border-blue-200 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-blue-100 active:scale-95 transition-all shadow-sm"
+      >
+        <Navigation size={18} />
+        {isCalculating ? "Calculating Route..." : "Show Live Route"}
+      </button>
+    );
+  }
+
+  // The Map state (Renders only after they click the button)
+  return (
+    <div className="w-full h-64 mt-3 rounded-2xl overflow-hidden border border-slate-200 relative shadow-inner animate-in fade-in zoom-in-95 duration-200">
+      <GoogleMap
+        mapContainerStyle={{ width: '100%', height: '100%' }}
+        center={{ lat: 38.0336, lng: -121.8817 }} // Default center
+        zoom={10}
+        options={{ disableDefaultUI: true, zoomControl: true }}
+      >
+        {directions && (
+          <DirectionsRenderer 
+            directions={directions} 
+            options={{ polylineOptions: { strokeColor: '#3b82f6', strokeWeight: 5 } }}
+          />
+        )}
+      </GoogleMap>
+      
+      {/* Button to hide the map without losing the calculated route */}
+      <button 
+        onClick={() => setShowMap(false)}
+        className="absolute top-3 right-3 p-2 bg-white rounded-xl shadow-lg border border-slate-100 text-slate-500 hover:text-slate-900 active:scale-95 transition-all z-10"
+      >
+        <X size={16} />
+      </button>
+    </div>
+  );
+}
+
+
+// 🚀 2. THE MAIN DRIVER DASHBOARD
 export default function DriverRoutes() {
   const { profile } = useAuth();
   const [orders, setOrders] = useState([]);
@@ -16,7 +100,6 @@ export default function DriverRoutes() {
   const [completedThisWeek, setCompletedThisWeek] = useState(0);
   const [loading, setLoading] = useState(true);
   
-  // 🚀 LICENSE ALERT STATE
   const [licenseAlert, setLicenseAlert] = useState(null);
 
   // Delivery Modal State
@@ -31,9 +114,52 @@ export default function DriverRoutes() {
   const [cancelReason, setCancelReason] = useState('');
   const [isCancelling, setIsCancelling] = useState(false);
 
+  // Attempted Delivery Modal State
+  const [attemptingOrder, setAttemptingOrder] = useState(null);
+  const [attemptReason, setAttemptReason] = useState('');
+  const [isAttempting, setIsAttempting] = useState(false);
+
   const [toast, setToast] = useState({ show: false, message: '', isError: false });
 
   const canvasRef = useRef(null);
+
+  // 🚀 SILENT GPS TRACKER (100% Free - No Google API)
+  useEffect(() => {
+    if (!profile?.id || profile?.role?.toLowerCase() !== 'driver') return;
+
+    let latestCoords = null;
+
+    // 1. Read the phone's GPS hardware continuously (100% Free)
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        latestCoords = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        };
+      },
+      (err) => console.warn("GPS Tracking Error:", err.message),
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 5000 }
+    );
+
+    // 2. Throttle database updates to only ping Supabase every 15 seconds
+    const syncInterval = setInterval(async () => {
+      if (latestCoords) {
+        await supabase.from('user_profiles')
+          .update({ 
+            current_lat: latestCoords.lat, 
+            current_lng: latestCoords.lng,
+            last_location_update: new Date().toISOString()
+          })
+          .eq('id', profile.id);
+      }
+    }, 15000); 
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+      clearInterval(syncInterval);
+    };
+  }, [profile?.id, profile?.role]);
+
 
   useEffect(() => {
     if (profile?.id && profile?.full_name) {
@@ -42,9 +168,7 @@ export default function DriverRoutes() {
     }
   }, [profile?.id, profile?.full_name, profile?.license_expiry]);
 
-  // 🚀 LICENSE CHECKER LOGIC
   const checkLicenseStatus = () => {
-    // Only check if the user is a driver
     if (profile?.role?.toLowerCase() !== 'driver') return;
 
     if (!profile?.license_expiry) {
@@ -58,9 +182,8 @@ export default function DriverRoutes() {
 
     const expiryDate = new Date(profile.license_expiry);
     const today = new Date();
-    today.setHours(0, 0, 0, 0); // Reset time to midnight for accurate day calculation
+    today.setHours(0, 0, 0, 0); 
     
-    // Calculate difference in days
     const diffTime = expiryDate - today;
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
@@ -77,7 +200,7 @@ export default function DriverRoutes() {
         message: `Your driver's license expires in ${diffDays} day${diffDays === 1 ? '' : 's'} (${expiryDate.toLocaleDateString()}).` 
       });
     } else {
-      setLicenseAlert(null); // Valid and not expiring soon
+      setLicenseAlert(null); 
     }
   };
 
@@ -96,7 +219,7 @@ export default function DriverRoutes() {
           companies ( name, address, city, state, zip, phone ),
           agency_patients ( contact_number ),
           user_profiles ( full_name, contact_number ),
-          order_items ( quantity_variants )
+          order_items ( id, product_variant_id, quantity_variants, total_base_units, status, product_variants ( product_id ) )
         `)
         .in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery'])
         .ilike('driver_name', `${profile.full_name}%`) 
@@ -134,7 +257,6 @@ export default function DriverRoutes() {
     }
   };
 
-  // NATIVE CANVAS INITIALIZATION
   useEffect(() => {
     if (!activeOrder || !canvasRef.current) return;
 
@@ -207,6 +329,19 @@ export default function DriverRoutes() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
   };
 
+  const updateOrderStatus = async (orderId, newStatus) => {
+    try {
+      const { error } = await supabase
+        .from('orders')
+        .update({ status: newStatus, updated_at: new Date().toISOString() })
+        .eq('id', orderId);
+      if (error) throw error;
+      fetchMyRoutes();
+    } catch (error) {
+      alert("Failed to update status: " + error.message);
+    }
+  };
+
   const submitDelivery = async () => {
     if (!receivedBy.trim()) {
       showToast('Please enter the full name of the person receiving the order.', true);
@@ -273,9 +408,24 @@ export default function DriverRoutes() {
 
     setIsCancelling(true);
     try {
+      
+      // 🔄 AUTO-RESTOCK LOGIC
+      for (const item of cancellingOrder.order_items || []) {
+        const productId = item.product_variants?.product_id;
+        if (item.status !== 'cancelled' && productId) {
+          const { data: invData } = await supabase.from('inventory').select('base_units_on_hand').eq('product_id', productId).single();
+          if (invData && invData.base_units_on_hand !== undefined) {
+            const qtyToReturn = Number(item.total_base_units || item.quantity_variants || 0);
+            const newStock = Number(invData.base_units_on_hand) + qtyToReturn;
+            await supabase.from('inventory').update({ base_units_on_hand: newStock }).eq('product_id', productId);
+          }
+        }
+      }
+
       const { error } = await supabase.from('orders').update({
         status: 'cancelled',
         cancellation_reason: cancelReason.trim(),
+        is_restocked: true, 
         updated_at: new Date().toISOString()
       }).eq('id', cancellingOrder.id);
 
@@ -284,13 +434,42 @@ export default function DriverRoutes() {
       setOrders(orders.filter(o => o.id !== cancellingOrder.id));
       window.dispatchEvent(new Event('orderStatusChanged'));
       closeCancelModal();
-      showToast('Order cancelled and dispatched to exceptions.', true); 
+      showToast('Order cancelled and items successfully restocked!', false); 
       
     } catch (error) {
       console.error('Cancellation Error:', error.message);
       showToast('Failed to cancel the delivery. Please try again.', true);
     } finally {
       setIsCancelling(false);
+    }
+  };
+
+  const submitAttempted = async () => {
+    if (!attemptReason.trim()) {
+      showToast('Please provide a reason for the failed delivery attempt.', true);
+      return;
+    }
+
+    setIsAttempting(true);
+    try {
+      const { error } = await supabase.from('orders').update({
+        status: 'attempted',
+        cancellation_reason: attemptReason.trim(),
+        updated_at: new Date().toISOString()
+      }).eq('id', attemptingOrder.id);
+
+      if (error) throw error;
+
+      setOrders(orders.filter(o => o.id !== attemptingOrder.id));
+      window.dispatchEvent(new Event('orderStatusChanged'));
+      closeAttemptModal();
+      showToast('Order marked as attempted.', false); 
+      
+    } catch (error) {
+      console.error('Attempt Error:', error.message);
+      showToast('Failed to mark delivery as attempted.', true);
+    } finally {
+      setIsAttempting(false);
     }
   };
 
@@ -304,6 +483,11 @@ export default function DriverRoutes() {
   const closeCancelModal = () => {
     setCancellingOrder(null);
     setCancelReason('');
+  };
+
+  const closeAttemptModal = () => {
+    setAttemptingOrder(null);
+    setAttemptReason('');
   };
 
   return (
@@ -376,15 +560,17 @@ export default function DriverRoutes() {
             const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
             const shortId = order.id.split('-')[0].toUpperCase();
 
-            const totalItems = order.order_items?.reduce((sum, item) => sum + item.quantity_variants, 0) || 0;
+            // Fix the quantity summing for UI display
+            const totalItems = order.order_items?.reduce((sum, item) => sum + (item.quantity_variants || 0), 0) || 0;
             
             const isCOD = order.payment_method === 'cod';
             const isNet30 = order.payment_method === 'net_30';
             const paymentText = isCOD ? `$${Number(order.total_amount).toFixed(2)}` : (isNet30 ? 'Net 30' : 'Paid');
 
             const fullAddress = `${shipAddress}, ${shipCityState}`;
-            const mapEmbedUrl = `https://maps.google.com/maps?q=${encodeURIComponent(fullAddress)}&t=m&z=15&output=embed&iwloc=near`;
             const directionsLink = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(WAREHOUSE_ADDRESS)}&destination=${encodeURIComponent(fullAddress)}`;
+            
+            const isOutForDelivery = order.status === 'out_for_delivery';
 
             return (
               <div key={order.id} className="bg-white border border-slate-200 rounded-3xl p-4 shadow-sm relative overflow-hidden flex flex-col">
@@ -416,22 +602,7 @@ export default function DriverRoutes() {
                   </div>
                 </div>
 
-                {/* GOOGLE MAPS EMBED */}
-                <div className="w-full h-36 rounded-2xl overflow-hidden border border-slate-200 shadow-inner mb-3 relative bg-slate-100 pointer-events-none">
-                  <iframe 
-                    width="100%" 
-                    height="100%" 
-                    frameBorder="0" 
-                    scrolling="no" 
-                    marginHeight="0" 
-                    marginWidth="0" 
-                    src={mapEmbedUrl}
-                    title="Google Maps Location"
-                    className="absolute inset-0"
-                  ></iframe>
-                </div>
-
-                <div className="space-y-2 mb-4 bg-slate-50 p-3.5 rounded-2xl border border-slate-100">
+                <div className="space-y-2 bg-slate-50 p-3.5 rounded-2xl border border-slate-100">
                   <div className="flex items-start gap-2.5 text-sm font-medium text-slate-700">
                     <MapPin size={16} className="text-blue-600 mt-0.5 shrink-0"/>
                     <div className="leading-snug">
@@ -449,33 +620,83 @@ export default function DriverRoutes() {
                   )}
                 </div>
 
-                {/* ACTION BUTTONS */}
-                <div className="flex gap-2 mt-auto">
-                  <button 
-                    onClick={() => setCancellingOrder(order)}
-                    className="px-4 py-3.5 bg-red-50 text-red-600 border border-red-200 rounded-xl hover:bg-red-100 active:scale-95 transition-all flex items-center justify-center shadow-sm"
-                    title="Cancel Delivery"
-                  >
-                    <XCircle size={20} />
-                  </button>
-                  <a 
-                    href={directionsLink} 
-                    target="_blank" 
-                    rel="noreferrer" 
-                    className="flex-1 py-3.5 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-black rounded-xl hover:bg-blue-100 active:scale-95 transition-all flex items-center justify-center gap-1.5 shadow-sm"
-                  >
-                    <Navigation size={18} /> Nav
-                  </a>
-                  <button 
-                    onClick={() => setActiveOrder(order)}
-                    className="flex-1 py-3.5 bg-slate-900 text-white text-sm font-black rounded-xl hover:bg-slate-800 active:scale-95 transition-all flex items-center justify-center gap-1.5 shadow-md"
-                  >
-                    <CheckCircle2 size={18} /> Complete
-                  </button>
+                {/* 🚀 THE SMART MAP GOES HERE */}
+                <DeliveryMap destination={fullAddress} />
+
+                {/* ACTION BUTTONS GRID */}
+                <div className="mt-4 flex flex-col gap-2">
+                  {!isOutForDelivery ? (
+                    <button 
+                      onClick={() => updateOrderStatus(order.id, 'out_for_delivery')}
+                      className="w-full py-3.5 text-sm bg-slate-900 text-white font-bold rounded-xl shadow-md hover:bg-slate-800 active:scale-95 transition-all flex justify-center items-center gap-2"
+                    >
+                      <Truck size={18} /> Start Route
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={() => setActiveOrder(order)}
+                      className="w-full py-3.5 text-sm bg-slate-900 text-white font-bold rounded-xl shadow-md hover:bg-slate-800 active:scale-95 transition-all flex justify-center items-center gap-2"
+                    >
+                      <CheckCircle2 size={18} /> Complete Delivery
+                    </button>
+                  )}
+                  
+                  <div className="grid grid-cols-2 gap-2">
+                    <button 
+                      onClick={() => setCancellingOrder(order)}
+                      className="py-3 bg-red-50 text-red-600 border border-red-200 text-[13px] font-black rounded-xl hover:bg-red-100 active:scale-95 transition-all flex items-center justify-center gap-1.5 shadow-sm"
+                      title="Cancel Delivery"
+                    >
+                      <XCircle size={16} /> Cancel
+                    </button>
+                    <button 
+                      onClick={() => setAttemptingOrder(order)}
+                      className="py-3 bg-amber-50 text-amber-700 border border-amber-200 text-[13px] font-black rounded-xl hover:bg-amber-100 active:scale-95 transition-all flex items-center justify-center gap-1.5 shadow-sm"
+                      title="Mark as Attempted"
+                    >
+                      <AlertTriangle size={16} /> Attempt
+                    </button>
+                  </div>
                 </div>
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* --- ATTEMPTED DELIVERY CONFIRMATION MODAL --- */}
+      {attemptingOrder && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/70 backdrop-blur-sm animate-in fade-in duration-200 p-4">
+          <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 sm:p-8 animate-in zoom-in-95 duration-200 border border-slate-100 relative">
+            <button onClick={closeAttemptModal} className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-900 bg-slate-50 rounded-full active:scale-95 transition-all"><X size={18} /></button>
+            
+            <div className="w-14 h-14 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center mb-4 border border-amber-100 shadow-sm">
+              <AlertTriangle size={24} />
+            </div>
+            
+            <h3 className="text-xl font-black text-slate-900 tracking-tight">Mark Attempted</h3>
+            <p className="text-sm text-slate-500 mt-1 font-medium leading-relaxed">
+              Could not deliver <strong className="text-slate-800">Order #{attemptingOrder.id.split('-')[0].toUpperCase()}</strong>? The items must be returned to the warehouse.
+            </p>
+
+            <div className="mt-5 space-y-3">
+              <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-widest">Reason for failed attempt</label>
+              <textarea 
+                rows="4"
+                placeholder="e.g. Customer not home, wrong address, business closed..."
+                value={attemptReason}
+                onChange={(e) => setAttemptReason(e.target.value)}
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-amber-500 focus:ring-4 focus:ring-amber-500/10 transition-all text-sm font-medium text-slate-900 resize-none shadow-sm placeholder:text-slate-400"
+              ></textarea>
+            </div>
+
+            <div className="mt-6 flex gap-3">
+              <button onClick={closeAttemptModal} className="flex-1 py-3 bg-white text-slate-700 border border-slate-300 font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">Back</button>
+              <button onClick={submitAttempted} disabled={isAttempting} className="flex-1 py-3 bg-amber-600 text-white font-bold rounded-xl shadow-lg shadow-amber-600/30 hover:bg-amber-700 active:scale-95 transition-all disabled:opacity-70 flex justify-center items-center">
+                {isAttempting ? 'Processing...' : 'Confirm'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -486,19 +707,19 @@ export default function DriverRoutes() {
             <button onClick={closeCancelModal} className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-900 bg-slate-50 rounded-full active:scale-95 transition-all"><X size={18} /></button>
             
             <div className="w-14 h-14 bg-red-50 text-red-600 rounded-full flex items-center justify-center mb-4 border border-red-100 shadow-sm">
-              <AlertTriangle size={24} />
+              <XCircle size={24} />
             </div>
             
             <h3 className="text-xl font-black text-slate-900 tracking-tight">Confirm Cancellation</h3>
             <p className="text-sm text-slate-500 mt-1 font-medium leading-relaxed">
-              Are you sure you want to cancel <strong className="text-slate-800">Order #{cancellingOrder.id.split('-')[0].toUpperCase()}</strong>? This cannot be undone.
+              Are you sure you want to cancel <strong className="text-slate-800">Order #{cancellingOrder.id.split('-')[0].toUpperCase()}</strong>? The items will auto-restock in inventory.
             </p>
 
             <div className="mt-5 space-y-3">
               <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-widest">Reason for Cancellation</label>
               <textarea 
                 rows="4"
-                placeholder="e.g. Customer not available, Wrong address provided..."
+                placeholder="e.g. Duplicate order, requested by dispatcher..."
                 value={cancelReason}
                 onChange={(e) => setCancelReason(e.target.value)}
                 className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-red-500 focus:ring-4 focus:ring-red-500/10 transition-all text-sm font-medium text-slate-900 resize-none shadow-sm placeholder:text-slate-400"
@@ -619,7 +840,6 @@ export default function DriverRoutes() {
         </div>
       )}
 
-      {/* 🚀 TOAST NOTIFICATION COMPONENT */}
       {toast.show && (
         <div className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-[120] flex items-center gap-3 bg-slate-900 text-white px-5 py-4 rounded-2xl shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-300">
           <div className={`p-1.5 rounded-full ${toast.isError ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>

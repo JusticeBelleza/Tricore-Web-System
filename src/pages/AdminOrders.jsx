@@ -26,7 +26,7 @@ export default function AdminOrders() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('all'); 
   
-  const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, shipped: 0, completed: 0, due: 0, paid: 0, cancelled: 0 });
+  const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, shipped: 0, completed: 0, due: 0, paid: 0, cancelled: 0, attempted: 0, restocked: 0 });
   const [newPendingCount, setNewPendingCount] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   
@@ -63,7 +63,6 @@ export default function AdminOrders() {
     }
   }, [activeTab, orders]);
 
-  // Fetch variants for Substitute or Add modals
   useEffect(() => {
     if (itemAction.show && (itemAction.type === 'substitute' || itemAction.type === 'add') && availableVariants.length === 0) {
       const fetchVariants = async () => {
@@ -98,7 +97,7 @@ export default function AdminOrders() {
       thresholdDate.setDate(thresholdDate.getDate() - 25);
       const lastViewedPending = localStorage.getItem('lastViewedPending') || new Date(0).toISOString();
 
-      const [pendingReq, newPendingReq, processingReq, shippedReq, completedReq, dueReq, paidReq, cancelledReq] = await Promise.all([
+      const [pendingReq, newPendingReq, processingReq, shippedReq, completedReq, dueReq, paidReq, cancelledReq, attemptedReq, restockedReq] = await Promise.all([
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').gt('created_at', lastViewedPending),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
@@ -106,12 +105,15 @@ export default function AdminOrders() {
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').eq('payment_status', 'unpaid'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('payment_status', 'paid'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'cancelled')
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'cancelled'),
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'attempted'),
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('is_restocked', true).not('processing_at', 'is', null)
       ]);
       
       setTabCounts({ 
         pending: pendingReq.count || 0, processing: processingReq.count || 0, shipped: shippedReq.count || 0, 
-        completed: completedReq.count || 0, due: dueReq.count || 0, paid: paidReq.count || 0, cancelled: cancelledReq.count || 0 
+        completed: completedReq.count || 0, due: dueReq.count || 0, paid: paidReq.count || 0, cancelled: cancelledReq.count || 0,
+        attempted: attemptedReq.count || 0, restocked: restockedReq.count || 0 
       });
       setNewPendingCount(newPendingReq.count || 0);
     } catch (error) { console.error('Error fetching tab counts:', error); }
@@ -128,7 +130,7 @@ export default function AdminOrders() {
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( full_name, contact_number, email ),
-          order_items ( id, product_variant_id, quantity_variants, unit_price, line_total, status, cancellation_reason, product_variants ( id, name, sku, price, products(name, base_sku) ) )
+          order_items ( id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, cancellation_reason, product_variants ( id, product_id, name, sku, price, products(name, base_sku) ) )
         `, { count: 'exact' }); 
 
       if (activeTab === 'pending') query = query.eq('status', 'pending');
@@ -137,15 +139,26 @@ export default function AdminOrders() {
       else if (activeTab === 'completed') query = query.eq('status', 'delivered').eq('payment_status', 'unpaid');
       else if (activeTab === 'paid') query = query.eq('payment_status', 'paid');
       else if (activeTab === 'cancelled') query = query.eq('status', 'cancelled');
+      else if (activeTab === 'attempted') query = query.eq('status', 'attempted'); 
+      else if (activeTab === 'restocked') query = query.eq('is_restocked', true).not('processing_at', 'is', null); 
       else if (activeTab === 'due') {
         const thresholdDate = new Date();
         thresholdDate.setDate(thresholdDate.getDate() - 25);
         query = query.eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
       }
 
-      if (debouncedSearch) query = query.ilike('shipping_name', `%${debouncedSearch}%`);
+      if (debouncedSearch) {
+        const cleanSearch = debouncedSearch.trim();
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanSearch);
+        
+        if (isUUID) {
+          query = query.or(`id.eq.${cleanSearch},shipping_name.ilike.%${cleanSearch}%,companies.name.ilike.%${cleanSearch}%`);
+        } else {
+          query = query.or(`shipping_name.ilike.%${cleanSearch}%,companies.name.ilike.%${cleanSearch}%`);
+        }
+      }
 
-      const sortColumn = (activeTab === 'completed' || activeTab === 'cancelled' || activeTab === 'paid') ? 'updated_at' : 'created_at';
+      const sortColumn = (activeTab === 'completed' || activeTab === 'cancelled' || activeTab === 'paid' || activeTab === 'attempted' || activeTab === 'restocked') ? 'updated_at' : 'created_at';
       query = query.order(sortColumn, { ascending: false });
       query = query.range(page * pageSize, (page * pageSize) + pageSize - 1);
 
@@ -165,9 +178,28 @@ export default function AdminOrders() {
 
       const updatePayload = { status: newStatus, updated_at: new Date().toISOString() };
       if (newStatus === 'processing') updatePayload.processing_at = new Date().toISOString();
+      
       if (newStatus === 'cancelled') {
         updatePayload.cancelled_at = new Date().toISOString();
         updatePayload.cancellation_reason = reason; 
+        
+        if (currentOrder.status === 'pending') {
+          updatePayload.is_restocked = true;
+          
+          for (const item of currentOrder.order_items) {
+            const productId = item.product_variants?.product_id;
+            if (item.status !== 'cancelled' && productId) {
+              const { data: invData } = await supabase.from('inventory').select('base_units_on_hand').eq('product_id', productId).single();
+              if (invData && invData.base_units_on_hand !== undefined) {
+                const qtyToReturn = Number(item.total_base_units || item.quantity_variants || 0);
+                const newStock = Number(invData.base_units_on_hand) + qtyToReturn;
+                await supabase.from('inventory').update({ base_units_on_hand: newStock }).eq('product_id', productId);
+              }
+            }
+          }
+        } else {
+          updatePayload.is_restocked = false;
+        }
       }
 
       const { data, error } = await supabase.from('orders').update(updatePayload).eq('id', orderId).eq('status', currentOrder.status).select();
@@ -179,20 +211,70 @@ export default function AdminOrders() {
         return;
       }
 
-      setNotification({ show: true, isError: false, message: newStatus === 'processing' ? 'Order sent to warehouse.' : 'Order rejected.' });
+      setNotification({ show: true, isError: false, message: newStatus === 'processing' ? 'Order sent to warehouse.' : 'Order rejected & items restocked.' });
       window.dispatchEvent(new Event('orderStatusChanged'));
     } catch (error) { setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` }); }
   };
 
   const handleStatusChangeClick = (orderId, newStatus) => {
+    const currentOrder = orders.find(o => o.id === orderId);
+    
     setConfirmAction({
       show: true, title: newStatus === 'processing' ? 'Accept Order?' : 'Reject Order?',
-      message: newStatus === 'processing' ? 'Approve and send to warehouse?' : 'Cancel and reject this order?',
+      message: newStatus === 'processing' 
+        ? 'Approve and send to warehouse?' 
+        : (currentOrder?.status === 'pending' ? 'Cancel order? Items will auto-restock since they were never picked.' : 'Cancel order? The warehouse will need to physically unpack and restock these items.'),
       onConfirm: (reason) => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); executeOrderStatusUpdate(orderId, newStatus, reason); }
     });
   };
 
-  // 🚀 ITEM-LEVEL: ADD NEW PRODUCT (SMART MERGE LOGIC)
+  const executeItemCancel = async () => {
+    const { order, item, reason } = itemAction;
+    setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+
+    try {
+      const productId = item.product_variants?.product_id;
+      if (productId) {
+        const { data: invData } = await supabase.from('inventory').select('base_units_on_hand').eq('product_id', productId).single();
+        if (invData && invData.base_units_on_hand !== undefined) {
+          const qtyToReturn = Number(item.total_base_units || item.quantity_variants || 0);
+          const newStock = Number(invData.base_units_on_hand) + qtyToReturn;
+          await supabase.from('inventory').update({ base_units_on_hand: newStock }).eq('product_id', productId);
+        }
+      }
+
+      let newSubtotal = 0;
+      order.order_items.forEach(oi => {
+        if (oi.id !== item.id && oi.status !== 'cancelled') {
+          newSubtotal += Number(oi.line_total || 0);
+        }
+      });
+
+      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+
+      const { data, error: itemError } = await supabase.from('order_items')
+        .update({ status: 'cancelled', cancellation_reason: reason })
+        .eq('id', item.id)
+        .select(); 
+        
+      if (itemError) throw itemError;
+      if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
+
+      const { error: deductError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
+      if (deductError) throw deductError;
+
+      setOrders(prevOrders => prevOrders.map(o => {
+        if (o.id === order.id) {
+          const updatedItems = o.order_items.map(oi => oi.id === item.id ? { ...oi, status: 'cancelled', cancellation_reason: reason } : oi);
+          return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: updatedItems };
+        }
+        return o;
+      }));
+
+      setNotification({ show: true, isError: false, message: 'Item cancelled and inventory restocked.' });
+    } catch (error) { setNotification({ show: true, isError: true, message: `Cancel failed: ${error.message}` }); }
+  };
+
   const executeItemAdd = async () => {
     const { order, newQty } = itemAction;
     try {
@@ -202,13 +284,11 @@ export default function AdminOrders() {
 
       const newUnitPrice = Number(selectedSubstitute.price || 0);
 
-      // Check if the item already exists in the active order
       const existingItem = order.order_items.find(
         oi => oi.product_variants?.id === selectedSubstitute.id && oi.status !== 'cancelled'
       );
 
       if (existingItem) {
-        // --- PATH 1: ITEM ALREADY EXISTS (Merge and Update Quantity) ---
         const updatedQty = Number(existingItem.quantity_variants) + parsedQty;
         const updatedLineTotal = updatedQty * newUnitPrice;
 
@@ -227,7 +307,7 @@ export default function AdminOrders() {
           quantity_variants: updatedQty, 
           line_total: updatedLineTotal,
           total_base_units: updatedQty 
-        }).eq('id', existingItem.id).select(); // 🚀 Added .select() to catch silent failures
+        }).eq('id', existingItem.id).select(); 
         
         if (itemError) throw itemError;
         if (!updateData || updateData.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
@@ -246,7 +326,6 @@ export default function AdminOrders() {
         setNotification({ show: true, isError: false, message: 'Quantity updated for existing product!' });
 
       } else {
-        // --- PATH 2: ITEM DOES NOT EXIST (Insert New Row) ---
         const newLineTotal = parsedQty * newUnitPrice;
         let newSubtotal = newLineTotal; 
         order.order_items.forEach(oi => {
@@ -291,7 +370,6 @@ export default function AdminOrders() {
         setNotification({ show: true, isError: false, message: 'Product added successfully!' });
       }
 
-      // Common Cleanup
       setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
       setSelectedSubstitute(null);
       setSubstituteSearch('');
@@ -299,7 +377,6 @@ export default function AdminOrders() {
     } catch (error) { setNotification({ show: true, isError: true, message: error.message }); }
   };
 
-  // 🚀 ITEM-LEVEL: EDIT QUANTITY (SAFE MATH RECALCULATION)
   const executeItemEdit = async () => {
     const { order, item, newQty } = itemAction;
     try {
@@ -325,7 +402,7 @@ export default function AdminOrders() {
           quantity_variants: parsedQty, 
           line_total: newLineTotal,
           total_base_units: parsedQty
-        }).eq('id', item.id).select(); // 🚀 Added .select() to catch silent failures
+        }).eq('id', item.id).select(); 
       
       if (itemError) throw itemError;
       if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
@@ -346,7 +423,6 @@ export default function AdminOrders() {
     } catch (error) { setNotification({ show: true, isError: true, message: error.message }); }
   };
 
-  // 🚀 ITEM-LEVEL: SUBSTITUTE PRODUCT (SAFE MATH RECALCULATION)
   const executeItemSubstitute = async () => {
     const { order, item } = itemAction;
     try {
@@ -376,7 +452,7 @@ export default function AdminOrders() {
           total_base_units: qty
         })
         .eq('id', item.id)
-        .select(); // 🚀 Added .select() to catch silent failures
+        .select(); 
       
       if (itemError) throw itemError;
       if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
@@ -397,45 +473,6 @@ export default function AdminOrders() {
       setSelectedSubstitute(null);
       setSubstituteSearch('');
     } catch (error) { setNotification({ show: true, isError: true, message: error.message }); }
-  };
-
-  // 🚀 ITEM-LEVEL: CANCEL LOGIC
-  const executeItemCancel = async () => {
-    const { order, item, reason } = itemAction;
-    setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
-
-    try {
-      let newSubtotal = 0;
-      order.order_items.forEach(oi => {
-        if (oi.id !== item.id && oi.status !== 'cancelled') {
-          newSubtotal += Number(oi.line_total || 0);
-        }
-      });
-
-      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
-
-      const { data, error: itemError } = await supabase.from('order_items')
-        .update({ status: 'cancelled', cancellation_reason: reason })
-        .eq('id', item.id)
-        .select(); // 🚀 Added .select() to catch silent failures
-        
-      if (itemError) throw itemError;
-      if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
-
-      const { error: deductError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
-      if (deductError) throw deductError;
-
-      // 🚀 ADDED: Optimistic UI for cancelling items so it updates instantly!
-      setOrders(prevOrders => prevOrders.map(o => {
-        if (o.id === order.id) {
-          const updatedItems = o.order_items.map(oi => oi.id === item.id ? { ...oi, status: 'cancelled', cancellation_reason: reason } : oi);
-          return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: updatedItems };
-        }
-        return o;
-      }));
-
-      setNotification({ show: true, isError: false, message: 'Item cancelled and totals updated.' });
-    } catch (error) { setNotification({ show: true, isError: true, message: `Cancel failed: ${error.message}` }); }
   };
 
   const executeMarkAsPaid = async (orderId) => {
@@ -572,13 +609,14 @@ export default function AdminOrders() {
   };
 
   const getStatusBadge = (status) => {
-    const styles = { pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', processing: 'bg-blue-50 text-blue-700 border-blue-200', ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', cancelled: 'bg-red-50 text-red-700 border-red-200' };
-    const icons = { pending: <Clock size={12}/>, processing: <Package size={12}/>, ready_for_delivery: <PackageCheck size={12}/>, shipped: <Truck size={12}/>, delivered: <CheckCircle2 size={12}/>, cancelled: <XCircle size={12}/> };
+    const styles = { pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', processing: 'bg-blue-50 text-blue-700 border-blue-200', ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', cancelled: 'bg-red-50 text-red-700 border-red-200', attempted: 'bg-amber-50 text-amber-700 border-amber-200', restocked: 'bg-slate-100 text-slate-700 border-slate-300' };
+    const icons = { pending: <Clock size={12}/>, processing: <Package size={12}/>, ready_for_delivery: <PackageCheck size={12}/>, shipped: <Truck size={12}/>, delivered: <CheckCircle2 size={12}/>, cancelled: <XCircle size={12}/>, attempted: <AlertTriangle size={12}/>, restocked: <RefreshCw size={12}/> };
     return (<span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center gap-1.5 w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{icons[status]} {status.replace(/_/g, ' ')}</span>);
   };
 
   const getPaymentBadge = (paymentStatus, orderStatus) => {
-    if (orderStatus === 'cancelled') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-400 border border-slate-200 shadow-sm">Voided</span>;
+    // 🚀 FIXED: Shows Voided for Cancelled, Restocked, and Attempted!
+    if (['cancelled', 'restocked', 'attempted'].includes(orderStatus)) return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-400 border border-slate-200 shadow-sm">Voided</span>;
     if (paymentStatus === 'paid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-700 border border-emerald-200 shadow-sm">Paid</span>;
     return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200 shadow-sm">Unpaid</span>;
   };
@@ -603,6 +641,9 @@ export default function AdminOrders() {
           <button onClick={() => setActiveTab('pending')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'pending' ? 'bg-red-500 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>{newPendingCount > 0 && <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>}Pending ({tabCounts.pending})</button>
           <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-600 hover:bg-blue-50'}`}>Processing ({tabCounts.processing})</button>
           <button onClick={() => setActiveTab('shipped')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'shipped' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>Shipped ({tabCounts.shipped})</button>
+          
+          <button onClick={() => setActiveTab('attempted')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'attempted' ? 'bg-amber-600 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>Attempted ({tabCounts.attempted})</button>
+
           <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>Completed ({tabCounts.completed})</button>
           
           {!isWarehouse && (
@@ -613,6 +654,8 @@ export default function AdminOrders() {
           )}
 
           <button onClick={() => setActiveTab('cancelled')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>Cancelled ({tabCounts.cancelled})</button>
+          
+          <button onClick={() => setActiveTab('restocked')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'restocked' ? 'bg-slate-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200/50'}`}>Restocked ({tabCounts.restocked})</button>
         </div>
         <div className="relative w-full xl:w-64 shrink-0"><Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" /></div>
       </div>
@@ -672,7 +715,7 @@ export default function AdminOrders() {
                     const dueDate = new Date(placedDate); dueDate.setDate(dueDate.getDate() + 30);
                     dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
                     const diffDays = (dueDate - new Date()) / (1000 * 60 * 60 * 24);
-                    if (order.payment_status === 'unpaid' && order.status !== 'cancelled') {
+                    if (order.payment_status === 'unpaid' && !['cancelled', 'restocked', 'attempted'].includes(order.status)) {
                       if (diffDays < 0) isOverdue = true; else if (diffDays <= 5) isDueSoon = true;
                     }
                   }
@@ -699,7 +742,8 @@ export default function AdminOrders() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1">
-                            <p className={`font-extrabold text-base ${order.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+                            {/* 🚀 FIXED: Strikes out the amount for Cancelled, Restocked, and Attempted! */}
+                            <p className={`font-extrabold text-base ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
                             <div className="flex items-center gap-2">
                               {getPaymentBadge(order.payment_status, order.status)}
                               {isOverdue && <span className="text-[9px] font-bold text-red-600 uppercase tracking-widest flex items-center gap-1"><AlertCircle size={10} /> Overdue</span>}
@@ -712,6 +756,10 @@ export default function AdminOrders() {
                             {getStatusBadge(order.status)}
                             {order.status === 'delivered' && (order.delivered_at || order.updated_at) && (<span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><CheckCircle2 size={10} /> {new Date(order.delivered_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.delivered_at || order.updated_at)}</span>)}
                             {order.status === 'cancelled' && (order.cancelled_at || order.updated_at) && (<span className="text-[9px] font-bold text-red-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><XCircle size={10} /> {new Date(order.cancelled_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.cancelled_at || order.updated_at)}</span>)}
+                            
+                            {order.status === 'attempted' && (order.updated_at) && (<span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest flex items-center gap-1 mt-0.5"><AlertTriangle size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}</span>)}
+                            {order.status === 'restocked' && (order.updated_at) && (<span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1 mt-0.5"><RefreshCw size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}</span>)}
+
                             {['processing', 'ready_for_delivery', 'shipped'].includes(order.status) && (<span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><Clock size={10} /> Updated at {format12hr(order.shipped_at || order.processing_at || order.updated_at)}</span>)}
                           </div>
                         </td>
@@ -724,12 +772,16 @@ export default function AdminOrders() {
                           <td colSpan="6" className="p-0 border-b border-slate-200">
                             <div className="p-6 sm:p-8 pl-[72px] animate-in slide-in-from-top-2 fade-in duration-200">
                               
-                              {order.status === 'cancelled' && order.cancellation_reason && (
-                                <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-3 shadow-sm">
-                                  <AlertTriangle size={20} className="text-red-600 mt-0.5 shrink-0" />
+                              {(order.status === 'cancelled' || order.status === 'attempted') && order.cancellation_reason && (
+                                <div className={`mb-6 p-4 border rounded-2xl flex items-start gap-3 shadow-sm ${order.status === 'attempted' ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200'}`}>
+                                  <AlertTriangle size={20} className={`${order.status === 'attempted' ? 'text-amber-600' : 'text-red-600'} mt-0.5 shrink-0`} />
                                   <div>
-                                    <h4 className="text-sm font-black text-red-900 tracking-tight">Order Cancelled</h4>
-                                    <p className="text-sm text-red-700 mt-1 font-medium leading-relaxed">{order.cancellation_reason}</p>
+                                    <h4 className={`text-sm font-black tracking-tight ${order.status === 'attempted' ? 'text-amber-900' : 'text-red-900'}`}>
+                                      {order.status === 'attempted' ? 'Delivery Attempted (Failed)' : 'Order Cancelled'}
+                                    </h4>
+                                    <p className={`text-sm mt-1 font-medium leading-relaxed ${order.status === 'attempted' ? 'text-amber-700' : 'text-red-700'}`}>
+                                      {order.cancellation_reason}
+                                    </p>
                                   </div>
                                 </div>
                               )}
@@ -827,7 +879,6 @@ export default function AdminOrders() {
                                               <td className="px-5 py-4 text-center"><span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span></td>
                                               <td className="px-5 py-4 text-right font-extrabold text-slate-900">${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
                                               
-                                              {/* ALWAYS VISIBLE ACTIONS */}
                                               {order.status === 'pending' && item.status !== 'cancelled' && (
                                                 <td className="px-5 py-4 text-right w-10">
                                                   <div className="flex items-center justify-end gap-1 transition-opacity">
@@ -853,7 +904,13 @@ export default function AdminOrders() {
                                       <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${Number(order.shipping_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                       <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${Number(order.tax_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
                                       <div className="h-px w-full bg-slate-200/60 my-2"></div>
-                                      <div className="flex justify-between items-end"><span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span><span className="text-2xl font-extrabold text-slate-900 tracking-tight leading-none">${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between items-end">
+                                        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
+                                        {/* 🚀 FIXED: Strikes out the Grand Total if Cancelled, Attempted, or Restocked */}
+                                        <span className={`text-2xl font-extrabold tracking-tight leading-none ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                                          ${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                        </span>
+                                      </div>
                                     </div>
                                     <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-medium text-slate-500">
                                       <div className="flex items-center gap-2"><CreditCard size={14} className="text-slate-400 shrink-0" /><span className="font-bold text-slate-700 capitalize">{order.payment_method.replace('_', ' ')}</span></div>
@@ -945,7 +1002,6 @@ export default function AdminOrders() {
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
             
-            {/* 🚀 ADD PRODUCT MODAL */}
             {itemAction.type === 'add' && (
               <>
                 <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-emerald-50 text-emerald-600 border-emerald-100"><Plus size={32} /></div>
@@ -1011,7 +1067,6 @@ export default function AdminOrders() {
               </>
             )}
 
-            {/* CANCEL MODAL */}
             {itemAction.type === 'cancel' && (
               <>
                 <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-red-50 text-red-600 border-red-100"><XCircle size={32} /></div>
@@ -1028,7 +1083,6 @@ export default function AdminOrders() {
               </>
             )}
 
-            {/* EDIT QUANTITY MODAL */}
             {itemAction.type === 'edit' && (
               <>
                 <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-blue-50 text-blue-600 border-blue-100"><Edit3 size={32} /></div>
@@ -1046,7 +1100,6 @@ export default function AdminOrders() {
               </>
             )}
 
-            {/* 🚀 SEARCHABLE SUBSTITUTE PRODUCT MODAL */}
             {itemAction.type === 'substitute' && (
               <>
                 <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-purple-50 text-purple-600 border-purple-100"><RefreshCw size={32} /></div>
