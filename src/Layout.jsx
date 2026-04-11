@@ -5,7 +5,7 @@ import { supabase } from './lib/supabase';
 import { 
   LayoutDashboard, Package, ShoppingCart, Truck, Warehouse, 
   Users, BarChart3, ClipboardList, LogOut, Menu, X, Car, Navigation,
-  AlertCircle, CheckCircle2, XCircle
+  AlertCircle, CheckCircle2, XCircle, Share, PlusSquare // 🚀 Added Share & PlusSquare for iOS Prompt
 } from "lucide-react"; 
 
 export default function Layout() {
@@ -22,10 +22,38 @@ export default function Layout() {
   const [overdueCount, setOverdueCount] = useState(0);
   const [processingCount, setProcessingCount] = useState(0);
   const [needsDispatchCount, setNeedsDispatchCount] = useState(0);
-  const [returnsCount, setReturnsCount] = useState(0); // 🚀 ADDED STATE FOR RETURNS
+  const [returnsCount, setReturnsCount] = useState(0);
   
   // --- Customer Notification Popup State ---
   const [customerAlert, setCustomerAlert] = useState({ show: false, type: 'info', message: '', description: '' });
+
+  // 🚀 --- iOS PWA Install Prompt State ---
+  const [showIosPrompt, setShowIosPrompt] = useState(false);
+
+  // 🚀 --- Check for iPhone/iPad to show manual install prompt ---
+  useEffect(() => {
+    const isIos = () => {
+      const userAgent = window.navigator.userAgent.toLowerCase();
+      return /iphone|ipad|ipod/.test(userAgent);
+    };
+
+    const isInStandaloneMode = () => {
+      return ('standalone' in window.navigator) && (window.navigator.standalone);
+    };
+
+    // If it's iOS, NOT installed as an app, and hasn't been dismissed yet...
+    if (isIos() && !isInStandaloneMode()) {
+      const hasDismissed = localStorage.getItem('dismissedPwaPrompt');
+      if (!hasDismissed) {
+        setShowIosPrompt(true);
+      }
+    }
+  }, []);
+
+  const dismissIosPrompt = () => {
+    setShowIosPrompt(false);
+    localStorage.setItem('dismissedPwaPrompt', 'true');
+  };
 
   useEffect(() => {
     if (!profile) return;
@@ -58,7 +86,6 @@ export default function Layout() {
           .gt('updated_at', lastViewedDispatch); 
         setNeedsDispatchCount(dispatchCount || 0);
 
-        // 🚀 ADDED: Fetch count of Attempted (Returned) orders waiting for restock
         const { count: rCount } = await supabase
           .from('orders')
           .select('*', { count: 'exact', head: true })
@@ -91,25 +118,19 @@ export default function Layout() {
       }
     };
 
-    // Initial fetch
     fetchBadges();
     
-    // Real-time subscription for order changes
     const sub = supabase.channel('global_orders_channel')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
-        // Refresh badges for staff
         fetchBadges();
         
-        // Real-time notifications specifically for the Customer
         if (isCustomer && payload.eventType === 'UPDATE') {
           const oldData = payload.old;
           const newData = payload.new;
           
-          // Verify the order belongs to this specific logged-in user
           const isMyOrder = profile.company_id ? newData.company_id === profile.company_id : newData.user_id === profile.id;
           
           if (isMyOrder) {
-            // Path 1: Entire Order Cancelled
             if (newData.status === 'cancelled' && oldData.status !== 'cancelled') {
               setCustomerAlert({
                 show: true, type: 'error',
@@ -118,7 +139,6 @@ export default function Layout() {
               });
               setTimeout(() => setCustomerAlert(prev => ({...prev, show: false})), 8000);
             }
-            // Path 2: Order Approved (Pending -> Processing)
             else if (newData.status === 'processing' && oldData.status === 'pending') {
               setCustomerAlert({
                 show: true, type: 'success',
@@ -127,7 +147,6 @@ export default function Layout() {
               });
               setTimeout(() => setCustomerAlert(prev => ({...prev, show: false})), 5000);
             }
-            // Path 3: Order Adjusted (Total changed due to editing quantities or substituting)
             else if (newData.total_amount !== oldData.total_amount && newData.status !== 'cancelled') {
               setCustomerAlert({
                 show: true, type: 'warning',
@@ -141,7 +160,6 @@ export default function Layout() {
       })
       .subscribe();
 
-    // Listeners for local events to clear badges
     window.addEventListener('orderStatusChanged', fetchBadges);
     window.addEventListener('podViewed', fetchBadges);
     window.addEventListener('pendingViewed', fetchBadges);
@@ -182,7 +200,7 @@ export default function Layout() {
   };
 
   return (
-    <div className="min-h-screen flex bg-slate-50 font-sans">
+    <div className="min-h-screen flex bg-slate-50 font-sans relative">
       
       {/* Mobile Menu Overlay */}
       {isMobileMenuOpen && (
@@ -256,7 +274,6 @@ export default function Layout() {
                 
                 {(profile?.role === 'admin' || profile?.role === 'warehouse') && (
                   <>
-                    {/* 1. All Orders */}
                     <Link to="/admin/orders" onClick={closeMobileMenu} className={navItemClass('/admin/orders')}>
                       <ShoppingCart size={18} /> 
                       <span className="flex-1">All Orders</span>
@@ -270,12 +287,10 @@ export default function Layout() {
                       )}
                     </Link>
 
-                    {/* 2. Pick & Pack (WITH COMBINED PROCESSING + RETURNS NOTIFICATION) */}
                     <Link to="/warehouse" onClick={closeMobileMenu} className={navItemClass('/warehouse')}>
                       <Warehouse size={18} /> 
                       <span className="flex-1">Pick & Pack</span>
                       
-                      {/* Show Blue badge for Processing orders */}
                       {processingCount > 0 && returnsCount === 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75 animate-ping"></span>
@@ -285,7 +300,6 @@ export default function Layout() {
                         </div>
                       )}
 
-                      {/* 🚀 Show Red/Amber badge if there are RETURNS coming back to the warehouse */}
                       {returnsCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto" title={`${returnsCount} Returned Orders need restocking`}>
                           <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
@@ -296,7 +310,6 @@ export default function Layout() {
                       )}
                     </Link>
                     
-                    {/* 3. Dispatch & POD */}
                     <Link to="/dispatch" onClick={closeMobileMenu} className={navItemClass('/dispatch')}>
                       <Navigation size={18} /> 
                       <span className="flex-1">Dispatch & POD</span>
@@ -310,22 +323,18 @@ export default function Layout() {
                       )}
                     </Link>
 
-                    {/* 4. Manage Products */}
                     <Link to="/admin/products" onClick={closeMobileMenu} className={navItemClass('/admin/products')}>
                       <Package size={18} /> Manage Products
                     </Link>
 
-                    {/* 5. Fleet Management */}
                     <Link to="/fleet" onClick={closeMobileMenu} className={navItemClass('/fleet')}>
                       <Car size={18} /> Fleet Management
                     </Link>
 
-                    {/* 6. Purchase Orders */}
                     <Link to="/purchase-orders" onClick={closeMobileMenu} className={navItemClass('/purchase-orders')}>
                       <ClipboardList size={18} /> Purchase Orders
                     </Link>
 
-                    {/* 7. Reports */}
                     <Link to="/admin/reports" onClick={closeMobileMenu} className={navItemClass('/admin/reports')}>
                       <BarChart3 size={18} /> Reports
                     </Link>
@@ -428,6 +437,48 @@ export default function Layout() {
           }`}>
             {customerAlert.description}
           </p>
+        </div>
+      )}
+
+      {/* 🚀 iOS PWA MANUAL INSTALL PROMPT */}
+      {showIosPrompt && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[999] w-[90%] max-w-sm">
+          <div className="bg-white rounded-3xl shadow-2xl p-6 border border-slate-200 relative animate-in slide-in-from-bottom-10 fade-in duration-300">
+            
+            <button 
+              onClick={dismissIosPrompt}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:bg-slate-100 rounded-full transition-colors active:scale-95"
+            >
+              <X size={18} />
+            </button>
+
+            <h3 className="font-black text-slate-900 text-lg tracking-tight mb-2">
+              Install Driver App
+            </h3>
+            
+            <p className="text-sm text-slate-500 font-medium leading-relaxed mb-5 pr-4">
+              Install this app on your iPhone for full-screen maps and offline access.
+            </p>
+
+            <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 flex flex-col gap-4">
+              <div className="flex items-center gap-3">
+                <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-200">
+                  <Share size={20} className="text-blue-500" />
+                </div>
+                <p className="text-sm font-bold text-slate-700">1. Tap the <span className="text-blue-600">Share</span> icon below</p>
+              </div>
+              
+              <div className="flex items-center gap-3">
+                <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-200">
+                  <PlusSquare size={20} className="text-slate-700" />
+                </div>
+                <p className="text-sm font-bold text-slate-700">2. Select <span className="text-slate-900 font-black">Add to Home Screen</span></p>
+              </div>
+            </div>
+
+            {/* Downward pointing triangle/arrow */}
+            <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-0 h-0 border-l-8 border-r-8 border-t-8 border-transparent border-t-white filter drop-shadow-md"></div>
+          </div>
         </div>
       )}
 

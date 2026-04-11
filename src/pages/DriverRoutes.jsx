@@ -538,8 +538,9 @@ export default function DriverRoutes() {
             return (
               <div key={order.id} className={`bg-white border rounded-3xl p-4 shadow-sm relative overflow-hidden flex flex-col transition-all ${isOutForDelivery ? 'border-blue-400 ring-4 ring-blue-500/10' : 'border-slate-200'}`}>
                 
+                {/* 🚀 FIXED STOP LABEL */}
                 <div className={`absolute top-0 right-0 text-white px-3 py-1.5 rounded-bl-xl font-black text-[10px] tracking-widest uppercase z-10 shadow-sm ${isOutForDelivery ? 'bg-blue-600' : 'bg-slate-900'}`}>
-                  Stop #{index + 1}
+                  Stop #{order.routeLegIndex !== undefined ? order.routeLegIndex + 1 : index + 1}
                 </div>
 
                 <div className="mb-3 pr-16 pl-1">
