@@ -1,16 +1,15 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
-// 🚀 1. ADDED 'Polyline' TO DRAW THE BLUE LINE
 import { GoogleMap, useJsApiLoader, DirectionsRenderer, Marker, Polyline } from '@react-google-maps/api';
 import { 
-  MapPin, Phone, CheckCircle2, Camera, PenTool, X, 
+  MapPin, Phone, CheckCircle2, Camera, PenTool, X, Clock,
   UploadCloud, Truck, Route, PackageCheck, Package, DollarSign, AlertTriangle, XCircle, Map
 } from 'lucide-react';
 
 const WAREHOUSE_ADDRESS = "2169 Harbor St, Pittsburg CA 94565";
 
-// 🚀 2. THE STICKY MASTER MAP W/ BLUE ACTIVE ROUTE HIGHLIGHT
+// 🚀 1. THE STICKY MASTER MAP W/ BLUE ACTIVE ROUTE HIGHLIGHT & TIME/DISTANCE
 function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger }) {
   const { isLoaded } = useJsApiLoader({
     id: 'google-map-script',
@@ -21,8 +20,11 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
   const [showMap, setShowMap] = useState(false);
   const [isCalculating, setIsCalculating] = useState(false);
 
-  // Find the index of the order the driver is currently delivering
-  const activeLegIndex = orders.findIndex(o => o.status === 'out_for_delivery');
+  // 🚀 Look up the exact locked index from the active order!
+  const activeDelivery = orders.find(o => o.status === 'out_for_delivery');
+  const activeLegIndex = activeDelivery && activeDelivery.routeLegIndex !== undefined 
+    ? activeDelivery.routeLegIndex 
+    : -1;
 
   useEffect(() => {
     if (autoTrigger > 0 && !showMap) {
@@ -66,8 +68,13 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
           setDirections(result);
           setShowMap(true);
           
-          if (result.routes[0] && result.routes[0].waypoint_order) {
-             onRouteOptimized(result.routes[0].waypoint_order);
+          if (result.routes[0]) {
+             const sequence = result.routes[0].waypoint_order;
+             const legsData = result.routes[0].legs.map(leg => ({
+               distance: leg.distance.text,
+               duration: leg.duration.text
+             }));
+             onRouteOptimized(sequence, legsData);
           }
         } else {
           console.error("Master Route Error:", status);
@@ -78,20 +85,22 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
     );
   };
 
-  // 🚀 3. EXTRACT THE EXACT GPS PATH FOR THE ACTIVE LEG
-  const activeLegPath = React.useMemo(() => {
+  // 🚀 EXTRACT THE EXACT GPS PATH FOR THE ACTIVE LEG + DISTANCE/TIME
+  const activeLegInfo = useMemo(() => {
     if (!directions || activeLegIndex < 0) return null;
     try {
-      // legs[0] is Warehouse -> Stop 1. legs[1] is Stop 1 -> Stop 2.
       const leg = directions.routes[0].legs[activeLegIndex];
       if (!leg) return null;
       
       let path = [];
-      // Combine all the tiny GPS steps that make up this one leg
       leg.steps.forEach(step => {
         step.path.forEach(latLng => path.push(latLng));
       });
-      return path;
+      return {
+        distance: leg.distance.text,
+        duration: leg.duration.text,
+        path: path
+      };
     } catch (e) {
       return null;
     }
@@ -118,13 +127,15 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
       
       <div className="bg-slate-900 text-white p-3.5 rounded-2xl flex items-center gap-4 shadow-inner">
         <div className="bg-slate-800 p-2.5 rounded-xl shrink-0">
-          <MapPin size={20} className="text-emerald-400" />
+          <Truck size={20} className="text-blue-400" />
         </div>
-        <div>
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-            {activeLegIndex >= 0 ? `Heading to Stop #${activeLegIndex + 1}` : 'Round Trip Active'}
+        <div className="flex-1 overflow-hidden">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate">
+            {activeLegInfo ? `Heading to Stop #${activeLegIndex + 1}` : 'Round Trip Active'}
           </p>
-          <p className="text-sm font-black text-white">Start & End: Pittsburg Warehouse</p>
+          <p className="text-sm font-black text-white truncate">
+            {activeLegInfo ? `${activeLegInfo.distance} • ${activeLegInfo.duration}` : 'Start & End: Pittsburg'}
+          </p>
         </div>
         <button 
           onClick={() => setShowMap(false)}
@@ -145,26 +156,26 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
             <DirectionsRenderer 
               directions={directions} 
               options={{ 
-                // We keep the main line green and slightly thinner
-                polylineOptions: { strokeColor: '#10b981', strokeWeight: 4, strokeOpacity: 0.6 },
+                polylineOptions: { strokeColor: '#10b981', strokeWeight: 4, strokeOpacity: 0.5 },
                 suppressMarkers: false 
               }}
             />
           )}
 
-          {/* 🚀 4. DRAW THE BLUE LINE FOR THE ACTIVE ROUTE */}
-          {activeLegPath && (
+          {/* 🚀 DRAW THE BLUE LINE FOR THE ACTIVE ROUTE */}
+          {activeLegInfo && (
             <Polyline
-              path={activeLegPath}
+              path={activeLegInfo.path}
               options={{
                 strokeColor: '#3b82f6', // Bright Blue
                 strokeOpacity: 1.0,
-                strokeWeight: 7, // Thicker so it pops over the green
-                zIndex: 50 // Ensures it renders on top
+                strokeWeight: 6, // Thicker so it pops over the green
+                zIndex: 50
               }}
             />
           )}
 
+          {/* 🚀 LIVE TRUCK MARKER */}
           {currentLocation && (
             <Marker 
               position={currentLocation}
@@ -182,14 +193,12 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
 }
 
 
-// 🚀 THE MAIN DRIVER DASHBOARD
+// 🚀 2. THE MAIN DRIVER DASHBOARD
 export default function DriverRoutes() {
   const { profile } = useAuth();
   const [orders, setOrders] = useState([]);
-  
   const [completedThisWeek, setCompletedThisWeek] = useState(0);
   const [loading, setLoading] = useState(true);
-  
   const [licenseAlert, setLicenseAlert] = useState(null);
 
   const [activeOrder, setActiveOrder] = useState(null); 
@@ -213,6 +222,7 @@ export default function DriverRoutes() {
 
   const canvasRef = useRef(null);
 
+  // SILENT GPS TRACKER
   useEffect(() => {
     if (!profile?.id || profile?.role?.toLowerCase() !== 'driver') return;
     let latestCoords = null;
@@ -231,7 +241,6 @@ export default function DriverRoutes() {
     }, 15000); 
     return () => { navigator.geolocation.clearWatch(watchId); clearInterval(syncInterval); };
   }, [profile?.id, profile?.role]);
-
 
   useEffect(() => {
     if (profile?.id && profile?.full_name) {
@@ -293,15 +302,21 @@ export default function DriverRoutes() {
     }
   };
 
-  const applyOptimizedOrder = (googleWaypointOrder) => {
-    if (!googleWaypointOrder || googleWaypointOrder.length === 0) return;
+  // 🚀 FIXED: Added routeLegIndex so the map remembers the original Google route mapping!
+  const applyOptimizedOrder = (sequence, legsData) => {
+    if (!sequence || sequence.length === 0) return;
     
     const routeOrders = orders.slice(0, 25); 
     const remainingOrders = orders.slice(25); 
     
-    const sortedRouteOrders = googleWaypointOrder.map(index => routeOrders[index]);
-    const completelySortedOrders = [...sortedRouteOrders, ...remainingOrders];
+    const sortedRouteOrders = sequence.map((originalIndex, i) => ({
+      ...routeOrders[originalIndex],
+      travelDistance: legsData[i]?.distance,
+      travelTime: legsData[i]?.duration,
+      routeLegIndex: i // 🚀 Locks the order to its specific Map Leg!
+    }));
     
+    const completelySortedOrders = [...sortedRouteOrders, ...remainingOrders];
     setOrders(completelySortedOrders);
     showToast("Route Optimized for Fastest Round Trip!");
   };
@@ -311,18 +326,48 @@ export default function DriverRoutes() {
     if (file) { setPhotoFile(file); setPhotoPreview(URL.createObjectURL(file)); }
   };
 
+  // 🚀 FIXED SIGNATURE LOGIC WITH DELAY
   useEffect(() => {
     if (!activeOrder || !canvasRef.current) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    canvas.width = canvas.offsetWidth * 2; canvas.height = canvas.offsetHeight * 2; ctx.scale(2, 2); ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#0f172a'; 
-    let isDrawing = false;
-    const getPos = (e) => { const rect = canvas.getBoundingClientRect(); const clientX = e.touches && e.touches.length > 0 ? e.touches[0].clientX : e.clientX; const clientY = e.touches && e.touches.length > 0 ? e.touches[0].clientY : e.clientY; return { x: clientX - rect.left, y: clientY - rect.top }; };
-    const startPos = (e) => { e.preventDefault(); isDrawing = true; const pos = getPos(e); ctx.beginPath(); ctx.moveTo(pos.x, pos.y); };
-    const movePos = (e) => { e.preventDefault(); if (!isDrawing) return; const pos = getPos(e); ctx.lineTo(pos.x, pos.y); ctx.stroke(); };
-    const stopPos = (e) => { e.preventDefault(); isDrawing = false; };
-    canvas.addEventListener('mousedown', startPos, { passive: false }); canvas.addEventListener('mousemove', movePos, { passive: false }); canvas.addEventListener('mouseup', stopPos, { passive: false }); canvas.addEventListener('mouseleave', stopPos, { passive: false }); canvas.addEventListener('touchstart', startPos, { passive: false }); canvas.addEventListener('touchmove', movePos, { passive: false }); canvas.addEventListener('touchend', stopPos, { passive: false }); canvas.addEventListener('touchcancel', stopPos, { passive: false });
-    return () => { canvas.removeEventListener('mousedown', startPos); canvas.removeEventListener('mousemove', movePos); canvas.removeEventListener('mouseup', stopPos); canvas.removeEventListener('mouseleave', stopPos); canvas.removeEventListener('touchstart', startPos); canvas.removeEventListener('touchmove', movePos); canvas.removeEventListener('touchend', stopPos); canvas.removeEventListener('touchcancel', stopPos); };
+    
+    const timer = setTimeout(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const rect = canvas.getBoundingClientRect();
+      
+      canvas.width = (rect.width || 350) * 2; 
+      canvas.height = (rect.height || 160) * 2;
+      ctx.scale(2, 2); 
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#0f172a'; 
+
+      let isDrawing = false;
+
+      const getPos = (e) => {
+        const r = canvas.getBoundingClientRect();
+        const clientX = e.touches && e.touches.length > 0 ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches && e.touches.length > 0 ? e.touches[0].clientY : e.clientY;
+        return { x: clientX - r.left, y: clientY - r.top };
+      };
+
+      const startPos = (e) => { e.preventDefault(); isDrawing = true; const pos = getPos(e); ctx.beginPath(); ctx.moveTo(pos.x, pos.y); };
+      const movePos = (e) => { e.preventDefault(); if (!isDrawing) return; const pos = getPos(e); ctx.lineTo(pos.x, pos.y); ctx.stroke(); };
+      const stopPos = (e) => { e.preventDefault(); isDrawing = false; };
+
+      canvas.onmousedown = startPos;
+      canvas.onmousemove = movePos;
+      canvas.onmouseup = stopPos;
+      canvas.onmouseleave = stopPos;
+      canvas.ontouchstart = startPos;
+      canvas.ontouchmove = movePos;
+      canvas.ontouchend = stopPos;
+      canvas.ontouchcancel = stopPos;
+    }, 200);
+
+    return () => clearTimeout(timer);
   }, [activeOrder]);
 
   const clearSignature = () => { const canvas = canvasRef.current; if (!canvas) return; const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); };
@@ -349,7 +394,6 @@ export default function DriverRoutes() {
       showToast("Failed to sync status to database.", true); 
     }
   };
-
 
   const submitDelivery = async () => {
     if (!receivedBy.trim()) { showToast('Please enter the full name of the person receiving the order.', true); return; }
@@ -414,10 +458,10 @@ export default function DriverRoutes() {
   const closeAttemptModal = () => { setAttemptingOrder(null); setAttemptReason(''); };
 
   return (
-    <div className="max-w-md sm:max-w-3xl mx-auto space-y-5 pb-24 relative">
+    <div className="max-w-md sm:max-w-3xl mx-auto space-y-5 pb-24 relative px-4">
       
       {licenseAlert && (
-        <div className={`p-4 rounded-3xl border flex items-start gap-3 shadow-sm animate-in fade-in slide-in-from-top-4 ${licenseAlert.type === 'danger' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+        <div className={`p-4 rounded-3xl border flex items-start gap-3 mt-4 shadow-sm animate-in fade-in slide-in-from-top-4 ${licenseAlert.type === 'danger' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
           <div className={`p-2 rounded-full shrink-0 ${licenseAlert.type === 'danger' ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'}`}>
             <AlertTriangle size={20} />
           </div>
@@ -428,8 +472,7 @@ export default function DriverRoutes() {
         </div>
       )}
 
-      {/* --- DRIVER HERO DASHBOARD --- */}
-      <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-lg relative overflow-hidden">
+      <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-lg relative overflow-hidden mt-4">
         <div className="relative z-10">
           <p className="text-emerald-400 font-bold tracking-widest uppercase text-[10px] mb-1">Driver Dashboard</p>
           <h2 className="text-2xl font-extrabold tracking-tight">Welcome, {profile?.full_name?.split(' ')[0] || 'Driver'}</h2>
@@ -454,7 +497,6 @@ export default function DriverRoutes() {
         <Truck className="absolute -right-8 -bottom-8 text-white/5" size={160} strokeWidth={1} />
       </div>
 
-      {/* 🚀 THE STICKY MASTER MAP W/ AUTO-TRIGGER */}
       {!loading && orders.length > 0 && (
         <MasterRouteMap 
           orders={orders} 
@@ -503,6 +545,17 @@ export default function DriverRoutes() {
                 <div className="mb-3 pr-16 pl-1">
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 block">Order #{shortId}</span>
                   <h3 className="text-lg font-black text-slate-900 leading-tight">{shipName}</h3>
+                  {/* 🚀 DISTANCE/TIME CARD BADGE */}
+                  {order.travelDistance && (
+                    <div className="flex items-center gap-3 mt-1.5">
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
+                        <MapPin size={10} /> {order.travelDistance}
+                      </div>
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
+                        <Clock size={10} /> {order.travelTime}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 mb-4">
@@ -577,7 +630,6 @@ export default function DriverRoutes() {
         </div>
       )}
 
-      {/* ATTEMPT MODAL */}
       {attemptingOrder && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/70 backdrop-blur-sm animate-in fade-in duration-200 p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 sm:p-8 animate-in zoom-in-95 duration-200 border border-slate-100 relative">
@@ -591,7 +643,6 @@ export default function DriverRoutes() {
         </div>
       )}
 
-      {/* CANCEL MODAL */}
       {cancellingOrder && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/70 backdrop-blur-sm animate-in fade-in duration-200 p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 sm:p-8 animate-in zoom-in-95 duration-200 border border-slate-100 relative">
@@ -605,22 +656,106 @@ export default function DriverRoutes() {
         </div>
       )}
 
-      {/* POD MODAL */}
+      {/* 🚀 ORIGINAL, FULL PROOF OF DELIVERY MODAL RESTORED */}
       {activeOrder && (
         <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/70 backdrop-blur-sm animate-in fade-in duration-200 p-0 sm:p-4">
           <div className="bg-white w-full sm:max-w-md h-[92vh] sm:h-auto sm:max-h-[90vh] rounded-t-[2rem] sm:rounded-3xl shadow-2xl flex flex-col animate-in slide-in-from-bottom-full duration-300">
+            
             <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center shrink-0 bg-slate-50 rounded-t-[2rem] sm:rounded-t-3xl">
-              <div><h3 className="text-xl font-black text-slate-900 tracking-tight">Proof of Delivery</h3><p className="text-[10px] font-bold text-slate-400 mt-0.5 uppercase tracking-widest">Order #{activeOrder.id.split('-')[0]}</p></div>
+              <div>
+                <h3 className="text-xl font-black text-slate-900 tracking-tight">Proof of Delivery</h3>
+                <p className="text-[10px] font-bold text-slate-400 mt-0.5 uppercase tracking-widest">Order #{activeOrder.id.split('-')[0]}</p>
+              </div>
               <button onClick={closeModal} className="p-2.5 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 shadow-sm"><X size={20} /></button>
             </div>
+
             <div className="p-6 overflow-y-auto flex-1 space-y-6 bg-white">
-              <div className="space-y-3"><label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest"><div className="w-5 h-5 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-[10px]">1</div>Take Photo (Optional)</label>{photoPreview ? (<div className="relative w-full h-36 rounded-2xl overflow-hidden border-2 border-slate-200 shadow-sm"><img src={photoPreview} alt="Preview" className="w-full h-full object-cover" /><button onClick={() => { setPhotoPreview(null); setPhotoFile(null); }} className="absolute top-2 right-2 p-1.5 bg-slate-900/70 backdrop-blur text-white rounded-full active:scale-95"><X size={14}/></button></div>) : (<div className="relative group"><input type="file" accept="image/*" capture="environment" onChange={handlePhotoCapture} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"/><div className="w-full h-24 border-2 border-dashed border-slate-300 rounded-2xl bg-slate-50 flex flex-col items-center justify-center text-slate-500 gap-2 active:bg-slate-100 transition-colors"><div className="p-2 bg-white rounded-full shadow-sm"><Camera size={18} className="text-blue-500" /></div><span className="text-[10px] font-bold uppercase tracking-widest">Tap for Camera</span></div></div>)}</div>
+              
+              {/* Step 1: Photo Section */}
+              <div className="space-y-3">
+                <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
+                  <div className="w-5 h-5 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-[10px]">1</div>
+                  Take Photo (Optional)
+                </label>
+                
+                {photoPreview ? (
+                  <div className="relative w-full h-36 rounded-2xl overflow-hidden border-2 border-slate-200 shadow-sm">
+                    <img src={photoPreview} alt="Preview" className="w-full h-full object-cover" />
+                    <button onClick={() => { setPhotoPreview(null); setPhotoFile(null); }} className="absolute top-2 right-2 p-1.5 bg-slate-900/70 backdrop-blur text-white rounded-full active:scale-95"><X size={14}/></button>
+                  </div>
+                ) : (
+                  <div className="relative group">
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      capture="environment" 
+                      onChange={handlePhotoCapture}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                    />
+                    <div className="w-full h-24 border-2 border-dashed border-slate-300 rounded-2xl bg-slate-50 flex flex-col items-center justify-center text-slate-500 gap-2 active:bg-slate-100 transition-colors">
+                      <div className="p-2 bg-white rounded-full shadow-sm"><Camera size={18} className="text-blue-500" /></div>
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Tap for Camera</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="h-px w-full bg-slate-100"></div>
-              <div className="space-y-3"><label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest"><div className="w-5 h-5 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-[10px]">2</div>Recipient Name</label><input type="text" placeholder="Enter full name..." value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-900 shadow-sm placeholder:font-medium placeholder:text-slate-400"/></div>
+
+              {/* Step 2: Recipient Name */}
+              <div className="space-y-3">
+                <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
+                  <div className="w-5 h-5 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-[10px]">2</div>
+                  Recipient Name
+                </label>
+                <input 
+                  type="text" 
+                  placeholder="Enter full name..." 
+                  value={receivedBy} 
+                  onChange={(e) => setReceivedBy(e.target.value)} 
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-900 shadow-sm placeholder:font-medium placeholder:text-slate-400"
+                />
+              </div>
+
               <div className="h-px w-full bg-slate-100"></div>
-              <div className="space-y-3 pb-4"><div className="flex justify-between items-end"><label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest"><div className="w-5 h-5 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center text-[10px]">3</div>Customer Signature</label><button onClick={clearSignature} className="text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-slate-100 px-3 py-1.5 rounded-lg active:scale-95">Clear</button></div><div className="relative w-full h-40 border-2 border-slate-200 rounded-2xl bg-slate-50 overflow-hidden shadow-inner"><canvas ref={canvasRef} className="absolute inset-0 w-full h-full cursor-crosshair" style={{ touchAction: 'none' }}/><div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-10"><PenTool size={48} /></div></div></div>
+
+              {/* Step 3: Signature Section */}
+              <div className="space-y-3 pb-4">
+                <div className="flex justify-between items-end">
+                  <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
+                    <div className="w-5 h-5 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center text-[10px]">3</div>
+                    Customer Signature
+                  </label>
+                  <button onClick={clearSignature} className="text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-slate-100 px-3 py-1.5 rounded-lg active:scale-95">Clear</button>
+                </div>
+                
+                <div className="relative w-full h-40 border-2 border-slate-200 rounded-2xl bg-slate-50 overflow-hidden shadow-inner">
+                  <canvas
+                    ref={canvasRef}
+                    className="absolute inset-0 w-full h-full cursor-crosshair"
+                    style={{ touchAction: 'none' }}
+                  />
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-10">
+                    <PenTool size={48} />
+                  </div>
+                </div>
+              </div>
             </div>
-            <div className="p-5 border-t border-slate-100 bg-white shrink-0 pb-8 sm:pb-5"><button onClick={submitDelivery} disabled={isSubmitting} className="w-full py-4 bg-emerald-500 text-white text-base font-black rounded-2xl shadow-lg shadow-emerald-500/30 hover:bg-emerald-400 active:scale-[0.98] transition-all flex justify-center items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed">{isSubmitting ? (<span className="animate-pulse flex items-center gap-2">Uploading Data...</span>) : (<><UploadCloud size={20} /> Submit Delivery</>)}</button></div>
+
+            <div className="p-5 border-t border-slate-100 bg-white shrink-0 pb-8 sm:pb-5">
+              <button 
+                onClick={submitDelivery} 
+                disabled={isSubmitting}
+                className="w-full py-4 bg-emerald-500 text-white text-base font-black rounded-2xl shadow-lg shadow-emerald-500/30 hover:bg-emerald-400 active:scale-[0.98] transition-all flex justify-center items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
+              >
+                {isSubmitting ? (
+                  <span className="animate-pulse flex items-center gap-2">Uploading Data...</span>
+                ) : (
+                  <><UploadCloud size={20} /> Submit Delivery</>
+                )}
+              </button>
+            </div>
+
           </div>
         </div>
       )}

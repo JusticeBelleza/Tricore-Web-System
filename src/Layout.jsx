@@ -22,6 +22,7 @@ export default function Layout() {
   const [overdueCount, setOverdueCount] = useState(0);
   const [processingCount, setProcessingCount] = useState(0);
   const [needsDispatchCount, setNeedsDispatchCount] = useState(0);
+  const [returnsCount, setReturnsCount] = useState(0); // 🚀 ADDED STATE FOR RETURNS
   
   // --- Customer Notification Popup State ---
   const [customerAlert, setCustomerAlert] = useState({ show: false, type: 'info', message: '', description: '' });
@@ -41,7 +42,7 @@ export default function Layout() {
         setPendingCount(pCount || 0);
       }
       
-      // 2. Admins & Warehouse get badge for Processing Orders & Dispatch
+      // 2. Admins & Warehouse get badge for Processing Orders, Dispatch, AND RETURNS
       if (profile.role === 'admin' || profile.role === 'warehouse') {
         const { count: prCount } = await supabase
           .from('orders')
@@ -56,6 +57,14 @@ export default function Layout() {
           .eq('status', 'ready_for_delivery')
           .gt('updated_at', lastViewedDispatch); 
         setNeedsDispatchCount(dispatchCount || 0);
+
+        // 🚀 ADDED: Fetch count of Attempted (Returned) orders waiting for restock
+        const { count: rCount } = await supabase
+          .from('orders')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', 'attempted')
+          .is('is_restocked', false);
+        setReturnsCount(rCount || 0);
       }
 
       // 3. Customers get badge for Net-30 Overdue Invoices
@@ -63,7 +72,6 @@ export default function Layout() {
         const threshold = new Date();
         threshold.setDate(threshold.getDate() - 25); 
         
-        // 🚀 FIXED: Now strictly ensures the order is 'delivered' before counting it as due
         let query = supabase
           .from('orders')
           .select('*', { count: 'exact', head: true })
@@ -262,15 +270,27 @@ export default function Layout() {
                       )}
                     </Link>
 
-                    {/* 2. Pick & Pack */}
+                    {/* 2. Pick & Pack (WITH COMBINED PROCESSING + RETURNS NOTIFICATION) */}
                     <Link to="/warehouse" onClick={closeMobileMenu} className={navItemClass('/warehouse')}>
                       <Warehouse size={18} /> 
                       <span className="flex-1">Pick & Pack</span>
-                      {processingCount > 0 && (
+                      
+                      {/* Show Blue badge for Processing orders */}
+                      {processingCount > 0 && returnsCount === 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75 animate-ping"></span>
                           <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-bold text-white bg-blue-600 rounded-full shadow-sm">
                             {processingCount} New
+                          </span>
+                        </div>
+                      )}
+
+                      {/* 🚀 Show Red/Amber badge if there are RETURNS coming back to the warehouse */}
+                      {returnsCount > 0 && (
+                        <div className="relative flex items-center justify-center ml-auto" title={`${returnsCount} Returned Orders need restocking`}>
+                          <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
+                          <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-bold text-white bg-red-600 rounded-full shadow-sm">
+                            {returnsCount} Returns
                           </span>
                         </div>
                       )}
@@ -283,7 +303,6 @@ export default function Layout() {
                       {needsDispatchCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75 animate-ping"></span>
-                          {/* 🚀 FIXED: Changed text to "New" */}
                           <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-bold text-white bg-purple-600 rounded-full shadow-sm">
                             {needsDispatchCount} New
                           </span>
@@ -306,14 +325,13 @@ export default function Layout() {
                       <ClipboardList size={18} /> Purchase Orders
                     </Link>
 
-                    {/* 7. Reports (Moved up so Warehouse staff can access it) */}
+                    {/* 7. Reports */}
                     <Link to="/admin/reports" onClick={closeMobileMenu} className={navItemClass('/admin/reports')}>
                       <BarChart3 size={18} /> Reports
                     </Link>
                   </>
                 )}
 
-                {/* Administration is now strictly for Admin tasks like User Management */}
                 {profile?.role === 'admin' && (
                   <>
                     <div className="pt-4 pb-2">
@@ -373,7 +391,6 @@ export default function Layout() {
             <img src="/images/tricore-logo2.png" alt="TriCore Logo" className="h-8 w-auto object-contain mt-1" />
           </div>
           
-          {/* Automatically sets page header title based on URL route */}
           <h1 className="text-lg font-bold text-slate-900 capitalize tracking-tight ml-auto lg:ml-0">
             {location.pathname.split('/').pop()?.replace('-', ' ') || 'Dashboard'}
           </h1>
