@@ -22,8 +22,8 @@ export default defineConfig({
       includeAssets: ['tricore-logo.png', 'tricore-logo-192.png', 'tricore-logo.png'],
       manifest: {
         name: 'Tricore',
-        short_name: 'TriCore',
-        description: 'TriCore Medical Supply',
+        short_name: 'Tricore',
+        description: 'Tricore Medical Supply',
         theme_color: '#0f172a',
         background_color: '#f8fafc',
         display: 'standalone',
