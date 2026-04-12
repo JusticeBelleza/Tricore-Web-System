@@ -5,7 +5,7 @@ import { supabase } from './lib/supabase';
 import { 
   LayoutDashboard, Package, ShoppingCart, Truck, Warehouse, 
   Users, BarChart3, ClipboardList, LogOut, Menu, X, Car, Navigation,
-  AlertCircle, CheckCircle2, XCircle, Share, PlusSquare // 🚀 Added Share & PlusSquare for iOS Prompt
+  AlertCircle, CheckCircle2, XCircle, Share, PlusSquare, RotateCcw
 } from "lucide-react"; 
 
 export default function Layout() {
@@ -14,7 +14,6 @@ export default function Layout() {
   const { profile, signOut } = useAuth();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // Check if the user is a customer (Retail or B2B)
   const isCustomer = !profile?.role || ['user', 'retail', 'b2b'].includes(profile?.role);
 
   // --- Real-time Badge States ---
@@ -27,10 +26,9 @@ export default function Layout() {
   // --- Customer Notification Popup State ---
   const [customerAlert, setCustomerAlert] = useState({ show: false, type: 'info', message: '', description: '' });
 
-  // 🚀 --- iOS PWA Install Prompt State ---
+  // --- iOS PWA Install Prompt State ---
   const [showIosPrompt, setShowIosPrompt] = useState(false);
 
-  // 🚀 --- Check for iPhone/iPad to show manual install prompt ---
   useEffect(() => {
     const isIos = () => {
       const userAgent = window.navigator.userAgent.toLowerCase();
@@ -41,7 +39,6 @@ export default function Layout() {
       return ('standalone' in window.navigator) && (window.navigator.standalone);
     };
 
-    // If it's iOS, NOT installed as an app, and hasn't been dismissed yet...
     if (isIos() && !isInStandaloneMode()) {
       const hasDismissed = localStorage.getItem('dismissedPwaPrompt');
       if (!hasDismissed) {
@@ -59,7 +56,6 @@ export default function Layout() {
     if (!profile) return;
     
     const fetchBadges = async () => {
-      // 1. Admins & Warehouse get badge for Pending Orders
       if (profile.role === 'admin' || profile.role === 'warehouse') {
         const lastViewedPending = localStorage.getItem('lastViewedPending') || new Date(0).toISOString();
         const { count: pCount } = await supabase
@@ -70,7 +66,6 @@ export default function Layout() {
         setPendingCount(pCount || 0);
       }
       
-      // 2. Admins & Warehouse get badge for Processing Orders, Dispatch, AND RETURNS
       if (profile.role === 'admin' || profile.role === 'warehouse') {
         const { count: prCount } = await supabase
           .from('orders')
@@ -86,15 +81,15 @@ export default function Layout() {
           .gt('updated_at', lastViewedDispatch); 
         setNeedsDispatchCount(dispatchCount || 0);
 
+        // 🚀 Counts BOTH attempted and partial deliveries for the red badge!
         const { count: rCount } = await supabase
           .from('orders')
           .select('*', { count: 'exact', head: true })
-          .eq('status', 'attempted')
+          .in('status', ['attempted', 'delivered_partial'])
           .is('is_restocked', false);
         setReturnsCount(rCount || 0);
       }
 
-      // 3. Customers get badge for Net-30 Overdue Invoices
       if (isCustomer) {
         const threshold = new Date();
         threshold.setDate(threshold.getDate() - 25); 
@@ -476,7 +471,6 @@ export default function Layout() {
               </div>
             </div>
 
-            {/* Downward pointing triangle/arrow */}
             <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-0 h-0 border-l-8 border-r-8 border-t-8 border-transparent border-t-white filter drop-shadow-md"></div>
           </div>
         </div>

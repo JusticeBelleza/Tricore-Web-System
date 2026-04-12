@@ -18,7 +18,6 @@ export default function MyOrders() {
   const [loading, setLoading] = useState(true);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
 
-  // 🚀 SERVER-SIDE PAGINATION & TABS
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const pageSize = 10;
@@ -26,7 +25,6 @@ export default function MyOrders() {
   const [activeTab, setActiveTab] = useState('all'); 
   const [tabCounts, setTabCounts] = useState({ all: 0, delivered: 0, due: 0, paid: 0, cancelled: 0, returned: 0 });
 
-  // Reset page when tab changes
   useEffect(() => {
     setPage(0);
     setExpandedOrderId(null);
@@ -53,9 +51,8 @@ export default function MyOrders() {
 
       const [allReq, deliveredReq, dueReq, paidReq, cancelledReq, returnedReq] = await Promise.all([
         baseQuery(),
-        baseQuery().eq('status', 'delivered'),
-        // 🚀 FIXED: Only count unpaid Net 30 orders older than 25 days
-        baseQuery().eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
+        baseQuery().in('status', ['delivered', 'delivered_partial']),
+        baseQuery().in('status', ['delivered', 'delivered_partial']).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
         baseQuery().eq('payment_status', 'paid'),
         baseQuery().eq('status', 'cancelled'),
         baseQuery().in('status', ['restocked', 'attempted'])
@@ -92,21 +89,18 @@ export default function MyOrders() {
           )
         `, { count: 'exact' });
 
-      // Apply User Security Filter
       if (profile?.company_id) {
         query = query.eq('company_id', profile.company_id);
       } else if (profile?.id) {
         query = query.eq('user_id', profile.id);
       }
 
-      // Apply Tab Filters
       if (activeTab === 'delivered') {
-        query = query.eq('status', 'delivered');
+        query = query.in('status', ['delivered', 'delivered_partial']);
       } else if (activeTab === 'due') {
-        // 🚀 FIXED: Only fetch unpaid Net 30 orders older than 25 days
         const thresholdDate = new Date();
         thresholdDate.setDate(thresholdDate.getDate() - 25);
-        query = query.eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
+        query = query.in('status', ['delivered', 'delivered_partial']).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
       } else if (activeTab === 'paid') {
         query = query.eq('payment_status', 'paid');
       } else if (activeTab === 'cancelled') {
@@ -115,7 +109,6 @@ export default function MyOrders() {
         query = query.in('status', ['restocked', 'attempted']);
       }
 
-      // Apply Sorting & Pagination
       query = query.order('created_at', { ascending: false });
       const from = page * pageSize;
       const to = from + pageSize - 1;
@@ -144,6 +137,8 @@ export default function MyOrders() {
   };
 
   const getStatusBadge = (status) => {
+    const displayStatus = status === 'delivered_partial' ? 'delivered' : status.replace(/_/g, ' ');
+    
     const styles = {
       pending: 'bg-yellow-50 text-yellow-700 border-yellow-200',
       processing: 'bg-blue-50 text-blue-700 border-blue-200',
@@ -151,15 +146,16 @@ export default function MyOrders() {
       shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200',
       out_for_delivery: 'bg-orange-50 text-orange-700 border-orange-200',
       delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      delivered_partial: 'bg-emerald-50 text-emerald-700 border-emerald-200',
       cancelled: 'bg-red-50 text-red-700 border-red-200',
       attempted: 'bg-amber-50 text-amber-700 border-amber-200',
-      restocked: 'bg-red-50 text-red-700 border-red-200' 
+      restocked: 'bg-slate-100 text-slate-700 border-slate-300' 
     };
     
-    let displayStatus = status.replace(/_/g, ' ');
-    if (status === 'restocked') displayStatus = 'returned';
+    let label = displayStatus;
+    if (status === 'restocked') label = 'returned';
 
-    return <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{displayStatus}</span>;
+    return <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{label}</span>;
   };
 
   const getPaymentStatusBadge = (paymentStatus, orderStatus) => {
@@ -193,6 +189,14 @@ export default function MyOrders() {
     const doc = new jsPDF();
     const orderNum = order.id.substring(0, 8).toUpperCase();
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+
+    // 🚀 DYNAMIC CALCULATIONS FOR PDF
+    const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+    const originalSubtotal = Number(order.subtotal) || 0;
+    const adjustedSubtotal = Math.max(0, originalSubtotal - rejectedItemsSum);
+    const taxRate = originalSubtotal > 0 ? (Number(order.tax_amount || 0) / originalSubtotal) : 0;
+    const adjustedTax = adjustedSubtotal * taxRate;
+    const adjustedTotal = adjustedSubtotal + Number(order.shipping_amount || 0) + adjustedTax;
 
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
     if (logoData) {
@@ -244,10 +248,12 @@ export default function MyOrders() {
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    const tableRows = order.order_items?.map(item => [
+    // 🚀 FILTER OUT REJECTED ITEMS FROM THE ACTUAL INVOICE LIST
+    const activeItems = order.order_items?.filter(item => item.status !== 'cancelled' && item.status !== 'rejected') || [];
+    const tableRows = activeItems.map(item => [
       `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.products?.base_sku || item.product_variants?.sku || 'N/A'}`,
       item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}`
-    ]) || [];
+    ]);
 
     autoTable(doc, {
       startY: maxAddressY + 10,
@@ -259,18 +265,34 @@ export default function MyOrders() {
 
     const finalY = doc.lastAutoTable.finalY || maxAddressY + 10;
     doc.setFont("helvetica", "normal");
-    doc.text("Subtotal:", 140, finalY + 10); doc.text(`$${Number(order.subtotal || 0).toFixed(2)}`, 180, finalY + 10, { align: 'right' });
-    doc.text("Shipping:", 140, finalY + 16); doc.text(`$${Number(order.shipping_amount || 0).toFixed(2)}`, 180, finalY + 16, { align: 'right' });
-    doc.text("Tax:", 140, finalY + 22); doc.text(`$${Number(order.tax_amount || 0).toFixed(2)}`, 180, finalY + 22, { align: 'right' });
+    
+    let currentY = finalY + 10;
+
+    doc.text("Subtotal (Gross):", 140, currentY); doc.text(`$${originalSubtotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+    currentY += 6;
+    
+    if (rejectedItemsSum > 0) {
+      doc.setTextColor(220, 38, 38);
+      doc.text("Adjustments:", 140, currentY); doc.text(`-$${rejectedItemsSum.toFixed(2)}`, 180, currentY, { align: 'right' });
+      doc.setTextColor(15, 23, 42); 
+      currentY += 6;
+    }
+
+    doc.text("Shipping:", 140, currentY); doc.text(`$${Number(order.shipping_amount || 0).toFixed(2)}`, 180, currentY, { align: 'right' });
+    currentY += 6;
+
+    doc.text("Tax:", 140, currentY); doc.text(`$${adjustedTax.toFixed(2)}`, 180, currentY, { align: 'right' });
+    currentY += 10;
     
     if (docType === 'receipt') {
-      doc.text(`Payment Method: ${order.payment_method?.replace(/_/g, ' ').toUpperCase() || 'CARD'}`, 14, finalY + 30);
+      doc.text(`Payment Method: ${order.payment_method?.replace(/_/g, ' ').toUpperCase() || 'CARD'}`, 14, currentY);
       doc.setFont("helvetica", "bold");
-      doc.text("Total Paid:", 140, finalY + 30); doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
-      doc.text("Balance Due:", 140, finalY + 36); doc.text("$0.00", 180, finalY + 36, { align: 'right' });
+      doc.text("Total Paid:", 140, currentY); doc.text(`$${adjustedTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+      currentY += 6;
+      doc.text("Balance Due:", 140, currentY); doc.text("$0.00", 180, currentY, { align: 'right' });
     } else {
       doc.setFont("helvetica", "bold");
-      doc.text("Grand Total:", 140, finalY + 30); doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
+      doc.text("Grand Total:", 140, currentY); doc.text(`$${adjustedTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
     }
 
     const pageHeight = doc.internal.pageSize.height;
@@ -305,7 +327,7 @@ export default function MyOrders() {
       </div>
 
       <div className="flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
-        <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full overflow-x-auto shrink-0">
+        <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full overflow-x-auto shrink-0 scrollbar-hide">
           <button onClick={() => setActiveTab('all')} className={`${tabBaseClass} ${activeTab === 'all' ? tabActiveClass : tabInactiveClass}`}>
             <FileText size={16}/> All History ({tabCounts.all})
           </button>
@@ -368,7 +390,7 @@ export default function MyOrders() {
                   const shortId = order.id.split('-')[0].toUpperCase();
                   const isB2B = !!order.company_id || !!profile?.company_id;
                   
-                  const hasAdjustments = order.order_items?.some(item => item.status === 'cancelled');
+                  const hasAdjustments = order.order_items?.some(item => item.status === 'cancelled' || item.status === 'rejected');
 
                   const rawDriverName = order.driver_name || '';
                   const driverParts = rawDriverName.split('|').map(s => s.trim());
@@ -396,8 +418,8 @@ export default function MyOrders() {
 
                   const isNet30 = order.payment_method === 'net_30';
                   let dueDateDisplay = '';
-                  
                   let isOverdue = false;
+
                   if (isNet30) {
                     const baseDate = new Date(order.created_at);
                     const dueDate = new Date(baseDate);
@@ -405,6 +427,14 @@ export default function MyOrders() {
                     dueDateDisplay = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
                     isOverdue = order.payment_status === 'unpaid' && !['cancelled', 'restocked', 'attempted'].includes(order.status) && new Date() > dueDate;
                   }
+
+                  // 🚀 DYNAMIC CALCULATIONS FOR ROW AND SUMMARY
+                  const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+                  const originalSubtotal = Number(order.subtotal) || 0;
+                  const adjustedSubtotal = Math.max(0, originalSubtotal - rejectedItemsSum);
+                  const taxRate = originalSubtotal > 0 ? (Number(order.tax_amount || 0) / originalSubtotal) : 0;
+                  const adjustedTax = adjustedSubtotal * taxRate;
+                  const adjustedTotal = adjustedSubtotal + Number(order.shipping_amount || 0) + adjustedTax;
                   
                   return (
                     <React.Fragment key={order.id}>
@@ -431,7 +461,7 @@ export default function MyOrders() {
                         
                         <td className="px-6 py-4">
                           <p className={`font-extrabold text-base ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
-                            ${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                            ${adjustedTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
                           </p>
                         </td>
                         <td className="px-6 py-4">
@@ -447,7 +477,7 @@ export default function MyOrders() {
                           <div className="flex flex-col items-start gap-1.5">
                             {getStatusBadge(order.status)}
                             
-                            {order.status === 'delivered' && (order.delivered_at || order.updated_at) && (
+                            {['delivered', 'delivered_partial'].includes(order.status) && (order.delivered_at || order.updated_at) && (
                               <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5">
                                 <CheckCircle2 size={10} /> {new Date(order.delivered_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.delivered_at || order.updated_at)}
                               </span>
@@ -509,7 +539,7 @@ export default function MyOrders() {
                                   <AlertCircle size={20} className="text-amber-600 mt-0.5 shrink-0" />
                                   <div>
                                     <h4 className="text-sm font-black text-amber-900 tracking-tight">Order Adjusted</h4>
-                                    <p className="text-sm text-amber-700 mt-1 font-medium leading-relaxed">Some items in this order were cancelled or adjusted by our warehouse team. Please review your updated totals below.</p>
+                                    <p className="text-sm text-amber-700 mt-1 font-medium leading-relaxed">Some items in this order were cancelled or rejected at delivery. Please review your updated totals below.</p>
                                   </div>
                                 </div>
                               )}
@@ -575,30 +605,41 @@ export default function MyOrders() {
                                           </tr>
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
-                                          {order.order_items?.map((item) => (
-                                            <tr key={item.id} className={`hover:bg-slate-50/50 transition-colors ${item.status === 'cancelled' ? 'opacity-60 bg-red-50/30' : ''}`}>
-                                              <td className="px-5 py-4">
-                                                <p className={`font-bold text-slate-900 leading-snug ${item.status === 'cancelled' ? 'line-through text-slate-500' : ''}`}>
-                                                  {item.product_variants?.products?.name || item.product_variants?.name || 'Product'}
-                                                </p>
-                                                <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku || item.product_variants?.sku}</span></p>
-                                                
-                                                {item.status === 'cancelled' && (
-                                                  <p className="text-[10px] text-red-600 font-bold mt-1.5 uppercase tracking-widest flex items-center gap-1">
-                                                    <XCircle size={10} /> Cancelled: {item.cancellation_reason || 'Out of stock'}
+                                          {order.order_items?.map((item) => {
+                                            const isItemCancelled = item.status?.toLowerCase() === 'cancelled';
+                                            const isItemRejected = item.status?.toLowerCase() === 'rejected';
+                                            const isVoided = isItemCancelled || isItemRejected;
+
+                                            return (
+                                              <tr key={item.id} className={`hover:bg-slate-50/50 transition-colors ${isVoided ? 'opacity-60 bg-slate-50/50' : ''}`}>
+                                                <td className="px-5 py-4">
+                                                  <p className={`font-bold text-slate-900 leading-snug ${isVoided ? 'line-through text-slate-500' : ''}`}>
+                                                    {item.product_variants?.products?.name || item.product_variants?.name || 'Product'}
                                                   </p>
-                                                )}
-                                              </td>
-                                              <td className="px-5 py-4 text-center">
-                                                <span className={`px-2.5 py-1 font-bold rounded-lg border shadow-sm ${item.status === 'cancelled' ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>
-                                                  {item.quantity_variants}
-                                                </span>
-                                              </td>
-                                              <td className={`px-5 py-4 text-right font-extrabold ${item.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
-                                                ${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}
-                                              </td>
-                                            </tr>
-                                          ))}
+                                                  <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku || item.product_variants?.sku}</span></p>
+                                                  
+                                                  {isItemCancelled && (
+                                                    <p className="text-[10px] text-red-600 font-bold mt-1.5 uppercase tracking-widest flex items-center gap-1">
+                                                      <XCircle size={10} /> Cancelled: {item.cancellation_reason || 'Out of stock'}
+                                                    </p>
+                                                  )}
+                                                  {isItemRejected && (
+                                                    <p className="text-[10px] text-orange-600 font-bold mt-1.5 uppercase tracking-widest flex items-center gap-1">
+                                                      <XCircle size={10} /> Rejected at Delivery
+                                                    </p>
+                                                  )}
+                                                </td>
+                                                <td className="px-5 py-4 text-center">
+                                                  <span className={`px-2.5 py-1 font-bold rounded-lg border shadow-sm ${isVoided ? 'bg-slate-100 text-slate-400 border-slate-200 line-through' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>
+                                                    {item.quantity_variants}
+                                                  </span>
+                                                </td>
+                                                <td className={`px-5 py-4 text-right font-extrabold ${isVoided ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                                                  ${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
                                         </tbody>
                                       </table>
                                     </div>
@@ -611,14 +652,27 @@ export default function MyOrders() {
                                       <DollarSign size={16} className="text-slate-400" /> Summary
                                     </h4>
                                     <div className="space-y-3 text-sm font-medium">
-                                      <div className="flex justify-between text-slate-500"><span>Subtotal</span><span className="text-slate-900">${Number(order.subtotal).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
-                                      <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${Number(order.shipping_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
-                                      <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${Number(order.tax_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between text-slate-500">
+                                        <span>Subtotal (Gross)</span>
+                                        <span className="text-slate-900">${originalSubtotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                                      </div>
+
+                                      {rejectedItemsSum > 0 && (
+                                        <div className="flex justify-between text-red-500 font-bold">
+                                          <span>Adjustments</span>
+                                          <span>-${rejectedItemsSum.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                                        </div>
+                                      )}
+
+                                      <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${Number(order.shipping_amount).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${adjustedTax.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+                                      
                                       <div className="h-px w-full bg-slate-200/60 my-2"></div>
+                                      
                                       <div className="flex justify-between items-end">
                                         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
                                         <span className={`text-2xl font-extrabold tracking-tight leading-none ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
-                                          ${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                          ${adjustedTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
                                         </span>
                                       </div>
                                     </div>
@@ -637,14 +691,14 @@ export default function MyOrders() {
                                         <span className={`text-xs font-bold px-2 py-1 rounded shadow-sm border ${
                                           isOverdue 
                                             ? 'bg-red-50 text-red-700 border-red-200' 
-                                            : order.status === 'delivered' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-600 border-slate-200'
+                                            : ['delivered', 'delivered_partial'].includes(order.status) ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-600 border-slate-200'
                                         }`}>
                                           {dueDateDisplay}
                                         </span>
                                       </div>
                                     )}
 
-                                    {order.status === 'delivered' && (
+                                    {['delivered', 'delivered_partial'].includes(order.status) && (
                                       <div className="pt-3 border-t border-slate-100 flex flex-col gap-2">
                                         {order.payment_status === 'paid' ? (
                                           <button onClick={() => generatePDF(order, 'receipt')} className="w-full py-3 bg-emerald-600 border border-emerald-600 text-white text-sm font-bold rounded-xl shadow-md hover:bg-emerald-700 active:scale-95 transition-all flex items-center justify-center gap-2">
@@ -659,7 +713,7 @@ export default function MyOrders() {
                                     )}
                                   </div>
                                   
-                                  {['ready_for_delivery', 'shipped', 'delivered', 'attempted', 'restocked'].includes(order.status) && order.driver_name && (
+                                  {['ready_for_delivery', 'shipped', 'delivered', 'delivered_partial', 'attempted', 'restocked'].includes(order.status) && order.driver_name && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                       <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
                                         <Truck size={16} className="text-slate-400" /> Dispatch Info
@@ -696,7 +750,7 @@ export default function MyOrders() {
                                     </div>
                                   )}
 
-                                  {order.status === 'delivered' && (order.photo_url || order.signature_url || order.received_by) && (
+                                  {['delivered', 'delivered_partial'].includes(order.status) && (order.photo_url || order.signature_url || order.received_by) && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                       <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
                                         <PackageCheck size={16} className="text-slate-400" /> Proof of Delivery
@@ -745,7 +799,6 @@ export default function MyOrders() {
             </table>
           </div>
 
-          {/* 🚀 PAGINATION FOOTER */}
           {totalCount > pageSize && (
             <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
               <span className="text-sm font-medium text-slate-500">

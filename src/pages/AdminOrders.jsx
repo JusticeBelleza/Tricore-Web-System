@@ -102,8 +102,8 @@ export default function AdminOrders() {
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').gt('created_at', lastViewedPending),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'shipped'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').eq('payment_status', 'unpaid'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
+        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['delivered', 'delivered_partial']).eq('payment_status', 'unpaid'),
+        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['delivered', 'delivered_partial']).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('payment_status', 'paid'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'cancelled'),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'attempted'),
@@ -136,7 +136,7 @@ export default function AdminOrders() {
       if (activeTab === 'pending') query = query.eq('status', 'pending');
       else if (activeTab === 'processing') query = query.eq('status', 'processing');
       else if (activeTab === 'shipped') query = query.eq('status', 'shipped');
-      else if (activeTab === 'completed') query = query.eq('status', 'delivered').eq('payment_status', 'unpaid');
+      else if (activeTab === 'completed') query = query.in('status', ['delivered', 'delivered_partial']).eq('payment_status', 'unpaid');
       else if (activeTab === 'paid') query = query.eq('payment_status', 'paid');
       else if (activeTab === 'cancelled') query = query.eq('status', 'cancelled');
       else if (activeTab === 'attempted') query = query.eq('status', 'attempted'); 
@@ -144,7 +144,7 @@ export default function AdminOrders() {
       else if (activeTab === 'due') {
         const thresholdDate = new Date();
         thresholdDate.setDate(thresholdDate.getDate() - 25);
-        query = query.eq('status', 'delivered').eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
+        query = query.in('status', ['delivered', 'delivered_partial']).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
       }
 
       if (debouncedSearch) {
@@ -245,12 +245,15 @@ export default function AdminOrders() {
 
       let newSubtotal = 0;
       order.order_items.forEach(oi => {
-        if (oi.id !== item.id && oi.status !== 'cancelled') {
+        if (oi.id !== item.id && oi.status !== 'cancelled' && oi.status !== 'rejected') {
           newSubtotal += Number(oi.line_total || 0);
         }
       });
 
-      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+      // 🚀 Recalculate tax properly when items are cancelled
+      const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
+      const newTaxAmount = newSubtotal * taxRate;
+      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
 
       const { data, error: itemError } = await supabase.from('order_items')
         .update({ status: 'cancelled', cancellation_reason: reason })
@@ -260,13 +263,13 @@ export default function AdminOrders() {
       if (itemError) throw itemError;
       if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
 
-      const { error: deductError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
+      const { error: deductError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
       if (deductError) throw deductError;
 
       setOrders(prevOrders => prevOrders.map(o => {
         if (o.id === order.id) {
           const updatedItems = o.order_items.map(oi => oi.id === item.id ? { ...oi, status: 'cancelled', cancellation_reason: reason } : oi);
-          return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: updatedItems };
+          return { ...o, subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, order_items: updatedItems };
         }
         return o;
       }));
@@ -285,7 +288,7 @@ export default function AdminOrders() {
       const newUnitPrice = Number(selectedSubstitute.price || 0);
 
       const existingItem = order.order_items.find(
-        oi => oi.product_variants?.id === selectedSubstitute.id && oi.status !== 'cancelled'
+        oi => oi.product_variants?.id === selectedSubstitute.id && oi.status !== 'cancelled' && oi.status !== 'rejected'
       );
 
       if (existingItem) {
@@ -296,12 +299,14 @@ export default function AdminOrders() {
         order.order_items.forEach(oi => {
           if (oi.id === existingItem.id) {
             newSubtotal += updatedLineTotal; 
-          } else if (oi.status !== 'cancelled') {
+          } else if (oi.status !== 'cancelled' && oi.status !== 'rejected') {
             newSubtotal += Number(oi.line_total || 0); 
           }
         });
 
-        const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+        const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
+        const newTaxAmount = newSubtotal * taxRate;
+        const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
 
         const { data: updateData, error: itemError } = await supabase.from('order_items').update({ 
           quantity_variants: updatedQty, 
@@ -312,13 +317,13 @@ export default function AdminOrders() {
         if (itemError) throw itemError;
         if (!updateData || updateData.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
 
-        const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
+        const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
         if (orderError) throw orderError;
 
         setOrders(prevOrders => prevOrders.map(o => {
           if (o.id === order.id) {
             const updatedItems = o.order_items.map(oi => oi.id === existingItem.id ? { ...oi, quantity_variants: updatedQty, line_total: updatedLineTotal } : oi);
-            return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: updatedItems };
+            return { ...o, subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, order_items: updatedItems };
           }
           return o;
         }));
@@ -329,12 +334,14 @@ export default function AdminOrders() {
         const newLineTotal = parsedQty * newUnitPrice;
         let newSubtotal = newLineTotal; 
         order.order_items.forEach(oi => {
-          if (oi.status !== 'cancelled') {
+          if (oi.status !== 'cancelled' && oi.status !== 'rejected') {
             newSubtotal += Number(oi.line_total || 0);
           }
         });
 
-        const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+        const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
+        const newTaxAmount = newSubtotal * taxRate;
+        const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
 
         const { data: newItemData, error: itemError } = await supabase
           .from('order_items')
@@ -354,7 +361,7 @@ export default function AdminOrders() {
 
         const { error: orderError } = await supabase
           .from('orders')
-          .update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() })
+          .update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() })
           .eq('id', order.id);
 
         if (orderError) throw orderError;
@@ -362,7 +369,7 @@ export default function AdminOrders() {
         const optimisticItem = { ...newItemData, product_variants: selectedSubstitute };
         setOrders(prevOrders => prevOrders.map(o => {
           if (o.id === order.id) {
-            return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: [...o.order_items, optimisticItem] };
+            return { ...o, subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, order_items: [...o.order_items, optimisticItem] };
           }
           return o;
         }));
@@ -390,12 +397,14 @@ export default function AdminOrders() {
       order.order_items.forEach(oi => {
         if (oi.id === item.id) {
           newSubtotal += newLineTotal; 
-        } else if (oi.status !== 'cancelled') {
+        } else if (oi.status !== 'cancelled' && oi.status !== 'rejected') {
           newSubtotal += Number(oi.line_total || 0); 
         }
       });
 
-      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+      const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
+      const newTaxAmount = newSubtotal * taxRate;
+      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
 
       const { data, error: itemError } = await supabase.from('order_items')
         .update({ 
@@ -407,13 +416,13 @@ export default function AdminOrders() {
       if (itemError) throw itemError;
       if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
 
-      const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
+      const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
       if (orderError) throw orderError;
 
       setOrders(prevOrders => prevOrders.map(o => {
         if (o.id === order.id) {
           const updatedItems = o.order_items.map(oi => oi.id === item.id ? { ...oi, quantity_variants: parsedQty, line_total: newLineTotal } : oi);
-          return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: updatedItems };
+          return { ...o, subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, order_items: updatedItems };
         }
         return o;
       }));
@@ -436,12 +445,14 @@ export default function AdminOrders() {
       order.order_items.forEach(oi => {
         if (oi.id === item.id) {
           newSubtotal += newLineTotal;
-        } else if (oi.status !== 'cancelled') {
+        } else if (oi.status !== 'cancelled' && oi.status !== 'rejected') {
           newSubtotal += Number(oi.line_total || 0);
         }
       });
 
-      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + Number(order.tax_amount || 0);
+      const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
+      const newTaxAmount = newSubtotal * taxRate;
+      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
 
       const { data, error: itemError } = await supabase
         .from('order_items')
@@ -457,13 +468,13 @@ export default function AdminOrders() {
       if (itemError) throw itemError;
       if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
       
-      const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
+      const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
       if (orderError) throw orderError;
 
       setOrders(prevOrders => prevOrders.map(o => {
         if (o.id === order.id) {
           const updatedItems = o.order_items.map(oi => oi.id === item.id ? { ...oi, unit_price: newUnitPrice, line_total: newLineTotal, product_variants: selectedSubstitute } : oi);
-          return { ...o, subtotal: newSubtotal, total_amount: newTotalAmount, order_items: updatedItems };
+          return { ...o, subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, order_items: updatedItems };
         }
         return o;
       }));
@@ -510,6 +521,14 @@ export default function AdminOrders() {
     const doc = new jsPDF();
     const orderNum = order.id.substring(0, 8).toUpperCase();
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+
+    // 🚀 PDF CALCULATIONS
+    const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+    const originalSubtotal = Number(order.subtotal) || 0;
+    const adjustedSubtotal = Math.max(0, originalSubtotal - rejectedItemsSum);
+    const taxRate = originalSubtotal > 0 ? (Number(order.tax_amount || 0) / originalSubtotal) : 0;
+    const adjustedTax = adjustedSubtotal * taxRate;
+    const adjustedTotal = adjustedSubtotal + Number(order.shipping_amount || 0) + adjustedTax;
 
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
     if (logoData) {
@@ -561,10 +580,11 @@ export default function AdminOrders() {
     if (shipEmail) { doc.text(`Email: ${shipEmail}`, 110, currentYShip); currentYShip += 5; }
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
-    const tableRows = order.order_items?.map(item => [
+    const activeItems = order.order_items?.filter(item => item.status !== 'cancelled' && item.status !== 'rejected') || [];
+    const tableRows = activeItems.map(item => [
       `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}`,
       item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}`
-    ]) || [];
+    ]);
 
     autoTable(doc, {
       startY: maxAddressY + 10,
@@ -576,18 +596,35 @@ export default function AdminOrders() {
 
     const finalY = doc.lastAutoTable.finalY || maxAddressY + 10;
     doc.setFont("helvetica", "normal");
-    doc.text("Subtotal:", 140, finalY + 10); doc.text(`$${Number(order.subtotal || 0).toFixed(2)}`, 180, finalY + 10, { align: 'right' });
-    doc.text("Shipping:", 140, finalY + 16); doc.text(`$${Number(order.shipping_amount || 0).toFixed(2)}`, 180, finalY + 16, { align: 'right' });
-    doc.text("Tax:", 140, finalY + 22); doc.text(`$${Number(order.tax_amount || 0).toFixed(2)}`, 180, finalY + 22, { align: 'right' });
+    
+    let currentY = finalY + 10;
+
+    doc.text("Subtotal (Gross):", 140, currentY); doc.text(`$${originalSubtotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+    currentY += 6;
+    
+    // 🚀 FIX: Label renamed to "Adjustments:" to prevent overlap!
+    if (rejectedItemsSum > 0) {
+      doc.setTextColor(220, 38, 38);
+      doc.text("Adjustments:", 140, currentY); doc.text(`-$${rejectedItemsSum.toFixed(2)}`, 180, currentY, { align: 'right' });
+      doc.setTextColor(15, 23, 42); 
+      currentY += 6;
+    }
+
+    doc.text("Shipping:", 140, currentY); doc.text(`$${Number(order.shipping_amount || 0).toFixed(2)}`, 180, currentY, { align: 'right' });
+    currentY += 6;
+
+    doc.text("Tax:", 140, currentY); doc.text(`$${adjustedTax.toFixed(2)}`, 180, currentY, { align: 'right' });
+    currentY += 10;
     
     if (docType === 'receipt') {
-      doc.text(`Payment Method: ${order.payment_method?.replace(/_/g, ' ').toUpperCase() || 'CARD'}`, 14, finalY + 30);
+      doc.text(`Payment Method: ${order.payment_method?.replace(/_/g, ' ').toUpperCase() || 'CARD'}`, 14, currentY);
       doc.setFont("helvetica", "bold");
-      doc.text("Total Paid:", 140, finalY + 30); doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
-      doc.text("Balance Due:", 140, finalY + 36); doc.text("$0.00", 180, finalY + 36, { align: 'right' });
+      doc.text("Total Paid:", 140, currentY); doc.text(`$${adjustedTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+      currentY += 6;
+      doc.text("Balance Due:", 140, currentY); doc.text("$0.00", 180, currentY, { align: 'right' });
     } else {
       doc.setFont("helvetica", "bold");
-      doc.text("Grand Total:", 140, finalY + 30); doc.text(`$${Number(order.total_amount || 0).toFixed(2)}`, 180, finalY + 30, { align: 'right' });
+      doc.text("Grand Total:", 140, currentY); doc.text(`$${adjustedTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
     }
 
     const pageHeight = doc.internal.pageSize.height;
@@ -609,13 +646,13 @@ export default function AdminOrders() {
   };
 
   const getStatusBadge = (status) => {
-    const styles = { pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', processing: 'bg-blue-50 text-blue-700 border-blue-200', ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', cancelled: 'bg-red-50 text-red-700 border-red-200', attempted: 'bg-amber-50 text-amber-700 border-amber-200', restocked: 'bg-slate-100 text-slate-700 border-slate-300' };
-    const icons = { pending: <Clock size={12}/>, processing: <Package size={12}/>, ready_for_delivery: <PackageCheck size={12}/>, shipped: <Truck size={12}/>, delivered: <CheckCircle2 size={12}/>, cancelled: <XCircle size={12}/>, attempted: <AlertTriangle size={12}/>, restocked: <RefreshCw size={12}/> };
-    return (<span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center gap-1.5 w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{icons[status]} {status.replace(/_/g, ' ')}</span>);
+    const displayStatus = status === 'delivered_partial' ? 'delivered' : status;
+    const styles = { pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', processing: 'bg-blue-50 text-blue-700 border-blue-200', ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', delivered_partial: 'bg-emerald-50 text-emerald-700 border-emerald-200', cancelled: 'bg-red-50 text-red-700 border-red-200', attempted: 'bg-amber-50 text-amber-700 border-amber-200', restocked: 'bg-slate-100 text-slate-700 border-slate-300' };
+    const icons = { pending: <Clock size={12}/>, processing: <Package size={12}/>, ready_for_delivery: <PackageCheck size={12}/>, shipped: <Truck size={12}/>, delivered: <CheckCircle2 size={12}/>, delivered_partial: <CheckCircle2 size={12}/>, cancelled: <XCircle size={12}/>, attempted: <AlertTriangle size={12}/>, restocked: <RefreshCw size={12}/> };
+    return (<span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center gap-1.5 w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{icons[status]} {displayStatus.replace(/_/g, ' ')}</span>);
   };
 
   const getPaymentBadge = (paymentStatus, orderStatus) => {
-    // 🚀 FIXED: Shows Voided for Cancelled, Restocked, and Attempted!
     if (['cancelled', 'restocked', 'attempted'].includes(orderStatus)) return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-400 border border-slate-200 shadow-sm">Voided</span>;
     if (paymentStatus === 'paid') return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-700 border border-emerald-200 shadow-sm">Paid</span>;
     return <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200 shadow-sm">Unpaid</span>;
@@ -636,26 +673,28 @@ export default function AdminOrders() {
       </div>
 
       <div className="flex flex-col xl:flex-row gap-4 justify-between items-start xl:items-center bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
-        <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full xl:w-auto overflow-x-auto shrink-0">
-          <button onClick={() => setActiveTab('all')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'all' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}>All</button>
-          <button onClick={() => setActiveTab('pending')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'pending' ? 'bg-red-500 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>{newPendingCount > 0 && <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>}Pending ({tabCounts.pending})</button>
-          <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-600 hover:bg-blue-50'}`}>Processing ({tabCounts.processing})</button>
-          <button onClick={() => setActiveTab('shipped')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'shipped' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>Shipped ({tabCounts.shipped})</button>
-          
-          <button onClick={() => setActiveTab('attempted')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'attempted' ? 'bg-amber-600 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>Attempted ({tabCounts.attempted})</button>
+        <div className="w-full xl:w-auto overflow-x-auto scrollbar-hide rounded-xl">
+          <div className="flex gap-2 p-1 bg-slate-100/50 border border-slate-200 w-max rounded-xl">
+            <button onClick={() => setActiveTab('all')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'all' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}>All</button>
+            <button onClick={() => setActiveTab('pending')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'pending' ? 'bg-red-500 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>{newPendingCount > 0 && <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>}Pending ({tabCounts.pending})</button>
+            <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-600 hover:bg-blue-50'}`}>Processing ({tabCounts.processing})</button>
+            <button onClick={() => setActiveTab('shipped')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'shipped' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>Shipped ({tabCounts.shipped})</button>
+            
+            <button onClick={() => setActiveTab('attempted')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'attempted' ? 'bg-amber-600 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>Attempted ({tabCounts.attempted})</button>
 
-          <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>Completed ({tabCounts.completed})</button>
-          
-          {!isWarehouse && (
-            <>
-              <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>{tabCounts.due > 0 && <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>}Due ({tabCounts.due})</button>
-              <button onClick={() => setActiveTab('paid')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'paid' ? 'bg-slate-800 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200'}`}><Receipt size={14}/> Paid ({tabCounts.paid})</button>
-            </>
-          )}
+            <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>Completed ({tabCounts.completed})</button>
+            
+            {!isWarehouse && (
+              <>
+                <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>{tabCounts.due > 0 && <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>}Due ({tabCounts.due})</button>
+                <button onClick={() => setActiveTab('paid')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'paid' ? 'bg-slate-800 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200'}`}><Receipt size={14}/> Paid ({tabCounts.paid})</button>
+              </>
+            )}
 
-          <button onClick={() => setActiveTab('cancelled')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>Cancelled ({tabCounts.cancelled})</button>
-          
-          <button onClick={() => setActiveTab('restocked')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'restocked' ? 'bg-slate-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200/50'}`}>Restocked ({tabCounts.restocked})</button>
+            <button onClick={() => setActiveTab('cancelled')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>Cancelled ({tabCounts.cancelled})</button>
+            
+            <button onClick={() => setActiveTab('restocked')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'restocked' ? 'bg-slate-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200/50'}`}>Restocked ({tabCounts.restocked})</button>
+          </div>
         </div>
         <div className="relative w-full xl:w-64 shrink-0"><Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" /></div>
       </div>
@@ -720,6 +759,16 @@ export default function AdminOrders() {
                     }
                   }
 
+                  // 🚀 DYNAMIC CALCULATIONS FOR DISPLAY (Gross vs Deductions)
+                  const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+                  const originalSubtotal = Number(order.subtotal) || 0;
+                  const adjustedSubtotal = Math.max(0, originalSubtotal - rejectedItemsSum);
+                  
+                  // Calculate exact tax rate dynamically
+                  const taxRate = originalSubtotal > 0 ? (Number(order.tax_amount || 0) / originalSubtotal) : 0;
+                  const adjustedTax = adjustedSubtotal * taxRate;
+                  const adjustedTotal = adjustedSubtotal + Number(order.shipping_amount || 0) + adjustedTax;
+
                   return (
                     <React.Fragment key={order.id}>
                       <tr onClick={() => toggleOrderDetails(order.id)} className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-900' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}>
@@ -742,8 +791,7 @@ export default function AdminOrders() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1">
-                            {/* 🚀 FIXED: Strikes out the amount for Cancelled, Restocked, and Attempted! */}
-                            <p className={`font-extrabold text-base ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+                            <p className={`font-extrabold text-base ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>${adjustedTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
                             <div className="flex items-center gap-2">
                               {getPaymentBadge(order.payment_status, order.status)}
                               {isOverdue && <span className="text-[9px] font-bold text-red-600 uppercase tracking-widest flex items-center gap-1"><AlertCircle size={10} /> Overdue</span>}
@@ -754,7 +802,7 @@ export default function AdminOrders() {
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1.5">
                             {getStatusBadge(order.status)}
-                            {order.status === 'delivered' && (order.delivered_at || order.updated_at) && (<span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><CheckCircle2 size={10} /> {new Date(order.delivered_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.delivered_at || order.updated_at)}</span>)}
+                            {['delivered', 'delivered_partial'].includes(order.status) && (order.delivered_at || order.updated_at) && (<span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><CheckCircle2 size={10} /> {new Date(order.delivered_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.delivered_at || order.updated_at)}</span>)}
                             {order.status === 'cancelled' && (order.cancelled_at || order.updated_at) && (<span className="text-[9px] font-bold text-red-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><XCircle size={10} /> {new Date(order.cancelled_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.cancelled_at || order.updated_at)}</span>)}
                             
                             {order.status === 'attempted' && (order.updated_at) && (<span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest flex items-center gap-1 mt-0.5"><AlertTriangle size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}</span>)}
@@ -799,7 +847,7 @@ export default function AdminOrders() {
                                     </>
                                   )}
                                   
-                                  {order.status === 'delivered' && (
+                                  {['delivered', 'delivered_partial'].includes(order.status) && (
                                     <>
                                       {!isWarehouse && (
                                         <button onClick={() => generatePDF(order, order.payment_status === 'paid' ? 'receipt' : 'invoice')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2"><FileDown size={16} className="text-slate-400" /> {order.payment_status === 'paid' ? 'Download Receipt' : 'Download Invoice'}</button>
@@ -869,28 +917,37 @@ export default function AdminOrders() {
                                           <tr><th className="px-5 py-3 font-bold w-full">Product</th><th className="px-5 py-3 font-bold text-center">Qty</th><th className="px-5 py-3 font-bold text-right">Total</th>{order.status === 'pending' && <th className="px-5 py-3"></th>}</tr>
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
-                                          {order.order_items?.map((item) => (
-                                            <tr key={item.id} className={`hover:bg-slate-50 transition-colors group ${item.status === 'cancelled' ? 'opacity-50' : ''}`}>
-                                              <td className="px-5 py-4">
-                                                <p className={`font-bold text-slate-900 leading-snug ${item.status === 'cancelled' ? 'line-through' : ''}`}>{item.product_variants?.products?.name || item.product_variants?.name}</p>
-                                                <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}</span></p>
-                                                {item.status === 'cancelled' && <p className="text-[10px] text-red-600 font-bold mt-1 uppercase tracking-widest">Cancelled: {item.cancellation_reason}</p>}
-                                              </td>
-                                              <td className="px-5 py-4 text-center"><span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-bold rounded-lg border border-slate-200 shadow-sm">{item.quantity_variants}</span></td>
-                                              <td className="px-5 py-4 text-right font-extrabold text-slate-900">${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-                                              
-                                              {order.status === 'pending' && item.status !== 'cancelled' && (
-                                                <td className="px-5 py-4 text-right w-10">
-                                                  <div className="flex items-center justify-end gap-1 transition-opacity">
-                                                    <button title="Edit Quantity" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'edit', order, item, reason: '', newQty: item.quantity_variants, newVariantId: '' })}} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
-                                                    <button title="Substitute" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'substitute', order, item, reason: '', newQty: '', newVariantId: '' })}} className="p-1.5 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"><RefreshCw size={16} /></button>
-                                                    <button title="Cancel Item" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'cancel', order, item, reason: '', newQty: '', newVariantId: '' })}} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><XCircle size={16} /></button>
-                                                  </div>
+                                          {order.order_items?.map((item) => {
+                                            const isItemCancelled = item.status?.toLowerCase() === 'cancelled';
+                                            const isItemRejected = item.status?.toLowerCase() === 'rejected';
+                                            const isVoided = isItemCancelled || isItemRejected;
+
+                                            return (
+                                              <tr key={item.id} className={`hover:bg-slate-50 transition-colors group ${isVoided ? 'opacity-60 bg-slate-50/50' : ''}`}>
+                                                <td className="px-5 py-4">
+                                                  <p className={`font-bold leading-snug ${isVoided ? 'text-slate-500 line-through' : 'text-slate-900'}`}>{item.product_variants?.products?.name || item.product_variants?.name}</p>
+                                                  <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}</span></p>
+                                                  {isItemCancelled && <p className="text-[10px] text-red-600 font-bold mt-1 uppercase tracking-widest">Cancelled: {item.cancellation_reason}</p>}
+                                                  {isItemRejected && <p className="text-[10px] text-orange-600 font-bold mt-1 uppercase tracking-widest">Rejected at Delivery</p>}
                                                 </td>
-                                              )}
-                                              {order.status === 'pending' && item.status === 'cancelled' && <td className="px-5 py-4 w-10"></td>}
-                                            </tr>
-                                          ))}
+                                                <td className="px-5 py-4 text-center">
+                                                  <span className={`px-2.5 py-1 font-bold rounded-lg border shadow-sm ${isVoided ? 'bg-slate-100 text-slate-400 border-slate-200 line-through' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>{item.quantity_variants}</span>
+                                                </td>
+                                                <td className={`px-5 py-4 text-right font-extrabold ${isVoided ? 'text-slate-400 line-through' : 'text-slate-900'}`}>${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                                                
+                                                {order.status === 'pending' && !isVoided && (
+                                                  <td className="px-5 py-4 text-right w-10">
+                                                    <div className="flex items-center justify-end gap-1 transition-opacity">
+                                                      <button title="Edit Quantity" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'edit', order, item, reason: '', newQty: item.quantity_variants, newVariantId: '' })}} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
+                                                      <button title="Substitute" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'substitute', order, item, reason: '', newQty: '', newVariantId: '' })}} className="p-1.5 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"><RefreshCw size={16} /></button>
+                                                      <button title="Cancel Item" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'cancel', order, item, reason: '', newQty: '', newVariantId: '' })}} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><XCircle size={16} /></button>
+                                                    </div>
+                                                  </td>
+                                                )}
+                                                {order.status === 'pending' && isVoided && <td className="px-5 py-4 w-10"></td>}
+                                              </tr>
+                                            );
+                                          })}
                                         </tbody>
                                       </table>
                                     </div>
@@ -899,26 +956,40 @@ export default function AdminOrders() {
                                 <div className="space-y-4">
                                   <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                     <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><DollarSign size={16} className="text-slate-400" /> Summary</h4>
+                                    
                                     <div className="space-y-3 text-sm font-medium">
-                                      <div className="flex justify-between text-slate-500"><span>Subtotal</span><span className="text-slate-900">${Number(order.subtotal).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
-                                      <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${Number(order.shipping_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
-                                      <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${Number(order.tax_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between text-slate-500">
+                                        <span>Subtotal (Gross)</span>
+                                        <span className="text-slate-900">${originalSubtotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                                      </div>
+                                      
+                                      {rejectedItemsSum > 0 && (
+                                        <div className="flex justify-between text-red-500 font-bold">
+                                          <span>Adjustments (Rejected)</span>
+                                          <span>-${rejectedItemsSum.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                                        </div>
+                                      )}
+
+                                      <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${Number(order.shipping_amount).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${adjustedTax.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+                                      
                                       <div className="h-px w-full bg-slate-200/60 my-2"></div>
+                                      
                                       <div className="flex justify-between items-end">
                                         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
-                                        {/* 🚀 FIXED: Strikes out the Grand Total if Cancelled, Attempted, or Restocked */}
                                         <span className={`text-2xl font-extrabold tracking-tight leading-none ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
-                                          ${Number(order.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                          ${adjustedTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
                                         </span>
                                       </div>
                                     </div>
+
                                     <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-medium text-slate-500">
                                       <div className="flex items-center gap-2"><CreditCard size={14} className="text-slate-400 shrink-0" /><span className="font-bold text-slate-700 capitalize">{order.payment_method.replace('_', ' ')}</span></div>
                                       {getPaymentBadge(order.payment_status, order.status)}
                                     </div>
                                     {isNet30 && (<div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100"><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Due Date</span><span className={`text-xs font-bold px-2 py-0.5 rounded ${isOverdue ? 'bg-red-100 text-red-700 border border-red-200 shadow-sm' : isDueSoon ? 'bg-amber-100 text-amber-700 border border-amber-200 shadow-sm' : 'text-slate-700 bg-slate-100 border border-slate-200'}`}>{dueDateDisplay}</span></div>)}
                                   </div>
-                                  {(order.status === 'ready_for_delivery' || order.status === 'shipped' || order.status === 'delivered') && order.driver_name && (
+                                  {(order.status === 'ready_for_delivery' || order.status === 'shipped' || ['delivered', 'delivered_partial'].includes(order.status)) && order.driver_name && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                       <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><Truck size={16} className="text-slate-400" /> Dispatch Info</h4>
                                       <div className="space-y-3 text-sm">
@@ -929,7 +1000,7 @@ export default function AdminOrders() {
                                       </div>
                                     </div>
                                   )}
-                                  {order.status === 'delivered' && (order.photo_url || order.signature_url || order.received_by) && (
+                                  {['delivered', 'delivered_partial'].includes(order.status) && (order.photo_url || order.signature_url || order.received_by) && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                       <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><PackageCheck size={16} className="text-slate-400" /> Proof of Delivery</h4>
                                       {order.received_by && (<div className="mb-4 p-3 bg-emerald-50 rounded-xl border border-emerald-100"><p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">Received By</p><p className="font-bold text-slate-900 flex items-center gap-2 text-sm"><User size={14} className="text-emerald-500" /> {order.received_by}</p></div>)}

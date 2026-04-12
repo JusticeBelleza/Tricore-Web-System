@@ -9,7 +9,6 @@ import {
 
 const WAREHOUSE_ADDRESS = "2169 Harbor St, Pittsburg CA 94565";
 
-// 🚀 1. THE STICKY MASTER MAP W/ BLUE ACTIVE ROUTE HIGHLIGHT & TIME/DISTANCE
 function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger }) {
   const { isLoaded } = useJsApiLoader({
     id: 'google-map-script',
@@ -20,7 +19,6 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
   const [showMap, setShowMap] = useState(false);
   const [isCalculating, setIsCalculating] = useState(false);
 
-  // 🚀 Look up the exact locked index from the active order!
   const activeDelivery = orders.find(o => o.status === 'out_for_delivery');
   const activeLegIndex = activeDelivery && activeDelivery.routeLegIndex !== undefined 
     ? activeDelivery.routeLegIndex 
@@ -85,7 +83,6 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
     );
   };
 
-  // 🚀 EXTRACT THE EXACT GPS PATH FOR THE ACTIVE LEG + DISTANCE/TIME
   const activeLegInfo = useMemo(() => {
     if (!directions || activeLegIndex < 0) return null;
     try {
@@ -94,7 +91,7 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
       
       let path = [];
       leg.steps.forEach(step => {
-        step.path.forEach(latLng => path.push(latLng));
+        step.path.forEach(latLng => path.push({ lat: latLng.lat(), lng: latLng.lng() }));
       });
       return {
         distance: leg.distance.text,
@@ -124,11 +121,8 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
 
   return (
     <div className="w-full mt-4 flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-200 sticky top-4 z-40 bg-slate-50/80 backdrop-blur-xl p-2 rounded-[2rem] shadow-xl border border-slate-200/60">
-      
       <div className="bg-slate-900 text-white p-3.5 rounded-2xl flex items-center gap-4 shadow-inner">
-        <div className="bg-slate-800 p-2.5 rounded-xl shrink-0">
-          <Truck size={20} className="text-blue-400" />
-        </div>
+        <div className="bg-slate-800 p-2.5 rounded-xl shrink-0"><Truck size={20} className="text-blue-400" /></div>
         <div className="flex-1 overflow-hidden">
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate">
             {activeLegInfo ? `Heading to Stop #${activeLegIndex + 1}` : 'Round Trip Active'}
@@ -137,12 +131,7 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
             {activeLegInfo ? `${activeLegInfo.distance} • ${activeLegInfo.duration}` : 'Start & End: Pittsburg'}
           </p>
         </div>
-        <button 
-          onClick={() => setShowMap(false)}
-          className="ml-auto p-2 bg-white/10 hover:bg-white/20 text-white rounded-full active:scale-95 transition-all"
-        >
-          <X size={16} />
-        </button>
+        <button onClick={() => setShowMap(false)} className="ml-auto p-2 bg-white/10 hover:bg-white/20 text-white rounded-full active:scale-95 transition-all"><X size={16} /></button>
       </div>
 
       <div className="w-full h-64 sm:h-80 rounded-2xl overflow-hidden relative shadow-inner border border-slate-300">
@@ -153,38 +142,13 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
           options={{ disableDefaultUI: true, zoomControl: true }}
         >
           {directions && (
-            <DirectionsRenderer 
-              directions={directions} 
-              options={{ 
-                polylineOptions: { strokeColor: '#10b981', strokeWeight: 4, strokeOpacity: 0.5 },
-                suppressMarkers: false 
-              }}
-            />
+            <DirectionsRenderer directions={directions} options={{ polylineOptions: { strokeColor: '#10b981', strokeWeight: 4, strokeOpacity: 0.5 }, suppressMarkers: false }} />
           )}
-
-          {/* 🚀 DRAW THE BLUE LINE FOR THE ACTIVE ROUTE */}
           {activeLegInfo && (
-            <Polyline
-              path={activeLegInfo.path}
-              options={{
-                strokeColor: '#3b82f6', // Bright Blue
-                strokeOpacity: 1.0,
-                strokeWeight: 6, // Thicker so it pops over the green
-                zIndex: 50
-              }}
-            />
+            <Polyline path={activeLegInfo.path} options={{ strokeColor: '#3b82f6', strokeOpacity: 1.0, strokeWeight: 6, zIndex: 50 }} />
           )}
-
-          {/* 🚀 LIVE TRUCK MARKER */}
           {currentLocation && (
-            <Marker 
-              position={currentLocation}
-              icon={{
-                url: 'https://cdn-icons-png.flaticon.com/512/3097/3097180.png', 
-                scaledSize: new window.google.maps.Size(38, 38)
-              }}
-              zIndex={999}
-            />
+            <Marker position={currentLocation} icon={{ url: 'https://cdn-icons-png.flaticon.com/512/3097/3097180.png', scaledSize: new window.google.maps.Size(38, 38) }} zIndex={999} />
           )}
         </GoogleMap>
       </div>
@@ -192,8 +156,6 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
   );
 }
 
-
-// 🚀 2. THE MAIN DRIVER DASHBOARD
 export default function DriverRoutes() {
   const { profile } = useAuth();
   const [orders, setOrders] = useState([]);
@@ -206,6 +168,7 @@ export default function DriverRoutes() {
   const [photoFile, setPhotoFile] = useState(null);
   const [receivedBy, setReceivedBy] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [rejectedItemIds, setRejectedItemIds] = useState([]);
 
   const [cancellingOrder, setCancellingOrder] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
@@ -222,7 +185,6 @@ export default function DriverRoutes() {
 
   const canvasRef = useRef(null);
 
-  // SILENT GPS TRACKER
   useEffect(() => {
     if (!profile?.id || profile?.role?.toLowerCase() !== 'driver') return;
     let latestCoords = null;
@@ -279,7 +241,7 @@ export default function DriverRoutes() {
     try {
       const { data: pendingData, error: pendingError } = await supabase
         .from('orders')
-        .select(`*, companies ( name, address, city, state, zip, phone ), agency_patients ( contact_number ), user_profiles ( full_name, contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, product_variants ( product_id ) )`)
+        .select(`*, companies ( name, address, city, state, zip, phone ), agency_patients ( contact_number ), user_profiles ( full_name, contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, line_total, product_variants ( product_id, name, products(name) ) )`)
         .in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery'])
         .ilike('driver_name', `${profile.full_name}%`) 
         .order('created_at', { ascending: true }); 
@@ -302,20 +264,16 @@ export default function DriverRoutes() {
     }
   };
 
-  // 🚀 FIXED: Added routeLegIndex so the map remembers the original Google route mapping!
   const applyOptimizedOrder = (sequence, legsData) => {
     if (!sequence || sequence.length === 0) return;
-    
     const routeOrders = orders.slice(0, 25); 
     const remainingOrders = orders.slice(25); 
-    
     const sortedRouteOrders = sequence.map((originalIndex, i) => ({
       ...routeOrders[originalIndex],
       travelDistance: legsData[i]?.distance,
       travelTime: legsData[i]?.duration,
-      routeLegIndex: i // 🚀 Locks the order to its specific Map Leg!
+      routeLegIndex: i 
     }));
-    
     const completelySortedOrders = [...sortedRouteOrders, ...remainingOrders];
     setOrders(completelySortedOrders);
     showToast("Route Optimized for Fastest Round Trip!");
@@ -326,10 +284,8 @@ export default function DriverRoutes() {
     if (file) { setPhotoFile(file); setPhotoPreview(URL.createObjectURL(file)); }
   };
 
-  // 🚀 FIXED SIGNATURE LOGIC WITH DELAY
   useEffect(() => {
     if (!activeOrder || !canvasRef.current) return;
-    
     const timer = setTimeout(() => {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -345,7 +301,6 @@ export default function DriverRoutes() {
       ctx.strokeStyle = '#0f172a'; 
 
       let isDrawing = false;
-
       const getPos = (e) => {
         const r = canvas.getBoundingClientRect();
         const clientX = e.touches && e.touches.length > 0 ? e.touches[0].clientX : e.clientX;
@@ -366,7 +321,6 @@ export default function DriverRoutes() {
       canvas.ontouchend = stopPos;
       canvas.ontouchcancel = stopPos;
     }, 200);
-
     return () => clearTimeout(timer);
   }, [activeOrder]);
 
@@ -397,29 +351,87 @@ export default function DriverRoutes() {
 
   const submitDelivery = async () => {
     if (!receivedBy.trim()) { showToast('Please enter the full name of the person receiving the order.', true); return; }
-    const canvas = canvasRef.current; const blank = document.createElement('canvas'); blank.width = canvas.width; blank.height = canvas.height;
-    if (canvas.toDataURL() === blank.toDataURL()) { showToast('Please have the customer sign to confirm delivery.', true); return; }
+    
+    const activeItems = activeOrder.order_items?.filter(item => item.status === 'active') || [];
+    
+    if (rejectedItemIds.length < activeItems.length) {
+      const canvas = canvasRef.current; 
+      const blank = document.createElement('canvas'); 
+      blank.width = canvas.width; 
+      blank.height = canvas.height;
+      if (canvas.toDataURL() === blank.toDataURL()) { showToast('Please have the customer sign to confirm delivery.', true); return; }
+    }
 
     setIsSubmitting(true);
     try {
-      let photoUrlStr = null; let signatureUrlStr = null; const uniquePrefix = `${Date.now()}-${activeOrder.id}`;
+      let photoUrlStr = null; 
+      let signatureUrlStr = null; 
+      const uniquePrefix = `${Date.now()}-${activeOrder.id}`;
+      
       if (photoFile) {
         const photoPath = `pod-photos/${uniquePrefix}.jpg`;
         const { error: photoErr } = await supabase.storage.from('delivery-proofs').upload(photoPath, photoFile);
         if (photoErr) throw photoErr;
         photoUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(photoPath).data.publicUrl;
       }
-      const signatureBlob = await (await fetch(canvas.toDataURL('image/png'))).blob();
-      const sigPath = `pod-signatures/${uniquePrefix}.png`;
-      const { error: sigErr } = await supabase.storage.from('delivery-proofs').upload(sigPath, signatureBlob);
-      if (sigErr) throw sigErr;
-      signatureUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(sigPath).data.publicUrl;
+      
+      if (rejectedItemIds.length < activeItems.length && canvasRef.current) {
+        const signatureBlob = await (await fetch(canvasRef.current.toDataURL('image/png'))).blob();
+        const sigPath = `pod-signatures/${uniquePrefix}.png`;
+        const { error: sigErr } = await supabase.storage.from('delivery-proofs').upload(sigPath, signatureBlob);
+        if (sigErr) throw sigErr;
+        signatureUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(sigPath).data.publicUrl;
+      }
 
-      const { error: updateErr } = await supabase.from('orders').update({ status: 'delivered', photo_url: photoUrlStr, signature_url: signatureUrlStr, received_by: receivedBy.trim(), updated_at: new Date().toISOString() }).eq('id', activeOrder.id);
+      if (rejectedItemIds.length > 0) {
+        const { error: itemsErr } = await supabase
+          .from('order_items')
+          .update({ status: 'rejected' })
+          .in('id', rejectedItemIds);
+        if (itemsErr) throw itemsErr;
+      }
+
+      const isTotalRejection = rejectedItemIds.length === activeItems.length;
+      
+      let finalOrderStatus = 'delivered';
+      let finalTotalAmount = activeOrder.total_amount;
+      let cancellationReason = null;
+
+      if (isTotalRejection) {
+        finalOrderStatus = 'attempted';
+        cancellationReason = 'Customer rejected all items at the door.';
+      } else if (rejectedItemIds.length > 0) {
+        finalOrderStatus = 'delivered_partial';
+        cancellationReason = 'Customer rejected some items at the door.';
+        const rejectedSum = activeOrder.order_items.filter(item => rejectedItemIds.includes(item.id)).reduce((sum, item) => sum + (Number(item.line_total) || 0), 0);
+        finalTotalAmount = Math.max(0, Number(activeOrder.total_amount) - rejectedSum);
+      }
+
+      const { error: updateErr } = await supabase.from('orders').update({ 
+        status: finalOrderStatus, 
+        total_amount: finalTotalAmount, 
+        photo_url: photoUrlStr, 
+        signature_url: signatureUrlStr, 
+        received_by: receivedBy.trim(), 
+        cancellation_reason: cancellationReason,
+        updated_at: new Date().toISOString() 
+      }).eq('id', activeOrder.id);
+      
       if (updateErr) throw updateErr;
 
-      setOrders(orders.filter(o => o.id !== activeOrder.id)); setCompletedThisWeek(prev => prev + 1); window.dispatchEvent(new Event('orderStatusChanged')); closeModal(); showToast('Delivery completed successfully!');
-    } catch (error) { console.error('Delivery Error:', error.message); showToast('Failed to upload delivery proof. Check your connection.', true); } finally { setIsSubmitting(false); }
+      setOrders(orders.filter(o => o.id !== activeOrder.id)); 
+      if (!isTotalRejection) setCompletedThisWeek(prev => prev + 1); 
+      
+      window.dispatchEvent(new Event('orderStatusChanged')); 
+      closeModal(); 
+      showToast(isTotalRejection ? 'Order marked as attempted (All items rejected).' : 'Delivery completed successfully!');
+      
+    } catch (error) { 
+      console.error('Delivery Error:', error.message); 
+      showToast('Failed to upload delivery proof. Check your connection.', true); 
+    } finally { 
+      setIsSubmitting(false); 
+    }
   };
 
   const submitCancellation = async () => {
@@ -453,9 +465,17 @@ export default function DriverRoutes() {
     } catch (error) { console.error('Attempt Error:', error.message); showToast('Failed to mark delivery as attempted.', true); } finally { setIsAttempting(false); }
   };
 
-  const closeModal = () => { setActiveOrder(null); setPhotoFile(null); setPhotoPreview(null); setReceivedBy(''); };
+  const closeModal = () => { setActiveOrder(null); setPhotoFile(null); setPhotoPreview(null); setReceivedBy(''); setRejectedItemIds([]); };
   const closeCancelModal = () => { setCancellingOrder(null); setCancelReason(''); };
   const closeAttemptModal = () => { setAttemptingOrder(null); setAttemptReason(''); };
+
+  const getDynamicTotal = () => {
+    if (!activeOrder) return 0;
+    const rejectedSum = activeOrder.order_items
+      ?.filter(item => rejectedItemIds.includes(item.id))
+      .reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+    return Math.max(0, Number(activeOrder.total_amount) - rejectedSum);
+  };
 
   return (
     <div className="max-w-md sm:max-w-3xl mx-auto space-y-5 pb-24 relative px-4">
@@ -498,12 +518,7 @@ export default function DriverRoutes() {
       </div>
 
       {!loading && orders.length > 0 && (
-        <MasterRouteMap 
-          orders={orders} 
-          onRouteOptimized={applyOptimizedOrder} 
-          currentLocation={currentLocation} 
-          autoTrigger={triggerMapOpen} 
-        />
+        <MasterRouteMap orders={orders} onRouteOptimized={applyOptimizedOrder} currentLocation={currentLocation} autoTrigger={triggerMapOpen} />
       )}
 
       {loading ? (
@@ -538,7 +553,6 @@ export default function DriverRoutes() {
             return (
               <div key={order.id} className={`bg-white border rounded-3xl p-4 shadow-sm relative overflow-hidden flex flex-col transition-all ${isOutForDelivery ? 'border-blue-400 ring-4 ring-blue-500/10' : 'border-slate-200'}`}>
                 
-                {/* 🚀 FIXED STOP LABEL */}
                 <div className={`absolute top-0 right-0 text-white px-3 py-1.5 rounded-bl-xl font-black text-[10px] tracking-widest uppercase z-10 shadow-sm ${isOutForDelivery ? 'bg-blue-600' : 'bg-slate-900'}`}>
                   Stop #{order.routeLegIndex !== undefined ? order.routeLegIndex + 1 : index + 1}
                 </div>
@@ -546,7 +560,6 @@ export default function DriverRoutes() {
                 <div className="mb-3 pr-16 pl-1">
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 block">Order #{shortId}</span>
                   <h3 className="text-lg font-black text-slate-900 leading-tight">{shipName}</h3>
-                  {/* 🚀 DISTANCE/TIME CARD BADGE */}
                   {order.travelDistance && (
                     <div className="flex items-center gap-3 mt-1.5">
                       <div className="flex items-center gap-1 text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
@@ -595,32 +608,20 @@ export default function DriverRoutes() {
 
                 <div className="mt-4 flex flex-col gap-2">
                   {!isOutForDelivery ? (
-                    <button 
-                      onClick={() => updateOrderStatus(order.id, 'out_for_delivery')}
-                      className="w-full py-3.5 text-sm bg-slate-900 text-white font-bold rounded-xl shadow-md hover:bg-slate-800 active:scale-95 transition-all flex justify-center items-center gap-2"
-                    >
+                    <button onClick={() => updateOrderStatus(order.id, 'out_for_delivery')} className="w-full py-3.5 text-sm bg-slate-900 text-white font-bold rounded-xl shadow-md hover:bg-slate-800 active:scale-95 transition-all flex justify-center items-center gap-2">
                       <Truck size={18} /> Start Route
                     </button>
                   ) : (
-                    <button 
-                      onClick={() => setActiveOrder(order)}
-                      className="w-full py-3.5 text-sm bg-emerald-500 text-white font-bold rounded-xl shadow-md hover:bg-emerald-600 active:scale-95 transition-all flex justify-center items-center gap-2"
-                    >
+                    <button onClick={() => setActiveOrder(order)} className="w-full py-3.5 text-sm bg-emerald-500 text-white font-bold rounded-xl shadow-md hover:bg-emerald-600 active:scale-95 transition-all flex justify-center items-center gap-2">
                       <CheckCircle2 size={18} /> Complete POD
                     </button>
                   )}
                   
                   <div className="grid grid-cols-2 gap-2 mt-1">
-                    <button 
-                      onClick={() => setCancellingOrder(order)}
-                      className="py-3 bg-red-50 text-red-600 border border-red-200 text-[13px] font-black rounded-xl hover:bg-red-100 active:scale-95 transition-all flex items-center justify-center gap-1.5 shadow-sm"
-                    >
+                    <button onClick={() => setCancellingOrder(order)} className="py-3 bg-red-50 text-red-600 border border-red-200 text-[13px] font-black rounded-xl hover:bg-red-100 active:scale-95 transition-all flex items-center justify-center gap-1.5 shadow-sm">
                       <XCircle size={16} /> Cancel
                     </button>
-                    <button 
-                      onClick={() => setAttemptingOrder(order)}
-                      className="py-3 bg-amber-50 text-amber-700 border border-amber-200 text-[13px] font-black rounded-xl hover:bg-amber-100 active:scale-95 transition-all flex items-center justify-center gap-1.5 shadow-sm"
-                    >
+                    <button onClick={() => setAttemptingOrder(order)} className="py-3 bg-amber-50 text-amber-700 border border-amber-200 text-[13px] font-black rounded-xl hover:bg-amber-100 active:scale-95 transition-all flex items-center justify-center gap-1.5 shadow-sm">
                       <AlertTriangle size={16} /> Attempt
                     </button>
                   </div>
@@ -657,7 +658,6 @@ export default function DriverRoutes() {
         </div>
       )}
 
-      {/* 🚀 ORIGINAL, FULL PROOF OF DELIVERY MODAL RESTORED */}
       {activeOrder && (
         <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/70 backdrop-blur-sm animate-in fade-in duration-200 p-0 sm:p-4">
           <div className="bg-white w-full sm:max-w-md h-[92vh] sm:h-auto sm:max-h-[90vh] rounded-t-[2rem] sm:rounded-3xl shadow-2xl flex flex-col animate-in slide-in-from-bottom-full duration-300">
@@ -672,13 +672,63 @@ export default function DriverRoutes() {
 
             <div className="p-6 overflow-y-auto flex-1 space-y-6 bg-white">
               
-              {/* Step 1: Photo Section */}
+              {activeOrder.payment_method === 'cod' && (
+                <div className={`p-4 rounded-2xl border flex items-center justify-between shadow-sm transition-colors ${rejectedItemIds.length > 0 ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200'}`}>
+                  <div>
+                    <p className={`text-[10px] font-bold uppercase tracking-widest ${rejectedItemIds.length > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>Amount to Collect (COD)</p>
+                    <p className={`text-2xl font-black ${rejectedItemIds.length > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>${getDynamicTotal().toFixed(2)}</p>
+                  </div>
+                  {rejectedItemIds.length > 0 && <span className="text-xs font-bold bg-white text-amber-600 px-2 py-1 rounded-md shadow-sm border border-amber-100">Adjusted</span>}
+                </div>
+              )}
+
               <div className="space-y-3">
                 <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
                   <div className="w-5 h-5 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-[10px]">1</div>
+                  Review Items
+                </label>
+                <p className="text-xs text-slate-500 font-medium mb-2">Tap 'Reject' if the customer refuses an item.</p>
+                
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  {activeOrder.order_items?.filter(item => item.status === 'active').map(item => {
+                    const isRejected = rejectedItemIds.includes(item.id);
+                    return (
+                      <div key={item.id} className={`flex items-center justify-between p-3 rounded-xl border transition-all ${isRejected ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
+                        <div className="flex-1 min-w-0 pr-3">
+                          <p className={`text-sm font-bold truncate ${isRejected ? 'text-red-900 line-through' : 'text-slate-900'}`}>
+                            {item.product_variants?.products?.name || 'Item'}
+                          </p>
+                          <div className="flex items-center gap-3 mt-1">
+                            <p className={`text-[10px] font-bold uppercase tracking-widest ${isRejected ? 'text-red-500' : 'text-slate-500'}`}>
+                              Qty: {item.quantity_variants}
+                            </p>
+                            <p className={`text-[10px] font-bold uppercase tracking-widest ${isRejected ? 'text-red-400' : 'text-emerald-600'}`}>
+                              ${Number(item.line_total || 0).toFixed(2)}
+                            </p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => {
+                            if (isRejected) setRejectedItemIds(prev => prev.filter(id => id !== item.id));
+                            else setRejectedItemIds(prev => [...prev, item.id]);
+                          }}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm shrink-0 ${isRejected ? 'bg-white text-red-600 border border-red-200 hover:bg-red-50 active:scale-95' : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-100 active:scale-95'}`}
+                        >
+                          {isRejected ? 'Undo' : 'Reject'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="h-px w-full bg-slate-100"></div>
+
+              <div className="space-y-3">
+                <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
+                  <div className="w-5 h-5 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-[10px]">2</div>
                   Take Photo (Optional)
                 </label>
-                
                 {photoPreview ? (
                   <div className="relative w-full h-36 rounded-2xl overflow-hidden border-2 border-slate-200 shadow-sm">
                     <img src={photoPreview} alt="Preview" className="w-full h-full object-cover" />
@@ -686,13 +736,7 @@ export default function DriverRoutes() {
                   </div>
                 ) : (
                   <div className="relative group">
-                    <input 
-                      type="file" 
-                      accept="image/*" 
-                      capture="environment" 
-                      onChange={handlePhotoCapture}
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                    />
+                    <input type="file" accept="image/*" capture="environment" onChange={handlePhotoCapture} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
                     <div className="w-full h-24 border-2 border-dashed border-slate-300 rounded-2xl bg-slate-50 flex flex-col items-center justify-center text-slate-500 gap-2 active:bg-slate-100 transition-colors">
                       <div className="p-2 bg-white rounded-full shadow-sm"><Camera size={18} className="text-blue-500" /></div>
                       <span className="text-[10px] font-bold uppercase tracking-widest">Tap for Camera</span>
@@ -703,57 +747,34 @@ export default function DriverRoutes() {
 
               <div className="h-px w-full bg-slate-100"></div>
 
-              {/* Step 2: Recipient Name */}
               <div className="space-y-3">
                 <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
-                  <div className="w-5 h-5 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-[10px]">2</div>
+                  <div className="w-5 h-5 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-[10px]">3</div>
                   Recipient Name
                 </label>
-                <input 
-                  type="text" 
-                  placeholder="Enter full name..." 
-                  value={receivedBy} 
-                  onChange={(e) => setReceivedBy(e.target.value)} 
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-900 shadow-sm placeholder:font-medium placeholder:text-slate-400"
-                />
+                <input type="text" placeholder="Enter full name..." value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-900 shadow-sm placeholder:font-medium placeholder:text-slate-400" />
               </div>
 
               <div className="h-px w-full bg-slate-100"></div>
 
-              {/* Step 3: Signature Section */}
               <div className="space-y-3 pb-4">
                 <div className="flex justify-between items-end">
                   <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
-                    <div className="w-5 h-5 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center text-[10px]">3</div>
+                    <div className="w-5 h-5 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center text-[10px]">4</div>
                     Customer Signature
                   </label>
                   <button onClick={clearSignature} className="text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-slate-100 px-3 py-1.5 rounded-lg active:scale-95">Clear</button>
                 </div>
-                
                 <div className="relative w-full h-40 border-2 border-slate-200 rounded-2xl bg-slate-50 overflow-hidden shadow-inner">
-                  <canvas
-                    ref={canvasRef}
-                    className="absolute inset-0 w-full h-full cursor-crosshair"
-                    style={{ touchAction: 'none' }}
-                  />
-                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-10">
-                    <PenTool size={48} />
-                  </div>
+                  <canvas ref={canvasRef} className="absolute inset-0 w-full h-full cursor-crosshair" style={{ touchAction: 'none' }} />
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-10"><PenTool size={48} /></div>
                 </div>
               </div>
             </div>
 
             <div className="p-5 border-t border-slate-100 bg-white shrink-0 pb-8 sm:pb-5">
-              <button 
-                onClick={submitDelivery} 
-                disabled={isSubmitting}
-                className="w-full py-4 bg-emerald-500 text-white text-base font-black rounded-2xl shadow-lg shadow-emerald-500/30 hover:bg-emerald-400 active:scale-[0.98] transition-all flex justify-center items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
-              >
-                {isSubmitting ? (
-                  <span className="animate-pulse flex items-center gap-2">Uploading Data...</span>
-                ) : (
-                  <><UploadCloud size={20} /> Submit Delivery</>
-                )}
+              <button onClick={submitDelivery} disabled={isSubmitting} className="w-full py-4 bg-emerald-500 text-white text-base font-black rounded-2xl shadow-lg shadow-emerald-500/30 hover:bg-emerald-400 active:scale-[0.98] transition-all flex justify-center items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed">
+                {isSubmitting ? <span className="animate-pulse flex items-center gap-2">Processing Data...</span> : <><UploadCloud size={20} /> Submit Delivery</>}
               </button>
             </div>
 
@@ -769,7 +790,6 @@ export default function DriverRoutes() {
           <p className="text-sm font-bold pr-2">{toast.message}</p>
         </div>
       )}
-
     </div>
   );
 }
