@@ -1,10 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Mail, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight, ShieldCheck, X, Key, CheckCircle2 } from 'lucide-react';
-
-// 🚀 Import Turnstile
 import { Turnstile } from '@marsidev/react-turnstile';
 
 export default function Login() {
@@ -17,16 +15,18 @@ export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   
-  // 🚀 Turnstile Token State
+  // 🚀 Turnstile Tokens & Refs
   const [captchaToken, setCaptchaToken] = useState(null);
+  const [resetCaptchaToken, setResetCaptchaToken] = useState(null);
+  const turnstileRef = useRef(null); 
+  const resetTurnstileRef = useRef(null);
 
   // --- FORGOT PASSWORD STATE ---
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
   const [resetLoading, setResetLoading] = useState(false);
-  const [resetMessage, setResetMessage] = useState({ type: '', text: '' }); // 'success' | 'error'
+  const [resetMessage, setResetMessage] = useState({ type: '', text: '' }); 
 
-  const { signIn } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
@@ -35,41 +35,53 @@ export default function Login() {
     setLoading(true);
 
     try {
+      // Ensure Turnstile completed before allowing ANY auth action
+      if (!captchaToken) {
+        throw new Error('Please wait for security verification to complete.');
+      }
+
       if (isLogin) {
-        await signIn(email, password);
+        // 🚀 Pass the token to Supabase for Sign In
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+          options: { captchaToken } // <--- Token sent here
+        });
+        
+        if (signInError) throw signInError;
         navigate('/dashboard');
+        
       } else {
         // Validation for Sign Up
-        if (password !== confirmPassword) {
-          throw new Error('Passwords do not match.');
-        }
-        if (password.length < 6) {
-          throw new Error('Password must be at least 6 characters long.');
-        }
+        if (password !== confirmPassword) throw new Error('Passwords do not match.');
+        if (password.length < 6) throw new Error('Password must be at least 6 characters long.');
         
-        // 🚀 Ensure Turnstile completed before allowing sign up
-        if (!captchaToken) {
-          throw new Error('Please wait for security verification to complete.');
-        }
-
-        // 🚀 Pass the token to Supabase
+        // 🚀 Pass the token to Supabase for Sign Up
         const { error: signUpError } = await supabase.auth.signUp({
           email,
           password,
           options: { 
             data: { full_name: fullName },
-            captchaToken // <--- Send token here
+            captchaToken // <--- Token sent here
           } 
         });
         
         if (signUpError) throw signUpError;
+        
         alert('Registration successful! You can now log in.');
         setIsLogin(true);
         setPassword('');
         setConfirmPassword('');
+        setCaptchaToken(null);
+        if (turnstileRef.current) turnstileRef.current.reset();
       }
     } catch (err) {
       setError(err.message);
+      // Reset the captcha if ANY auth action fails so the user can try again
+      if (turnstileRef.current) {
+        turnstileRef.current.reset();
+        setCaptchaToken(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -82,8 +94,13 @@ export default function Login() {
     setResetMessage({ type: '', text: '' });
 
     try {
+      if (!resetCaptchaToken) {
+        throw new Error('Please wait for security verification.');
+      }
+
       const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
-        redirectTo: `${window.location.origin}/profile`, 
+        redirectTo: `${window.location.origin}/profile`,
+        options: { captchaToken: resetCaptchaToken } // 🚀 Required for password resets too!
       });
 
       if (error) throw error;
@@ -91,6 +108,10 @@ export default function Login() {
       setResetMessage({ type: 'success', text: 'Password reset link sent! Please check your inbox.' });
     } catch (err) {
       setResetMessage({ type: 'error', text: err.message });
+      if (resetTurnstileRef.current) {
+        resetTurnstileRef.current.reset();
+        setResetCaptchaToken(null);
+      }
     } finally {
       setResetLoading(false);
     }
@@ -111,7 +132,6 @@ export default function Login() {
   const strengthLabels = ['Too Weak', 'Weak', 'Fair', 'Good', 'Strong'];
   const strengthColors = ['bg-slate-200', 'bg-red-500', 'bg-amber-500', 'bg-blue-500', 'bg-emerald-500'];
 
-  // 🚀 FLOATING LABEL CSS CLASSES
   const inputClass = "block w-full pl-11 pr-10 pt-6 pb-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none text-sm font-bold text-slate-900 transition-all shadow-sm peer";
   const floatingLabelClass = "absolute text-sm text-slate-400 duration-300 transform -translate-y-2.5 scale-[0.8] top-3.5 z-10 origin-[0] left-11 peer-placeholder-shown:scale-100 peer-placeholder-shown:translate-y-1 peer-focus:scale-[0.8] peer-focus:-translate-y-2.5 peer-focus:text-blue-600 peer-focus:font-bold pointer-events-none";
 
@@ -149,137 +169,80 @@ export default function Login() {
         {/* --- FORM --- */}
         <form onSubmit={handleSubmit} className="space-y-4">
           
-          {/* Full Name (Sign Up Only) */}
           {!isLogin && (
             <div className="relative animate-in fade-in slide-in-from-top-2 duration-300">
               <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
-              <input
-                type="text"
-                id="fullName"
-                required
-                className={inputClass}
-                placeholder=" "
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-              />
+              <input type="text" id="fullName" required className={inputClass} placeholder=" " value={fullName} onChange={(e) => setFullName(e.target.value)} />
               <label htmlFor="fullName" className={floatingLabelClass}>Full Name</label>
             </div>
           )}
           
-          {/* Email */}
           <div className="relative">
             <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
-            <input
-              type="email"
-              id="email"
-              required
-              className={inputClass}
-              placeholder=" "
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
+            <input type="email" id="email" required className={inputClass} placeholder=" " value={email} onChange={(e) => setEmail(e.target.value)} />
             <label htmlFor="email" className={floatingLabelClass}>Email Address</label>
           </div>
 
-          {/* Password */}
           <div>
             <div className="relative">
               <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
-              <input
-                type={showPassword ? "text" : "password"}
-                id="password"
-                required
-                className={inputClass}
-                placeholder=" "
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
+              <input type={showPassword ? "text" : "password"} id="password" required className={inputClass} placeholder=" " value={password} onChange={(e) => setPassword(e.target.value)} />
               <label htmlFor="password" className={floatingLabelClass}>Password</label>
-              
-              <button 
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors z-10"
-              >
+              <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors z-10">
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
 
-            {/* Password Strength Meter (Sign Up Only) */}
             {!isLogin && password.length > 0 && (
               <div className="mt-2.5 px-1 animate-in fade-in duration-300">
                 <div className="flex gap-1.5 h-1.5 mb-1">
                   {[1, 2, 3, 4].map(level => (
-                    <div 
-                      key={level} 
-                      className={`flex-1 rounded-full transition-colors duration-500 ${strengthScore >= level ? strengthColors[strengthScore] : 'bg-slate-200'}`}
-                    ></div>
+                    <div key={level} className={`flex-1 rounded-full transition-colors duration-500 ${strengthScore >= level ? strengthColors[strengthScore] : 'bg-slate-200'}`}></div>
                   ))}
                 </div>
                 <div className="flex justify-between items-center text-[9px] font-bold uppercase tracking-wider">
                   <span className="text-slate-400">Strength</span>
-                  <span className={strengthScore > 2 ? 'text-emerald-600' : strengthScore === 2 ? 'text-amber-500' : 'text-red-500'}>
-                    {strengthLabels[strengthScore]}
-                  </span>
+                  <span className={strengthScore > 2 ? 'text-emerald-600' : strengthScore === 2 ? 'text-amber-500' : 'text-red-500'}>{strengthLabels[strengthScore]}</span>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Confirm Password (Sign Up Only) */}
           {!isLogin && (
             <div className="animate-in fade-in slide-in-from-top-2 duration-300">
               <div className="relative">
                 <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
-                <input
-                  type={showPassword ? "text" : "password"}
-                  id="confirmPassword"
-                  required
-                  className={`${inputClass} ${confirmPassword && password !== confirmPassword ? 'border-red-300 focus:border-red-500 focus:ring-red-500/10' : ''}`}
-                  placeholder=" "
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                />
+                <input type={showPassword ? "text" : "password"} id="confirmPassword" required className={`${inputClass} ${confirmPassword && password !== confirmPassword ? 'border-red-300 focus:border-red-500 focus:ring-red-500/10' : ''}`} placeholder=" " value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
                 <label htmlFor="confirmPassword" className={`${floatingLabelClass} ${confirmPassword && password !== confirmPassword ? 'text-red-500 peer-focus:text-red-500' : ''}`}>Confirm Password</label>
               </div>
-              
-              {/* Mismatch Warning Text */}
               {confirmPassword && password !== confirmPassword && (
-                <p className="text-[10px] font-bold text-red-500 uppercase tracking-wider mt-1.5 ml-1 animate-in fade-in">
-                  Passwords do not match
-                </p>
+                <p className="text-[10px] font-bold text-red-500 uppercase tracking-wider mt-1.5 ml-1 animate-in fade-in">Passwords do not match</p>
               )}
             </div>
           )}
 
-          {/* 🚀 TURNSTILE WIDGET (Only shown during Sign Up) */}
-          {!isLogin && (
-            <div className="flex justify-center py-2 animate-in fade-in duration-300">
-              <Turnstile 
-                siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY} 
-                onSuccess={(token) => {
-                  setCaptchaToken(token);
-                  setError('');
-                }}
-                onError={() => setError("Security verification failed. Please refresh the page.")}
-                onExpire={() => setCaptchaToken(null)}
-                options={{ theme: 'light' }}
-              />
-            </div>
-          )}
+          {/* 🚀 TURNSTILE WIDGET (Now shown for BOTH Login and Sign Up) */}
+          <div className="flex justify-center pt-2 pb-1 animate-in fade-in duration-300 min-h-[65px]">
+            <Turnstile 
+              ref={turnstileRef}
+              siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY || ''} 
+              onSuccess={(token) => {
+                setCaptchaToken(token);
+                setError('');
+              }}
+              onError={() => setError("Security verification failed. Please refresh the page.")}
+              onExpire={() => setCaptchaToken(null)}
+              options={{ theme: 'light', appearance: 'always' }}
+            />
+          </div>
 
-          {/* Remember Me & Forgot Password Row (Login Only) */}
           {isLogin && (
             <div className="flex items-center justify-between pt-1 pb-2 px-1">
               <div className="flex items-center gap-2">
                 <input type="checkbox" id="remember" className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer" />
                 <label htmlFor="remember" className="text-xs font-bold text-slate-600 cursor-pointer select-none">Remember me</label>
               </div>
-              <button 
-                type="button" 
-                onClick={() => setShowForgotModal(true)} 
-                className="text-[11px] font-bold text-blue-600 hover:text-blue-700 transition-colors uppercase tracking-wider"
-              >
+              <button type="button" onClick={() => setShowForgotModal(true)} className="text-[11px] font-bold text-blue-600 hover:text-blue-700 transition-colors uppercase tracking-wider">
                 Forgot password?
               </button>
             </div>
@@ -287,7 +250,7 @@ export default function Login() {
 
           <button
             type="submit"
-            disabled={loading || !email || !password || (!isLogin && (!fullName || password !== confirmPassword || !captchaToken))}
+            disabled={loading || !email || !password || !captchaToken || (!isLogin && (!fullName || password !== confirmPassword))}
             className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-black hover:bg-slate-800 active:scale-[0.98] transition-all shadow-lg shadow-slate-900/20 disabled:opacity-70 mt-2 flex items-center justify-center gap-2 group"
           >
             {loading ? (
@@ -298,7 +261,6 @@ export default function Login() {
           </button>
         </form>
 
-        {/* Footer Toggle */}
         <div className="mt-6 pt-6 border-t border-slate-100 text-center">
           <p className="text-sm font-medium text-slate-500">
             {isLogin ? "Don't have an account? " : "Already have an account? "}
@@ -308,7 +270,8 @@ export default function Login() {
                 setError('');
                 setPassword('');
                 setConfirmPassword('');
-                setCaptchaToken(null); // Reset token if they switch tabs
+                setCaptchaToken(null); 
+                if (turnstileRef.current) turnstileRef.current.reset();
               }}
               className="text-blue-600 font-bold hover:text-blue-700 hover:underline underline-offset-4 transition-all"
             >
@@ -323,12 +286,12 @@ export default function Login() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-sm rounded-[2rem] shadow-2xl p-8 relative animate-in zoom-in-95 duration-200 border border-slate-100">
             
-            {/* Close Button */}
             <button 
               onClick={() => {
                 setShowForgotModal(false);
                 setResetMessage({ type: '', text: '' });
                 setResetEmail('');
+                setResetCaptchaToken(null);
               }} 
               className="absolute top-5 right-5 text-slate-400 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 p-2 rounded-full transition-all"
             >
@@ -359,22 +322,25 @@ export default function Login() {
             <form onSubmit={handleResetPassword} className="space-y-4">
               <div className="relative">
                 <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
-                <input
-                  type="email"
-                  id="resetEmail"
-                  required
-                  className={inputClass}
-                  placeholder=" "
-                  value={resetEmail}
-                  onChange={(e) => setResetEmail(e.target.value)}
-                />
+                <input type="email" id="resetEmail" required className={inputClass} placeholder=" " value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} />
                 <label htmlFor="resetEmail" className={floatingLabelClass}>Email Address</label>
+              </div>
+
+              {/* 🚀 Turnstile for Password Reset */}
+              <div className="flex justify-center py-2 min-h-[65px]">
+                <Turnstile 
+                  ref={resetTurnstileRef}
+                  siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY || ''} 
+                  onSuccess={(token) => setResetCaptchaToken(token)}
+                  onExpire={() => setResetCaptchaToken(null)}
+                  options={{ theme: 'light' }}
+                />
               </div>
 
               <button
                 type="submit"
-                disabled={resetLoading || !resetEmail}
-                className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-black hover:bg-slate-800 active:scale-[0.98] transition-all shadow-md disabled:opacity-70 mt-2 flex items-center justify-center gap-2"
+                disabled={resetLoading || !resetEmail || !resetCaptchaToken}
+                className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-black hover:bg-slate-800 active:scale-[0.98] transition-all shadow-md disabled:opacity-70 flex items-center justify-center gap-2"
               >
                 {resetLoading ? 'Sending...' : 'Send Reset Link'}
               </button>
@@ -383,7 +349,6 @@ export default function Login() {
           </div>
         </div>
       )}
-
     </div>
   );
 }
