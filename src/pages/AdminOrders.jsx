@@ -250,7 +250,6 @@ export default function AdminOrders() {
         }
       });
 
-      // 🚀 Recalculate tax properly when items are cancelled
       const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
       const newTaxAmount = newSubtotal * taxRate;
       const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
@@ -524,11 +523,10 @@ export default function AdminOrders() {
 
     // 🚀 PDF CALCULATIONS
     const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
-    const originalSubtotal = Number(order.subtotal) || 0;
-    const adjustedSubtotal = Math.max(0, originalSubtotal - rejectedItemsSum);
-    const taxRate = originalSubtotal > 0 ? (Number(order.tax_amount || 0) / originalSubtotal) : 0;
-    const adjustedTax = adjustedSubtotal * taxRate;
-    const adjustedTotal = adjustedSubtotal + Number(order.shipping_amount || 0) + adjustedTax;
+    const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+    
+    const finalTax = Number(order.tax_amount || 0);
+    const finalTotal = Number(order.total_amount || 0);
 
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
     if (logoData) {
@@ -599,10 +597,9 @@ export default function AdminOrders() {
     
     let currentY = finalY + 10;
 
-    doc.text("Subtotal (Gross):", 140, currentY); doc.text(`$${originalSubtotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+    doc.text("Subtotal (Gross):", 140, currentY); doc.text(`$${grossSubtotal.toFixed(2)}`, 180, currentY, { align: 'right' });
     currentY += 6;
     
-    // 🚀 FIX: Label renamed to "Adjustments:" to prevent overlap!
     if (rejectedItemsSum > 0) {
       doc.setTextColor(220, 38, 38);
       doc.text("Adjustments:", 140, currentY); doc.text(`-$${rejectedItemsSum.toFixed(2)}`, 180, currentY, { align: 'right' });
@@ -613,18 +610,18 @@ export default function AdminOrders() {
     doc.text("Shipping:", 140, currentY); doc.text(`$${Number(order.shipping_amount || 0).toFixed(2)}`, 180, currentY, { align: 'right' });
     currentY += 6;
 
-    doc.text("Tax:", 140, currentY); doc.text(`$${adjustedTax.toFixed(2)}`, 180, currentY, { align: 'right' });
+    doc.text("Tax:", 140, currentY); doc.text(`$${finalTax.toFixed(2)}`, 180, currentY, { align: 'right' });
     currentY += 10;
     
     if (docType === 'receipt') {
       doc.text(`Payment Method: ${order.payment_method?.replace(/_/g, ' ').toUpperCase() || 'CARD'}`, 14, currentY);
       doc.setFont("helvetica", "bold");
-      doc.text("Total Paid:", 140, currentY); doc.text(`$${adjustedTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+      doc.text("Total Paid:", 140, currentY); doc.text(`$${finalTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
       currentY += 6;
       doc.text("Balance Due:", 140, currentY); doc.text("$0.00", 180, currentY, { align: 'right' });
     } else {
       doc.setFont("helvetica", "bold");
-      doc.text("Grand Total:", 140, currentY); doc.text(`$${adjustedTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+      doc.text("Grand Total:", 140, currentY); doc.text(`$${finalTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
     }
 
     const pageHeight = doc.internal.pageSize.height;
@@ -759,15 +756,11 @@ export default function AdminOrders() {
                     }
                   }
 
-                  // 🚀 DYNAMIC CALCULATIONS FOR DISPLAY (Gross vs Deductions)
+                  // 🚀 DYNAMIC CALCULATIONS FOR SUMMARY (Gross vs Deductions)
                   const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
-                  const originalSubtotal = Number(order.subtotal) || 0;
-                  const adjustedSubtotal = Math.max(0, originalSubtotal - rejectedItemsSum);
-                  
-                  // Calculate exact tax rate dynamically
-                  const taxRate = originalSubtotal > 0 ? (Number(order.tax_amount || 0) / originalSubtotal) : 0;
-                  const adjustedTax = adjustedSubtotal * taxRate;
-                  const adjustedTotal = adjustedSubtotal + Number(order.shipping_amount || 0) + adjustedTax;
+                  const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+                  const finalTax = Number(order.tax_amount || 0);
+                  const finalTotal = Number(order.total_amount || 0);
 
                   return (
                     <React.Fragment key={order.id}>
@@ -791,7 +784,7 @@ export default function AdminOrders() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-col items-start gap-1">
-                            <p className={`font-extrabold text-base ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>${adjustedTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+                            <p className={`font-extrabold text-base ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>${finalTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
                             <div className="flex items-center gap-2">
                               {getPaymentBadge(order.payment_status, order.status)}
                               {isOverdue && <span className="text-[9px] font-bold text-red-600 uppercase tracking-widest flex items-center gap-1"><AlertCircle size={10} /> Overdue</span>}
@@ -960,25 +953,25 @@ export default function AdminOrders() {
                                     <div className="space-y-3 text-sm font-medium">
                                       <div className="flex justify-between text-slate-500">
                                         <span>Subtotal (Gross)</span>
-                                        <span className="text-slate-900">${originalSubtotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                                        <span className="text-slate-900">${grossSubtotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
                                       </div>
                                       
                                       {rejectedItemsSum > 0 && (
                                         <div className="flex justify-between text-red-500 font-bold">
-                                          <span>Adjustments (Rejected)</span>
+                                          <span>Adjustments (Rejected/Cancelled)</span>
                                           <span>-${rejectedItemsSum.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
                                         </div>
                                       )}
 
                                       <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${Number(order.shipping_amount).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
-                                      <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${adjustedTax.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${finalTax.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
                                       
                                       <div className="h-px w-full bg-slate-200/60 my-2"></div>
                                       
                                       <div className="flex justify-between items-end">
                                         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
                                         <span className={`text-2xl font-extrabold tracking-tight leading-none ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
-                                          ${adjustedTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                          ${finalTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
                                         </span>
                                       </div>
                                     </div>
@@ -1022,6 +1015,7 @@ export default function AdminOrders() {
               </tbody>
             </table>
           </div>
+
           {totalCount > pageSize && (
             <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
               <span className="text-sm font-medium text-slate-500">Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> entries</span>
@@ -1031,10 +1025,11 @@ export default function AdminOrders() {
               </div>
             </div>
           )}
+
         </div>
       )}
 
-      {/* 🚀 MAIN ORDER REJECT MODAL */}
+      {/* MODALS */}
       {confirmAction.show && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
@@ -1068,7 +1063,6 @@ export default function AdminOrders() {
         </div>
       )}
 
-      {/* 🚀 ITEM-LEVEL ACTION MODALS */}
       {itemAction.show && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">

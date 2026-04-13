@@ -4,7 +4,8 @@ import { useAuth } from '../lib/AuthContext';
 import { GoogleMap, useJsApiLoader, DirectionsRenderer, Marker, Polyline } from '@react-google-maps/api';
 import { 
   MapPin, Phone, CheckCircle2, Camera, PenTool, X, Clock,
-  UploadCloud, Truck, Route, PackageCheck, Package, DollarSign, AlertTriangle, XCircle, Map
+  UploadCloud, Truck, Route, PackageCheck, Package, DollarSign, AlertTriangle, XCircle, Map,
+  Minus, Plus
 } from 'lucide-react';
 
 const WAREHOUSE_ADDRESS = "2169 Harbor St, Pittsburg CA 94565";
@@ -168,7 +169,9 @@ export default function DriverRoutes() {
   const [photoFile, setPhotoFile] = useState(null);
   const [receivedBy, setReceivedBy] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [rejectedItemIds, setRejectedItemIds] = useState([]);
+  
+  // 🚀 PHASE 2: Granular Partial Quantity State Tracker
+  const [deliveredQuantities, setDeliveredQuantities] = useState({});
 
   const [cancellingOrder, setCancellingOrder] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
@@ -211,6 +214,19 @@ export default function DriverRoutes() {
     }
   }, [profile?.id, profile?.full_name, profile?.license_expiry]);
 
+  // Pre-load default quantities when modal opens
+  useEffect(() => {
+    if (activeOrder) {
+      const initialQtys = {};
+      activeOrder.order_items?.forEach(item => {
+        if (item.status === 'active') {
+          initialQtys[item.id] = item.quantity_variants; // Default: fully delivered
+        }
+      });
+      setDeliveredQuantities(initialQtys);
+    }
+  }, [activeOrder]);
+
   const checkLicenseStatus = () => {
     if (profile?.role?.toLowerCase() !== 'driver') return;
     if (!profile?.license_expiry) {
@@ -241,7 +257,7 @@ export default function DriverRoutes() {
     try {
       const { data: pendingData, error: pendingError } = await supabase
         .from('orders')
-        .select(`*, companies ( name, address, city, state, zip, phone ), agency_patients ( contact_number ), user_profiles ( full_name, contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, line_total, product_variants ( product_id, name, products(name) ) )`)
+        .select(`*, companies ( name, address, city, state, zip, phone ), agency_patients ( contact_number ), user_profiles ( full_name, contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, line_total, unit_price, product_variants ( product_id, name, products(name) ) )`)
         .in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery'])
         .ilike('driver_name', `${profile.full_name}%`) 
         .order('created_at', { ascending: true }); 
@@ -349,12 +365,24 @@ export default function DriverRoutes() {
     }
   };
 
+  // 🚀 PHASE 2: Advanced Partial Quantity Submission Logic
   const submitDelivery = async () => {
     if (!receivedBy.trim()) { showToast('Please enter the full name of the person receiving the order.', true); return; }
     
     const activeItems = activeOrder.order_items?.filter(item => item.status === 'active') || [];
     
-    if (rejectedItemIds.length < activeItems.length) {
+    let totalDeliveredQty = 0;
+    let totalOriginalQty = 0;
+    
+    activeItems.forEach(item => {
+      totalOriginalQty += item.quantity_variants;
+      totalDeliveredQty += (deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : item.quantity_variants);
+    });
+
+    const isTotalRejection = totalDeliveredQty === 0;
+    const isPartialRejection = totalDeliveredQty > 0 && totalDeliveredQty < totalOriginalQty;
+    
+    if (totalDeliveredQty > 0) {
       const canvas = canvasRef.current; 
       const blank = document.createElement('canvas'); 
       blank.width = canvas.width; 
@@ -375,7 +403,7 @@ export default function DriverRoutes() {
         photoUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(photoPath).data.publicUrl;
       }
       
-      if (rejectedItemIds.length < activeItems.length && canvasRef.current) {
+      if (totalDeliveredQty > 0 && canvasRef.current) {
         const signatureBlob = await (await fetch(canvasRef.current.toDataURL('image/png'))).blob();
         const sigPath = `pod-signatures/${uniquePrefix}.png`;
         const { error: sigErr } = await supabase.storage.from('delivery-proofs').upload(sigPath, signatureBlob);
@@ -383,32 +411,71 @@ export default function DriverRoutes() {
         signatureUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(sigPath).data.publicUrl;
       }
 
-      if (rejectedItemIds.length > 0) {
-        const { error: itemsErr } = await supabase
-          .from('order_items')
-          .update({ status: 'rejected' })
-          .in('id', rejectedItemIds);
-        if (itemsErr) throw itemsErr;
+      let newSubtotal = 0;
+
+      // Split rows dynamically if they reject partial amounts!
+      for (const item of activeItems) {
+        const delQty = deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : item.quantity_variants;
+        const origQty = item.quantity_variants;
+        const unitPrice = Number(item.unit_price) || (Number(item.line_total) / origQty);
+        const rejQty = origQty - delQty;
+
+        if (rejQty === origQty) {
+          // Fully rejected this specific row
+          const { error: err } = await supabase.from('order_items').update({ status: 'rejected' }).eq('id', item.id);
+          if (err) throw err;
+        } else if (rejQty > 0) {
+          // Splitting the row into Accepted vs Rejected
+          newSubtotal += (delQty * unitPrice);
+
+          const proportionalBaseUnitsDel = Math.round((item.total_base_units / origQty) * delQty);
+          const { error: err1 } = await supabase.from('order_items').update({
+            quantity_variants: delQty,
+            line_total: delQty * unitPrice,
+            total_base_units: proportionalBaseUnitsDel
+          }).eq('id', item.id);
+          if (err1) throw err1;
+
+          const proportionalBaseUnitsRej = item.total_base_units - proportionalBaseUnitsDel;
+          const { error: err2 } = await supabase.from('order_items').insert([{
+            order_id: activeOrder.id,
+            product_variant_id: item.product_variant_id,
+            quantity_variants: rejQty,
+            unit_price: unitPrice,
+            line_total: rejQty * unitPrice,
+            status: 'rejected',
+            total_base_units: proportionalBaseUnitsRej
+          }]);
+          if (err2) throw err2;
+        } else {
+          // Fully accepted this specific row
+          newSubtotal += (delQty * unitPrice);
+        }
       }
 
-      const isTotalRejection = rejectedItemIds.length === activeItems.length;
-      
       let finalOrderStatus = 'delivered';
-      let finalTotalAmount = activeOrder.total_amount;
       let cancellationReason = null;
+      
+      // Proportional Tax Adjustments for absolute financial accuracy
+      const origSub = Number(activeOrder.subtotal) || 0;
+      const taxRate = origSub > 0 ? (Number(activeOrder.tax_amount || 0) / origSub) : 0;
+      const newTaxAmount = newSubtotal * taxRate;
+      let finalTotalAmount = newSubtotal + Number(activeOrder.shipping_amount || 0) + newTaxAmount;
 
       if (isTotalRejection) {
         finalOrderStatus = 'attempted';
         cancellationReason = 'Customer rejected all items at the door.';
-      } else if (rejectedItemIds.length > 0) {
+        finalTotalAmount = activeOrder.total_amount; 
+        newSubtotal = activeOrder.subtotal;
+      } else if (isPartialRejection) {
         finalOrderStatus = 'delivered_partial';
         cancellationReason = 'Customer rejected some items at the door.';
-        const rejectedSum = activeOrder.order_items.filter(item => rejectedItemIds.includes(item.id)).reduce((sum, item) => sum + (Number(item.line_total) || 0), 0);
-        finalTotalAmount = Math.max(0, Number(activeOrder.total_amount) - rejectedSum);
       }
 
       const { error: updateErr } = await supabase.from('orders').update({ 
         status: finalOrderStatus, 
+        subtotal: isTotalRejection ? activeOrder.subtotal : newSubtotal,
+        tax_amount: isTotalRejection ? activeOrder.tax_amount : newTaxAmount,
         total_amount: finalTotalAmount, 
         photo_url: photoUrlStr, 
         signature_url: signatureUrlStr, 
@@ -465,16 +532,26 @@ export default function DriverRoutes() {
     } catch (error) { console.error('Attempt Error:', error.message); showToast('Failed to mark delivery as attempted.', true); } finally { setIsAttempting(false); }
   };
 
-  const closeModal = () => { setActiveOrder(null); setPhotoFile(null); setPhotoPreview(null); setReceivedBy(''); setRejectedItemIds([]); };
+  const closeModal = () => { setActiveOrder(null); setPhotoFile(null); setPhotoPreview(null); setReceivedBy(''); setDeliveredQuantities({}); };
   const closeCancelModal = () => { setCancellingOrder(null); setCancelReason(''); };
   const closeAttemptModal = () => { setAttemptingOrder(null); setAttemptReason(''); };
 
+  // Automatically recalculate the visual total dynamically inside the modal
   const getDynamicTotal = () => {
     if (!activeOrder) return 0;
-    const rejectedSum = activeOrder.order_items
-      ?.filter(item => rejectedItemIds.includes(item.id))
-      .reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
-    return Math.max(0, Number(activeOrder.total_amount) - rejectedSum);
+    let newSubtotal = 0;
+    activeOrder.order_items?.forEach(item => {
+      if (item.status === 'active') {
+        const maxQty = item.quantity_variants;
+        const currentDelivered = deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : maxQty;
+        const unitPrice = Number(item.unit_price) || (Number(item.line_total) / maxQty);
+        newSubtotal += (currentDelivered * unitPrice);
+      }
+    });
+    const origSub = Number(activeOrder.subtotal) || 0;
+    const taxRate = origSub > 0 ? (Number(activeOrder.tax_amount || 0) / origSub) : 0;
+    const newTax = newSubtotal * taxRate;
+    return newSubtotal + Number(activeOrder.shipping_amount || 0) + newTax;
   };
 
   return (
@@ -673,49 +750,94 @@ export default function DriverRoutes() {
             <div className="p-6 overflow-y-auto flex-1 space-y-6 bg-white">
               
               {activeOrder.payment_method === 'cod' && (
-                <div className={`p-4 rounded-2xl border flex items-center justify-between shadow-sm transition-colors ${rejectedItemIds.length > 0 ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200'}`}>
+                <div className={`p-4 rounded-2xl border flex items-center justify-between shadow-sm transition-colors ${
+                  activeOrder.order_items?.some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) 
+                    ? 'bg-amber-50 border-amber-200' 
+                    : 'bg-emerald-50 border-emerald-200'
+                }`}>
                   <div>
-                    <p className={`text-[10px] font-bold uppercase tracking-widest ${rejectedItemIds.length > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>Amount to Collect (COD)</p>
-                    <p className={`text-2xl font-black ${rejectedItemIds.length > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>${getDynamicTotal().toFixed(2)}</p>
+                    <p className={`text-[10px] font-bold uppercase tracking-widest ${
+                      activeOrder.order_items?.some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) 
+                        ? 'text-amber-600' : 'text-emerald-600'
+                    }`}>
+                      Amount to Collect (COD)
+                    </p>
+                    <p className={`text-2xl font-black ${
+                      activeOrder.order_items?.some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) 
+                        ? 'text-amber-700' : 'text-emerald-700'
+                    }`}>
+                      ${getDynamicTotal().toFixed(2)}
+                    </p>
                   </div>
-                  {rejectedItemIds.length > 0 && <span className="text-xs font-bold bg-white text-amber-600 px-2 py-1 rounded-md shadow-sm border border-amber-100">Adjusted</span>}
+                  {activeOrder.order_items?.some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) && (
+                    <span className="text-xs font-bold bg-white text-amber-600 px-2 py-1 rounded-md shadow-sm border border-amber-100">Adjusted</span>
+                  )}
                 </div>
               )}
 
+              {/* 🚀 PHASE 2: Advanced Stepper Controls for Granular Rejections */}
               <div className="space-y-3">
                 <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
                   <div className="w-5 h-5 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-[10px]">1</div>
                   Review Items
                 </label>
-                <p className="text-xs text-slate-500 font-medium mb-2">Tap 'Reject' if the customer refuses an item.</p>
+                <p className="text-xs text-slate-500 font-medium mb-2">Adjust the quantity delivered if the customer refuses any items.</p>
                 
                 <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                   {activeOrder.order_items?.filter(item => item.status === 'active').map(item => {
-                    const isRejected = rejectedItemIds.includes(item.id);
+                    const maxQty = item.quantity_variants;
+                    const currentDelivered = deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : maxQty;
+                    const isPartiallyRejected = currentDelivered < maxQty && currentDelivered > 0;
+                    const isFullyRejected = currentDelivered === 0;
+                    
+                    const unitPrice = Number(item.unit_price) || (Number(item.line_total) / maxQty);
+                    const displayTotal = currentDelivered * unitPrice;
+
                     return (
-                      <div key={item.id} className={`flex items-center justify-between p-3 rounded-xl border transition-all ${isRejected ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
-                        <div className="flex-1 min-w-0 pr-3">
-                          <p className={`text-sm font-bold truncate ${isRejected ? 'text-red-900 line-through' : 'text-slate-900'}`}>
-                            {item.product_variants?.products?.name || 'Item'}
-                          </p>
-                          <div className="flex items-center gap-3 mt-1">
-                            <p className={`text-[10px] font-bold uppercase tracking-widest ${isRejected ? 'text-red-500' : 'text-slate-500'}`}>
-                              Qty: {item.quantity_variants}
+                      <div key={item.id} className={`flex flex-col p-3 rounded-xl border transition-all shadow-sm ${isFullyRejected ? 'bg-red-50 border-red-200' : isPartiallyRejected ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0 pr-2">
+                            <p className={`text-sm font-bold truncate transition-colors ${isFullyRejected ? 'text-red-900 line-through' : 'text-slate-900'}`}>
+                              {item.product_variants?.products?.name || 'Item'}
                             </p>
-                            <p className={`text-[10px] font-bold uppercase tracking-widest ${isRejected ? 'text-red-400' : 'text-emerald-600'}`}>
-                              ${Number(item.line_total || 0).toFixed(2)}
-                            </p>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              <p className={`text-[10px] font-bold uppercase tracking-widest ${isFullyRejected ? 'text-red-500' : 'text-slate-500'}`}>
+                                Ordered: {maxQty}
+                              </p>
+                              <p className={`text-[10px] font-bold uppercase tracking-widest ${isFullyRejected ? 'text-red-400' : 'text-emerald-600'}`}>
+                                ${displayTotal.toFixed(2)}
+                              </p>
+                            </div>
+                          </div>
+                          
+                          <div className="flex flex-col items-end gap-1.5 shrink-0">
+                            <div className="flex items-center gap-1 bg-white rounded-lg p-1 border border-slate-200 shadow-sm">
+                              <button 
+                                onClick={() => setDeliveredQuantities(prev => ({...prev, [item.id]: currentDelivered - 1}))}
+                                disabled={currentDelivered <= 0}
+                                className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors"
+                              >
+                                <Minus size={14} strokeWidth={3} />
+                              </button>
+                              <span className="w-5 text-center text-xs font-black text-slate-900">
+                                {currentDelivered}
+                              </span>
+                              <button 
+                                onClick={() => setDeliveredQuantities(prev => ({...prev, [item.id]: currentDelivered + 1}))}
+                                disabled={currentDelivered >= maxQty}
+                                className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors"
+                              >
+                                <Plus size={14} strokeWidth={3} />
+                              </button>
+                            </div>
+                            
+                            {isFullyRejected ? (
+                              <span className="text-[9px] font-black text-red-600 uppercase tracking-widest px-1">Rejected</span>
+                            ) : isPartiallyRejected ? (
+                              <span className="text-[9px] font-black text-amber-600 uppercase tracking-widest px-1">Partial</span>
+                            ) : null}
                           </div>
                         </div>
-                        <button 
-                          onClick={() => {
-                            if (isRejected) setRejectedItemIds(prev => prev.filter(id => id !== item.id));
-                            else setRejectedItemIds(prev => [...prev, item.id]);
-                          }}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm shrink-0 ${isRejected ? 'bg-white text-red-600 border border-red-200 hover:bg-red-50 active:scale-95' : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-100 active:scale-95'}`}
-                        >
-                          {isRejected ? 'Undo' : 'Reject'}
-                        </button>
                       </div>
                     );
                   })}

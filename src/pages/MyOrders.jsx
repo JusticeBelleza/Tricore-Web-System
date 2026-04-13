@@ -191,12 +191,13 @@ export default function MyOrders() {
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
     // 🚀 DYNAMIC CALCULATIONS FOR PDF
+    // The DB already holds the exact final Net Subtotal, Final Tax, and Final Total. 
+    // We just need to sum all items to display the original gross subtotal!
     const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
-    const originalSubtotal = Number(order.subtotal) || 0;
-    const adjustedSubtotal = Math.max(0, originalSubtotal - rejectedItemsSum);
-    const taxRate = originalSubtotal > 0 ? (Number(order.tax_amount || 0) / originalSubtotal) : 0;
-    const adjustedTax = adjustedSubtotal * taxRate;
-    const adjustedTotal = adjustedSubtotal + Number(order.shipping_amount || 0) + adjustedTax;
+    const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+    
+    const finalTax = Number(order.tax_amount || 0);
+    const finalTotal = Number(order.total_amount || 0);
 
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
     if (logoData) {
@@ -268,7 +269,7 @@ export default function MyOrders() {
     
     let currentY = finalY + 10;
 
-    doc.text("Subtotal (Gross):", 140, currentY); doc.text(`$${originalSubtotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+    doc.text("Subtotal (Gross):", 140, currentY); doc.text(`$${grossSubtotal.toFixed(2)}`, 180, currentY, { align: 'right' });
     currentY += 6;
     
     if (rejectedItemsSum > 0) {
@@ -281,18 +282,18 @@ export default function MyOrders() {
     doc.text("Shipping:", 140, currentY); doc.text(`$${Number(order.shipping_amount || 0).toFixed(2)}`, 180, currentY, { align: 'right' });
     currentY += 6;
 
-    doc.text("Tax:", 140, currentY); doc.text(`$${adjustedTax.toFixed(2)}`, 180, currentY, { align: 'right' });
+    doc.text("Tax:", 140, currentY); doc.text(`$${finalTax.toFixed(2)}`, 180, currentY, { align: 'right' });
     currentY += 10;
     
     if (docType === 'receipt') {
       doc.text(`Payment Method: ${order.payment_method?.replace(/_/g, ' ').toUpperCase() || 'CARD'}`, 14, currentY);
       doc.setFont("helvetica", "bold");
-      doc.text("Total Paid:", 140, currentY); doc.text(`$${adjustedTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+      doc.text("Total Paid:", 140, currentY); doc.text(`$${finalTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
       currentY += 6;
       doc.text("Balance Due:", 140, currentY); doc.text("$0.00", 180, currentY, { align: 'right' });
     } else {
       doc.setFont("helvetica", "bold");
-      doc.text("Grand Total:", 140, currentY); doc.text(`$${adjustedTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+      doc.text("Grand Total:", 140, currentY); doc.text(`$${finalTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
     }
 
     const pageHeight = doc.internal.pageSize.height;
@@ -429,12 +430,11 @@ export default function MyOrders() {
                   }
 
                   // 🚀 DYNAMIC CALCULATIONS FOR ROW AND SUMMARY
+                  // The DB already holds the exact final Net Subtotal, Final Tax, and Final Total. 
                   const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
-                  const originalSubtotal = Number(order.subtotal) || 0;
-                  const adjustedSubtotal = Math.max(0, originalSubtotal - rejectedItemsSum);
-                  const taxRate = originalSubtotal > 0 ? (Number(order.tax_amount || 0) / originalSubtotal) : 0;
-                  const adjustedTax = adjustedSubtotal * taxRate;
-                  const adjustedTotal = adjustedSubtotal + Number(order.shipping_amount || 0) + adjustedTax;
+                  const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+                  const finalTax = Number(order.tax_amount || 0);
+                  const finalTotal = Number(order.total_amount || 0);
                   
                   return (
                     <React.Fragment key={order.id}>
@@ -461,7 +461,7 @@ export default function MyOrders() {
                         
                         <td className="px-6 py-4">
                           <p className={`font-extrabold text-base ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
-                            ${adjustedTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                            ${finalTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
                           </p>
                         </td>
                         <td className="px-6 py-4">
@@ -654,7 +654,7 @@ export default function MyOrders() {
                                     <div className="space-y-3 text-sm font-medium">
                                       <div className="flex justify-between text-slate-500">
                                         <span>Subtotal (Gross)</span>
-                                        <span className="text-slate-900">${originalSubtotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                                        <span className="text-slate-900">${grossSubtotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
                                       </div>
 
                                       {rejectedItemsSum > 0 && (
@@ -665,14 +665,14 @@ export default function MyOrders() {
                                       )}
 
                                       <div className="flex justify-between text-slate-500"><span>Shipping</span><span className="text-slate-900">${Number(order.shipping_amount).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
-                                      <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${adjustedTax.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+                                      <div className="flex justify-between text-slate-500"><span>Tax</span><span className="text-slate-900">${finalTax.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
                                       
                                       <div className="h-px w-full bg-slate-200/60 my-2"></div>
                                       
                                       <div className="flex justify-between items-end">
                                         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Grand Total</span>
                                         <span className={`text-2xl font-extrabold tracking-tight leading-none ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
-                                          ${adjustedTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                          ${finalTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
                                         </span>
                                       </div>
                                     </div>
