@@ -111,9 +111,10 @@ export default function Dashboard() {
         { data: revData }, { count: pendingCount }, { count: dispatchCount },
         { data: lowStock }, { data: recentOrders }
       ] = await Promise.all([
-        supabase.from('orders').select('total_amount').gte('created_at', startIso).lte('created_at', endIso),
+        // 🚀 FIXED: Only fetch revenue from DELIVERED orders
+        supabase.from('orders').select('total_amount').in('status', ['delivered', 'delivered_partial']).gte('created_at', startIso).lte('created_at', endIso),
         supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['ready_for_delivery', 'shipped']),
+        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery']),
         supabase.from('inventory').select('product_id, base_units_on_hand, products(name)').lte('base_units_on_hand', 10).limit(5),
         supabase.from('orders').select('id, created_at, total_amount, status, shipping_name, companies(name)').order('created_at', { ascending: false }).limit(5)
       ]);
@@ -131,8 +132,9 @@ export default function Dashboard() {
   const fetchCustomerDashboard = async () => {
     setLoading(true);
     try {
-      let spendQuery = supabase.from('orders').select('total_amount');
-      let activeQuery = supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['pending', 'processing', 'ready_for_delivery', 'shipped']);
+      // 🚀 FIXED: Lifetime spend should only count delivered orders
+      let spendQuery = supabase.from('orders').select('total_amount').in('status', ['delivered', 'delivered_partial']);
+      let activeQuery = supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['pending', 'processing', 'ready_for_delivery', 'shipped', 'out_for_delivery']);
       let recentQuery = supabase.from('orders').select('id, created_at, total_amount, status').order('created_at', { ascending: false }).limit(5);
       let unpaidQuery = supabase.from('orders').select('total_amount').eq('payment_status', 'unpaid');
 
@@ -167,24 +169,36 @@ export default function Dashboard() {
   };
 
   const getStatusBadge = (status) => {
-    const styles = { pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', processing: 'bg-blue-50 text-blue-700 border-blue-200', ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', cancelled: 'bg-red-50 text-red-700 border-red-200' };
-    return (<span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{status.replace(/_/g, ' ')}</span>);
+    const displayStatus = status === 'delivered_partial' ? 'delivered' : status.replace(/_/g, ' ');
+    const styles = { 
+      pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', 
+      processing: 'bg-blue-50 text-blue-700 border-blue-200', 
+      ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', 
+      shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', 
+      out_for_delivery: 'bg-orange-50 text-orange-700 border-orange-200',
+      delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', 
+      delivered_partial: 'bg-emerald-50 text-emerald-700 border-emerald-200', 
+      cancelled: 'bg-red-50 text-red-700 border-red-200',
+      attempted: 'bg-amber-50 text-amber-700 border-amber-200',
+      restocked: 'bg-slate-100 text-slate-700 border-slate-300' 
+    };
+    return (<span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{displayStatus}</span>);
   };
 
   const getRevenueTitle = () => {
     if (filterType === 'month') {
       const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-      return `${months[parseInt(filterDetail)]} ${filterYear} Revenue`;
+      return `${months[parseInt(filterDetail)]} ${filterYear} Delivered Revenue`;
     }
-    if (filterType === 'quarter') return `Q${filterDetail} ${filterYear} Revenue`;
-    if (filterType === 'semester') return `H${filterDetail} ${filterYear} Revenue`;
-    if (filterType === 'annual') return `${filterYear} Annual Revenue`;
-    return 'Revenue';
+    if (filterType === 'quarter') return `Q${filterDetail} ${filterYear} Delivered Revenue`;
+    if (filterType === 'semester') return `H${filterDetail} ${filterYear} Delivered Revenue`;
+    if (filterType === 'annual') return `${filterYear} Annual Delivered Revenue`;
+    return 'Delivered Revenue';
   };
 
   if (loading) {
     return (
-      <div className="max-w-7xl mx-auto space-y-6">
+      <div className="max-w-7xl mx-auto space-y-6 px-4 sm:px-6 lg:px-8">
         <div className="h-10 w-48 bg-slate-200 rounded-lg animate-pulse mb-6"></div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {[1,2,3].map(n => <div key={n} className="h-32 bg-white rounded-3xl border border-slate-100 shadow-sm animate-pulse"></div>)}
@@ -198,7 +212,7 @@ export default function Dashboard() {
   // ==========================================
   if (profile?.role === 'driver') {
     return (
-      <div className="max-w-3xl mx-auto text-center py-20">
+      <div className="max-w-3xl mx-auto text-center py-20 px-4">
         <Truck size={64} className="mx-auto text-blue-600 mb-6" />
         <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight mb-2">Ready to hit the road?</h2>
         <p className="text-slate-500 mb-8">Your dashboard is located in the My Routes section.</p>
@@ -215,7 +229,7 @@ export default function Dashboard() {
   if (profile?.role === 'b2b' || profile?.role === 'retail' || profile?.role === 'user' || !profile?.role) {
     const isB2B = !!profile?.company_id;
     return (
-      <div className="max-w-6xl mx-auto space-y-6 pb-12">
+      <div className="max-w-6xl mx-auto space-y-6 pb-12 px-4 sm:px-6 lg:px-8">
         
         {/* HERO SECTION */}
         <div className="bg-slate-900 text-white rounded-3xl p-8 sm:p-10 shadow-lg relative overflow-hidden">
@@ -295,7 +309,7 @@ export default function Dashboard() {
                   <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Lifetime Spend</p>
                 </div>
                 <p className="text-4xl font-black text-slate-900 tracking-tight">${customerMetrics.totalSpend.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
-                <p className="text-sm font-medium text-slate-500 mt-1">Total account history</p>
+                <p className="text-sm font-medium text-slate-500 mt-1">Total account history (Delivered)</p>
               </div>
             </div>
           )}
@@ -309,12 +323,12 @@ export default function Dashboard() {
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm whitespace-nowrap">
-              <thead className="bg-white text-slate-500 border-b border-slate-100">
+              <thead className="bg-white text-slate-500 border-b border-slate-100 uppercase tracking-widest text-[10px]">
                 <tr>
-                  <th className="px-6 py-4 font-bold tracking-tight">Order ID</th>
-                  <th className="px-6 py-4 font-bold tracking-tight">Date Placed</th>
-                  <th className="px-6 py-4 font-bold tracking-tight">Status</th>
-                  <th className="px-6 py-4 font-bold tracking-tight text-right">Amount</th>
+                  <th className="px-6 py-4 font-bold">Order ID</th>
+                  <th className="px-6 py-4 font-bold">Date Placed</th>
+                  <th className="px-6 py-4 font-bold">Status</th>
+                  <th className="px-6 py-4 font-bold text-right">Amount</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
@@ -366,7 +380,7 @@ export default function Dashboard() {
   const availableSemesters = Array.from({ length: maxSemester }, (_, i) => i + 1);
 
   return (
-    <div className="max-w-7xl mx-auto space-y-8 pb-12">
+    <div className="max-w-7xl mx-auto space-y-8 pb-12 px-4 sm:px-6 lg:px-8">
       
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
@@ -491,13 +505,13 @@ export default function Dashboard() {
           </div>
           <div className="overflow-x-auto flex-1">
             <table className="w-full text-left text-sm whitespace-nowrap">
-              <thead className="bg-slate-50 text-slate-500">
+              <thead className="bg-slate-50 text-slate-500 uppercase tracking-widest text-[10px]">
                 <tr>
-                  <th className="px-6 py-3 font-bold tracking-tight">Order ID</th>
-                  <th className="px-6 py-3 font-bold tracking-tight">Customer</th>
-                  <th className="px-6 py-3 font-bold tracking-tight">Status</th>
+                  <th className="px-6 py-3 font-bold">Order ID</th>
+                  <th className="px-6 py-3 font-bold">Customer</th>
+                  <th className="px-6 py-3 font-bold">Status</th>
                   {profile?.role === 'admin' && (
-                    <th className="px-6 py-3 font-bold tracking-tight text-right">Amount</th>
+                    <th className="px-6 py-3 font-bold text-right">Amount</th>
                   )}
                 </tr>
               </thead>

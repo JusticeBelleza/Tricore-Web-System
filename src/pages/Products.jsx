@@ -111,7 +111,6 @@ export default function Products() {
   const fetchProducts = async () => {
     setLoading(true);
     try {
-      // EXPLICIT FETCH: Asking for unit_cost to bypass lazy cache
       let query = supabase.from('products').select(`
           *,
           unit_cost,
@@ -159,10 +158,29 @@ export default function Products() {
     setTimeout(() => setNotification({ show: false, title: '', message: '', isError: false }), 4000);
   };
 
+  // --- 🚀 IMPORT/EXPORT FIXES START HERE ---
+
+  // Helper to safely parse CSV lines honoring quotes
+  const parseCSVLine = (text) => {
+    let ret = [], inQuote = false, value = '';
+    for (let i = 0; i < text.length; i++) {
+      let char = text[i];
+      if (inQuote) {
+        if (char === '"') {
+          if (i < text.length - 1 && text[i+1] === '"') { value += '"'; i++; } else { inQuote = false; }
+        } else { value += char; }
+      } else {
+        if (char === '"') { inQuote = true; } else if (char === ',') { ret.push(value); value = ''; } else { value += char; }
+      }
+    }
+    ret.push(value);
+    return ret;
+  };
+
   const downloadTemplate = () => {
     const headers = "Name,Base_SKU,Unit_Cost,Retail_Price,Base_Unit,Category,Manufacturer,Initial_Stock\n";
-    const sample = "Premium Nitrile Gloves,GLV-NIT-01,8.50,15.99,Each,PPE,Tricore,100\n";
-    const blob = new Blob([headers + sample], { type: "text/csv" });
+    const sample = '"Premium Nitrile Gloves, Box","GLV-NIT-01",8.50,15.99,"Box","PPE","Tricore",100\n';
+    const blob = new Blob([headers + sample], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "product_import_template.csv"; a.click();
     showToast('Template Downloaded', 'The CSV import template has been saved.');
@@ -175,13 +193,26 @@ export default function Products() {
       const { data, error } = await supabase.from('products').select('*, unit_cost, inventory(base_units_on_hand)').order('name');
       if (error) throw error;
 
-      const headers = ["Name", "Base SKU", "Category", "Manufacturer", "Unit Cost", "Retail Price", "Stock On Hand"];
-      const rows = data.map(p => [
-        `"${p.name.replace(/"/g, '""')}"`, p.base_sku, `"${(p.category || '').replace(/"/g, '""')}"`,
-        `"${(p.manufacturer || '').replace(/"/g, '""')}"`, p.unit_cost || 0, p.retail_base_price, p.inventory?.base_units_on_hand || 0
-      ]);
+      const headers = ["Name", "Base_SKU", "Unit_Cost", "Retail_Price", "Base_Unit", "Category", "Manufacturer", "Initial_Stock"];
+      const rows = data.map(p => {
+        // Handle array or object from inventory properly
+        const stock = Array.isArray(p.inventory) 
+          ? p.inventory[0]?.base_units_on_hand 
+          : p.inventory?.base_units_on_hand;
+
+        return [
+          `"${(p.name || '').replace(/"/g, '""')}"`, 
+          `"${(p.base_sku || '').replace(/"/g, '""')}"`,
+          p.unit_cost || 0, 
+          p.retail_base_price || 0, 
+          `"${(p.base_unit_name || 'Each').replace(/"/g, '""')}"`,
+          `"${(p.category || '').replace(/"/g, '""')}"`,
+          `"${(p.manufacturer || '').replace(/"/g, '""')}"`, 
+          stock || 0
+        ];
+      });
       const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
-      const blob = new Blob([csvContent], { type: "text/csv" });
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a"); a.href = url; a.download = "tricore_catalog_export.csv"; a.click();
       showToast('Export Successful', `Exported ${data.length} products.`);
@@ -199,8 +230,16 @@ export default function Products() {
     try {
       const text = await file.text();
       const lines = text.split('\n').filter(line => line.trim() !== '');
+      
+      let importedCount = 0;
+
       for (let i = 1; i < lines.length; i++) {
-        const [name, base_sku, cost, price, unit, category, manufacturer, stock] = lines[i].split(',');
+        // Safe CSV parsing
+        const parsed = parseCSVLine(lines[i]);
+        if (parsed.length < 8) continue;
+
+        const [name, base_sku, cost, price, unit, category, manufacturer, stock] = parsed;
+        
         if (!name || !base_sku) continue;
 
         const { data: newProduct, error: productError } = await supabase.from('products').insert({
@@ -211,6 +250,8 @@ export default function Products() {
         }).select().single();
 
         if (productError) continue;
+        
+        importedCount++;
 
         await supabase.from('inventory').insert({ product_id: newProduct.id, base_units_on_hand: Number(stock) || 0, base_units_reserved: 0 });
         await supabase.from('product_variants').insert({ 
@@ -218,7 +259,7 @@ export default function Products() {
           multiplier: 1, unit_cost: Number(cost) || 0, price: Number(price) || 0 
         });
       }
-      showToast('Import Complete', 'Products imported successfully!');
+      showToast('Import Complete', `Successfully imported ${importedCount} products!`);
       fetchProducts();
       fetchCategories(); 
     } catch (error) {
@@ -228,6 +269,7 @@ export default function Products() {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
+  // --- 🚀 IMPORT/EXPORT FIXES END HERE ---
 
   const openCreateForm = () => {
     setEditingId(null);
@@ -249,7 +291,7 @@ export default function Products() {
       manufacturer: product.manufacturer || '', 
       category: product.category || '',
       continue_selling: product.continue_selling, 
-      initial_stock: product.inventory?.base_units_on_hand || 0
+      initial_stock: product.inventory?.base_units_on_hand || product.inventory?.[0]?.base_units_on_hand || 0
     });
     setExistingPhotos(product.image_urls || []);
     setVariants(product.product_variants || []);
@@ -392,7 +434,6 @@ export default function Products() {
           
         if (updateError) throw new Error(updateError.message);
         
-        // FAILSAFE: Alert if RLS blocked the update
         if (!updateData || updateData.length === 0) {
            throw new Error("Update blocked by database security (RLS). Ensure your SQL policies are updated.");
         }
@@ -539,7 +580,7 @@ export default function Products() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {products.map(product => {
-                  const stock = product.inventory?.base_units_on_hand || 0;
+                  const stock = product.inventory?.[0]?.base_units_on_hand || product.inventory?.base_units_on_hand || 0;
                   const isExpanded = expandedRows[product.id];
                   
                   return (
@@ -978,7 +1019,7 @@ export default function Products() {
               <div className="grid grid-cols-2 gap-4 bg-slate-50 p-6 rounded-2xl border border-slate-100">
                 <div><p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Manufacturer</p><p className="font-bold text-slate-900">{viewingProduct.manufacturer || 'N/A'}</p></div>
                 <div><p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Base Price</p><p className="font-extrabold text-slate-900 text-lg leading-none">${Number(viewingProduct.retail_base_price).toFixed(2)}</p></div>
-                <div className="col-span-2 pt-4 border-t border-slate-200 mt-2"><p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Current Stock on Hand</p><p className={`font-extrabold text-lg leading-none ${viewingProduct.inventory?.base_units_on_hand <= 10 ? 'text-red-600' : 'text-emerald-600'}`}>{viewingProduct.inventory?.base_units_on_hand || 0} <span className="text-sm font-bold text-slate-500">{viewingProduct.base_unit_name}s</span></p></div>
+                <div className="col-span-2 pt-4 border-t border-slate-200 mt-2"><p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Current Stock on Hand</p><p className={`font-extrabold text-lg leading-none ${viewingProduct.inventory?.base_units_on_hand <= 10 ? 'text-red-600' : 'text-emerald-600'}`}>{viewingProduct.inventory?.base_units_on_hand || viewingProduct.inventory?.[0]?.base_units_on_hand || 0} <span className="text-sm font-bold text-slate-500">{viewingProduct.base_unit_name}s</span></p></div>
               </div>
 
               {viewingProduct.description && (
