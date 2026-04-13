@@ -4,6 +4,9 @@ import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Mail, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight, ShieldCheck, X, Key, CheckCircle2 } from 'lucide-react';
 
+// 🚀 Import Turnstile
+import { Turnstile } from '@marsidev/react-turnstile';
+
 export default function Login() {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
@@ -14,6 +17,9 @@ export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   
+  // 🚀 Turnstile Token State
+  const [captchaToken, setCaptchaToken] = useState(null);
+
   // --- FORGOT PASSWORD STATE ---
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
@@ -40,11 +46,20 @@ export default function Login() {
         if (password.length < 6) {
           throw new Error('Password must be at least 6 characters long.');
         }
+        
+        // 🚀 Ensure Turnstile completed before allowing sign up
+        if (!captchaToken) {
+          throw new Error('Please wait for security verification to complete.');
+        }
 
+        // 🚀 Pass the token to Supabase
         const { error: signUpError } = await supabase.auth.signUp({
           email,
           password,
-          options: { data: { full_name: fullName } } 
+          options: { 
+            data: { full_name: fullName },
+            captchaToken // <--- Send token here
+          } 
         });
         
         if (signUpError) throw signUpError;
@@ -68,7 +83,7 @@ export default function Login() {
 
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
-        redirectTo: `${window.location.origin}/profile`, // Redirects user to profile to type new password
+        redirectTo: `${window.location.origin}/profile`, 
       });
 
       if (error) throw error;
@@ -237,7 +252,23 @@ export default function Login() {
             </div>
           )}
 
-          {/* 🚀 Remember Me & Forgot Password Row (Login Only) */}
+          {/* 🚀 TURNSTILE WIDGET (Only shown during Sign Up) */}
+          {!isLogin && (
+            <div className="flex justify-center py-2 animate-in fade-in duration-300">
+              <Turnstile 
+                siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY} 
+                onSuccess={(token) => {
+                  setCaptchaToken(token);
+                  setError('');
+                }}
+                onError={() => setError("Security verification failed. Please refresh the page.")}
+                onExpire={() => setCaptchaToken(null)}
+                options={{ theme: 'light' }}
+              />
+            </div>
+          )}
+
+          {/* Remember Me & Forgot Password Row (Login Only) */}
           {isLogin && (
             <div className="flex items-center justify-between pt-1 pb-2 px-1">
               <div className="flex items-center gap-2">
@@ -256,7 +287,7 @@ export default function Login() {
 
           <button
             type="submit"
-            disabled={loading || !email || !password || (!isLogin && (!fullName || password !== confirmPassword))}
+            disabled={loading || !email || !password || (!isLogin && (!fullName || password !== confirmPassword || !captchaToken))}
             className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-black hover:bg-slate-800 active:scale-[0.98] transition-all shadow-lg shadow-slate-900/20 disabled:opacity-70 mt-2 flex items-center justify-center gap-2 group"
           >
             {loading ? (
@@ -277,6 +308,7 @@ export default function Login() {
                 setError('');
                 setPassword('');
                 setConfirmPassword('');
+                setCaptchaToken(null); // Reset token if they switch tabs
               }}
               className="text-blue-600 font-bold hover:text-blue-700 hover:underline underline-offset-4 transition-all"
             >
