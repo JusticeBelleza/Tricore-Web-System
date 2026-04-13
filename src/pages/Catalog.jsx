@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
-import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown } from 'lucide-react';
+import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, Tag } from 'lucide-react';
 
 function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVariantPrice, onClick }) {
   const [selectedProductId, setSelectedProductId] = useState(familyProducts[0].id);
@@ -18,7 +18,9 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
   }, [selectedProductId, globalVariants]);
 
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
-  const { originalPrice: originalDisplayPrice, finalPrice: displayPrice, isDiscounted } = getVariantPrice(activeProduct, activeVariant);
+  
+  // 🚀 FIXED: Only destructure what we need for the clean UI
+  const { finalPrice: displayPrice, hasRule } = getVariantPrice(activeProduct, activeVariant);
 
   let stockAmount = 0;
   if (Array.isArray(activeProduct?.inventory)) {
@@ -35,13 +37,22 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
     <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-lg transition-all flex flex-row sm:flex-col overflow-hidden group ${preventPurchase ? 'opacity-80' : ''}`}>
       
       <div onClick={onClick} className="w-[120px] sm:w-full shrink-0 aspect-[3/4] sm:aspect-[4/3] bg-slate-50/50 relative p-2 sm:p-4 border-r sm:border-r-0 sm:border-b border-slate-100 flex items-center justify-center cursor-pointer overflow-hidden">
-        <div className="absolute top-2 left-2 sm:top-3 sm:left-3 z-10 flex flex-col gap-1">
+        
+        {/* Top Left Badges */}
+        <div className="absolute top-2 left-2 sm:top-3 sm:left-3 z-10 flex flex-col gap-1.5">
           {!isOutOfStock ? (
-            <span className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-emerald-50 text-emerald-700 text-[8px] sm:text-[9px] font-bold uppercase tracking-widest rounded shadow-sm border border-emerald-200">In Stock</span>
+            <span className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-emerald-50 text-emerald-700 text-[8px] sm:text-[9px] font-bold uppercase tracking-widest rounded shadow-sm border border-emerald-200 w-fit">In Stock</span>
           ) : continueSelling ? (
-            <span className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-amber-50 text-amber-700 text-[8px] sm:text-[9px] font-bold uppercase tracking-widest rounded shadow-sm border border-amber-200">Backorder</span>
+            <span className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-amber-50 text-amber-700 text-[8px] sm:text-[9px] font-bold uppercase tracking-widest rounded shadow-sm border border-amber-200 w-fit">Backorder</span>
           ) : (
-            <span className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-red-50 text-red-700 text-[8px] sm:text-[9px] font-bold uppercase tracking-widest rounded shadow-sm border border-red-200 flex items-center gap-1">Out <span className="hidden sm:inline">of Stock</span></span>
+            <span className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-red-50 text-red-700 text-[8px] sm:text-[9px] font-bold uppercase tracking-widest rounded shadow-sm border border-red-200 flex items-center gap-1 w-fit">Out <span className="hidden sm:inline">of Stock</span></span>
+          )}
+
+          {/* 🚀 NEW: Professional Contract Rate Badge */}
+          {hasRule && (
+            <span className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-blue-50 text-blue-700 text-[8px] sm:text-[9px] font-bold uppercase tracking-widest rounded shadow-sm border border-blue-200 flex items-center gap-1 w-fit">
+              <Tag size={10} /> Contract
+            </span>
           )}
         </div>
 
@@ -56,7 +67,7 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
       </div>
 
       <div className="p-3 sm:p-5 flex flex-col flex-1 min-w-0">
-        <div onClick={onClick} className="cursor-pointer mb-2 sm:mb-4">
+        <div onClick={onClick} className="cursor-pointer mb-2 sm:mb-4 flex-1">
           <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1 truncate">{activeProduct.category || 'General'}</p>
           <h3 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight leading-snug mb-1 sm:mb-2 line-clamp-2">{familyName}</h3>
           
@@ -69,49 +80,12 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
           </div>
         </div>
 
-        <div className="space-y-2 sm:space-y-4 mb-3 sm:mb-6 flex-1">
-          {(familyProducts.length > 1 || familyProducts[0].name.includes(' - ')) && (
-            <div>
-              <p className="hidden sm:block text-[9px] font-bold text-slate-400 mb-1.5 uppercase tracking-widest">Size</p>
-              <div className="flex flex-wrap gap-1 sm:gap-1.5">
-                {familyProducts.map(p => {
-                  const parts = p.name.split(' - ');
-                  const sizeName = parts.length > 1 ? parts[1].trim() : 'Standard';
-                  const isActive = selectedProductId === p.id;
-                  return (
-                    <button key={p.id} onClick={() => setSelectedProductId(p.id)} className={`px-1.5 py-0.5 sm:px-2.5 sm:py-1 text-[9px] sm:text-[11px] font-semibold rounded sm:rounded-md border transition-all duration-200 ${isActive ? 'border-slate-900 bg-slate-900 text-white shadow-sm' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-900 hover:text-slate-900'}`}>
-                      {sizeName}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {activeVariants.length > 0 && (
-            <div>
-              <p className="hidden sm:block text-[9px] font-bold text-slate-400 mb-1.5 uppercase tracking-widest">Packaging</p>
-              <div className="flex flex-wrap gap-1 sm:gap-1.5">
-                {activeVariants.map(v => {
-                  const isActive = selectedVariantId === v.id;
-                  return (
-                    <button key={v.id} onClick={() => setSelectedVariantId(v.id)} className={`px-1.5 py-0.5 sm:px-2.5 sm:py-1 text-[9px] sm:text-[11px] font-semibold rounded sm:rounded-md border transition-all duration-200 ${isActive ? 'border-slate-900 bg-slate-900 text-white shadow-sm' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-900 hover:text-slate-900'}`}>
-                      {v.name}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-
         <div className="mt-auto pt-2 sm:pt-4 flex items-center sm:items-end justify-between border-t border-slate-100">
           <div>
-            {isDiscounted && <p className="text-[9px] sm:text-[10px] font-medium line-through text-slate-400 mb-0.5">${originalDisplayPrice.toFixed(2)}</p>}
             <p className="text-base sm:text-xl font-bold text-slate-900 tracking-tight leading-none">${displayPrice.toFixed(2)}</p>
           </div>
           <button onClick={onClick} className="px-3 py-1.5 sm:px-3.5 sm:py-1.5 bg-slate-900 text-white sm:bg-white sm:border sm:border-slate-200 sm:text-slate-900 text-[10px] sm:text-[11px] font-bold rounded-lg sm:hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
-            {preventPurchase ? 'Details' : 'Add'}
+            {preventPurchase ? 'Details' : 'View Options'}
           </button>
         </div>
       </div>
@@ -132,7 +106,7 @@ export default function Catalog() {
   
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
-  const pageSize = 24; 
+  const pageSize = 12; // 🚀 Adjusted for cleaner grid layout
   const [searchTerm, setSearchTerm] = useState('');
   
   const [selectedCategory, setSelectedCategory] = useState('All Categories');
@@ -179,7 +153,7 @@ export default function Catalog() {
   }, [cart, cartLoaded, profile?.id, cartKey]);
 
   const [viewingFamily, setViewingFamily] = useState(null); 
-  const [isClosing, setIsClosing] = useState(false); // 🚀 NEW: Tracks closing animation state
+  const [isClosing, setIsClosing] = useState(false); 
   const [toast, setToast] = useState({ show: false, message: '' });
   const [isAddingToCart, setIsAddingToCart] = useState(false);
 
@@ -197,6 +171,7 @@ export default function Catalog() {
 
   useEffect(() => {
     fetchCatalogData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id, profile?.role, profile?.company_id, debouncedSearch, selectedCategory, page]);
 
   const fetchCatalogData = async () => {
@@ -250,17 +225,38 @@ export default function Catalog() {
     }
   };
 
+  // 🚀 FIXED PRICING ENGINE
   const getVariantPrice = (product, variant) => {
-    if (!product) return { originalPrice: 0, finalPrice: 0, isDiscounted: false };
-    const rule = pricingRules.find(r => r.variant_id === variant?.id);
-    const baseRetail = Number(product.retail_base_price);
+    if (!product) return { finalPrice: 0, hasRule: false };
+    
+    const baseRetail = Number(product.retail_base_price || 0);
     const variantRetail = (variant && Number(variant.price) > 0) ? Number(variant.price) : (baseRetail * (variant?.multiplier || 1));
-    let finalPrice = variantRetail;
-    if (rule) {
-      if (rule.rule_type === 'fixed') finalPrice = Number(rule.value);
-      else if (rule.rule_type === 'percentage') finalPrice = variantRetail * (1 - (Number(rule.value) / 100));
+    
+    if (!profile?.company_id || pricingRules.length === 0) {
+      return { finalPrice: variantRetail, hasRule: false };
     }
-    return { originalPrice: variantRetail, finalPrice: finalPrice, isDiscounted: finalPrice < variantRetail };
+
+    let applicableRule = 
+      pricingRules.find(r => r.variant_id === variant?.id) ||
+      pricingRules.find(r => r.product_id === product.id) ||
+      pricingRules.find(r => r.category === product.category) ||
+      pricingRules.find(r => r.rule_type === 'global');
+
+    if (!applicableRule) return { finalPrice: variantRetail, hasRule: false };
+
+    let finalPrice = variantRetail;
+    if (applicableRule.discount_type === 'percentage') {
+      finalPrice = variantRetail * (1 - Number(applicableRule.discount_value) / 100);
+    } else if (applicableRule.discount_type === 'fixed_amount') {
+      finalPrice = Math.max(0, variantRetail - Number(applicableRule.discount_value));
+    } else if (applicableRule.discount_type === 'fixed_price') {
+      finalPrice = Number(applicableRule.discount_value);
+    }
+
+    return { 
+      finalPrice: finalPrice, 
+      hasRule: finalPrice < variantRetail 
+    };
   };
 
   const groupedProducts = useMemo(() => {
@@ -300,16 +296,15 @@ export default function Catalog() {
     setSelectedVariantId(defaultVariants[0]?.id || '');
     setQuantity(1);
     setIsAddingToCart(false); 
-    setIsClosing(false); // Reset closing state
+    setIsClosing(false); 
   };
 
-  // 🚀 NEW: Close Modal Handler
   const handleCloseModal = () => {
     setIsClosing(true);
     setTimeout(() => {
       setViewingFamily(null);
       setIsClosing(false);
-    }, 300); // Matches the animation duration below
+    }, 300); 
   };
 
   const handleSizeChange = (newProductId) => {
@@ -343,7 +338,7 @@ export default function Catalog() {
     });
 
     setTimeout(() => {
-      handleCloseModal(); // Smooth close after adding
+      handleCloseModal(); 
       setIsAddingToCart(false);
       setToast({ show: true, message: `Added ${quantity}x ${variant.name} to cart.` });
       setTimeout(() => { setToast({ show: false, message: '' }); }, 3000);
@@ -353,7 +348,7 @@ export default function Catalog() {
   const activeProduct = viewingFamily ? viewingFamily.familyProducts.find(p => p.id === selectedProductId) : null;
   const activeVariants = activeProduct ? variants.filter(v => v.product_id === activeProduct.id) : [];
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
-  const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
+  const { finalPrice: displayPrice, hasRule: modalHasRule } = getVariantPrice(activeProduct, activeVariant);
 
   let modalStockAmount = 0;
   if (Array.isArray(activeProduct?.inventory)) {
@@ -369,7 +364,7 @@ export default function Catalog() {
   return (
     <div className="space-y-4 sm:space-y-6 pb-20 relative max-w-7xl mx-auto px-4 sm:px-6">
       
-      {/* 🚀 CSS ANIMATIONS: Now supports opening AND closing smoothly! */}
+      {/* 🚀 CSS ANIMATIONS */}
       <style>
         {`
           /* Opening Animations */
@@ -408,8 +403,8 @@ export default function Catalog() {
           <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Catalog</h2>
           {profile?.role?.toLowerCase() === 'b2b' ? (
             <div className="mt-2 sm:mt-3 flex flex-wrap items-center gap-2 sm:gap-3">
-              <span className="px-2.5 py-1 bg-blue-50 text-blue-700 text-[10px] sm:text-[11px] font-bold uppercase tracking-widest rounded-lg border border-blue-100">
-                B2B Applied
+              <span className="px-2.5 py-1 bg-blue-50 text-blue-700 text-[10px] sm:text-[11px] font-bold uppercase tracking-widest rounded-lg border border-blue-100 flex items-center gap-1.5">
+                <Tag size={12}/> Contract Pricing Active
               </span>
               <div className="flex items-center gap-1.5 sm:gap-2 text-[11px] sm:text-xs font-medium text-slate-500 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-sm">
                 <Wallet size={14} className="text-slate-400" />
@@ -435,9 +430,9 @@ export default function Catalog() {
           <button 
             onClick={() => navigate('/checkout')}
             disabled={cart.length === 0}
-            className="px-4 py-2 sm:px-5 sm:py-2.5 bg-slate-900 text-white text-xs sm:text-sm font-semibold rounded-lg sm:rounded-xl hover:bg-slate-800 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+            className="px-4 py-2 sm:px-5 sm:py-2.5 bg-slate-900 text-white text-xs sm:text-sm font-semibold rounded-lg sm:rounded-xl hover:bg-slate-800 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm flex items-center gap-2"
           >
-            Checkout
+            <ShoppingCart size={16}/> Checkout
           </button>
         </div>
       </div>
@@ -458,7 +453,6 @@ export default function Catalog() {
             />
           </div>
 
-          {/* 🚀 CUSTOM DROPDOWN FIX */}
           <div className="relative w-full sm:w-64 shrink-0" ref={categoryDropdownRef}>
             <button 
               onClick={() => setIsCategoryOpen(!isCategoryOpen)}
@@ -541,6 +535,12 @@ export default function Catalog() {
             
             {/* Left/Top: Image Side */}
             <div className="w-full sm:w-1/2 bg-slate-50/50 flex flex-col justify-center items-center p-6 sm:p-8 border-b sm:border-b-0 sm:border-r border-slate-100 h-[35dvh] sm:h-auto sm:min-h-[400px] shrink-0 relative">
+              {modalHasRule && (
+                <div className="absolute top-6 left-6 z-10 bg-blue-50 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest shadow-md border border-blue-200 flex items-center gap-1.5">
+                  <Tag size={14} /> Contract Pricing Applied
+                </div>
+              )}
+
               {activeProduct.image_urls?.[0] ? (
                 <img src={activeProduct.image_urls[0]} alt="" className={`w-full h-full object-contain mix-blend-multiply ${modalPreventPurchase ? 'grayscale opacity-75' : ''}`} />
               ) : (

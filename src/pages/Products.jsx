@@ -158,7 +158,7 @@ export default function Products() {
     setTimeout(() => setNotification({ show: false, title: '', message: '', isError: false }), 4000);
   };
 
-  // --- 🚀 IMPORT/EXPORT FIXES START HERE ---
+  // --- 🚀 IMPORT/EXPORT Logic ---
 
   // Helper to safely parse CSV lines honoring quotes
   const parseCSVLine = (text) => {
@@ -195,7 +195,6 @@ export default function Products() {
 
       const headers = ["Name", "Base_SKU", "Unit_Cost", "Retail_Price", "Base_Unit", "Category", "Manufacturer", "Initial_Stock"];
       const rows = data.map(p => {
-        // Handle array or object from inventory properly
         const stock = Array.isArray(p.inventory) 
           ? p.inventory[0]?.base_units_on_hand 
           : p.inventory?.base_units_on_hand;
@@ -234,12 +233,10 @@ export default function Products() {
       let importedCount = 0;
 
       for (let i = 1; i < lines.length; i++) {
-        // Safe CSV parsing
         const parsed = parseCSVLine(lines[i]);
         if (parsed.length < 8) continue;
 
         const [name, base_sku, cost, price, unit, category, manufacturer, stock] = parsed;
-        
         if (!name || !base_sku) continue;
 
         const { data: newProduct, error: productError } = await supabase.from('products').insert({
@@ -269,7 +266,6 @@ export default function Products() {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
-  // --- 🚀 IMPORT/EXPORT FIXES END HERE ---
 
   const openCreateForm = () => {
     setEditingId(null);
@@ -385,6 +381,7 @@ export default function Products() {
   };
 
   const formatText = (command, value = null) => { document.execCommand(command, false, value); if (editorRef.current) editorRef.current.focus(); checkFormats(); };
+  
   const handleEditorKeyDown = (e) => {
     if (e.key === 'Tab') {
       e.preventDefault(); 
@@ -497,10 +494,14 @@ export default function Products() {
       onConfirm: async () => {
         setConfirmAction({ show: false, title: '', message: '', onConfirm: null });
         try {
+          await supabase.from('inventory').delete().eq('product_id', id);
+          await supabase.from('product_variants').delete().eq('product_id', id);
+          
           const { error } = await supabase.from('products').delete().eq('id', id);
           if (error) throw error;
+          
           fetchProducts();
-          showToast('Product Deleted', 'The product was successfully removed.');
+          showToast('Product Deleted', 'The product and its variants were successfully removed.');
         } catch (error) {
           showToast('Delete Error', 'Cannot delete this product. It is likely linked to an existing customer order.', true);
         }
@@ -586,19 +587,20 @@ export default function Products() {
                   return (
                     <React.Fragment key={product.id}>
                       <tr className={`group transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-900' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}>
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-4">
-                            <button onClick={() => toggleRow(product.id)} className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-90' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`} title={isExpanded ? "Hide Variants" : "Show Variants"}>
+                        {/* 🚀 CLEAN WRAPPING UI FOR PRODUCT NAMES */}
+                        <td className="px-6 py-4 whitespace-normal max-w-xs sm:max-w-sm">
+                          <div className="flex items-start gap-4">
+                            <button onClick={() => toggleRow(product.id)} className={`mt-0.5 p-1.5 rounded-lg transition-transform duration-200 shrink-0 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-90' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`} title={isExpanded ? "Hide Variants" : "Show Variants"}>
                               <ChevronRight size={18} />
                             </button>
                             {product.image_urls?.[0] ? (
-                              <img src={product.image_urls[0]} className="w-12 h-12 rounded-xl object-cover border border-slate-200 shadow-sm" alt="" />
+                              <img src={product.image_urls[0]} className="w-12 h-12 rounded-xl object-cover border border-slate-200 shadow-sm shrink-0" alt="" />
                             ) : (
-                              <div className="w-12 h-12 bg-slate-100 border border-slate-200 rounded-xl flex items-center justify-center shadow-sm"><ImageIcon size={20} className="text-slate-400"/></div>
+                              <div className="w-12 h-12 bg-slate-100 border border-slate-200 rounded-xl flex items-center justify-center shadow-sm shrink-0"><ImageIcon size={20} className="text-slate-400"/></div>
                             )}
-                            <div>
-                              <p className="font-bold text-slate-900 text-base">{product.name}</p>
-                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1.5"><Hash size={12}/> {product.base_sku}</p>
+                            <div className="pt-0.5">
+                              <p className="font-bold text-slate-900 text-[13px] leading-snug">{product.name}</p>
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1.5 flex items-center gap-1.5"><Hash size={12}/> {product.base_sku}</p>
                             </div>
                           </div>
                         </td>
@@ -787,6 +789,7 @@ export default function Products() {
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('justifyRight'); }} className={getFormatClass(activeFormats.alignRight)}><AlignRight size={16}/></button>
                     <div className="w-px h-5 bg-slate-200 mx-2"></div>
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('insertUnorderedList'); }} className={getFormatClass(activeFormats.unorderedList)}><List size={16}/></button>
+                    {/* 🚀 TYPO FIXED HERE: <ListOrdered /> */}
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('insertOrderedList'); }} className={getFormatClass(activeFormats.orderedList)}><ListOrdered size={16}/></button>
                   </div>
                   <div ref={editorRef} contentEditable onInput={handleEditorInput} onKeyDown={handleEditorKeyDown} onKeyUp={checkFormats} onMouseUp={checkFormats} onClick={checkFormats} className="p-4 min-h-[100px] max-h-[250px] overflow-y-auto outline-none text-sm text-slate-700 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:mt-1 leading-relaxed" />

@@ -1,12 +1,28 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { 
-  Calendar, Download, DollarSign, ShoppingCart, 
+  Download, DollarSign, ShoppingCart, 
   TrendingUp, FileText, Search, ArrowRight, Package, FileDown, FileBarChart,
   ChevronLeft, ChevronRight, Loader2, ChevronDown, Percent, CreditCard, Lock
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+
+// 🚀 STRICT DATE FORMATTERS (Ensures MM/DD/YYYY everywhere)
+const formatToMMDDYYYY = (dateString) => {
+  if (!dateString) return 'N/A';
+  const d = new Date(dateString);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  return `${mm}/${dd}/${yyyy}`;
+};
+
+const formatInputDateForDisplay = (yyyy_mm_dd) => {
+  if (!yyyy_mm_dd) return 'N/A';
+  const [y, m, d] = yyyy_mm_dd.split('-');
+  return `${m}/${d}/${y}`;
+};
 
 export default function Reports() {
   const [reportType, setReportType] = useState('itemized'); 
@@ -52,6 +68,36 @@ export default function Reports() {
     { value: 'warehouse_summary', label: 'Warehouse Order Summary' }
   ];
 
+  // 🚀 QUICK DATE SELECTION LOGIC
+  const setQuickDate = (preset) => {
+    const end = new Date();
+    const start = new Date();
+
+    if (preset === 'today') {
+      // Both stay as today
+    } else if (preset === '7days') {
+      start.setDate(end.getDate() - 7);
+    } else if (preset === '30days') {
+      start.setDate(end.getDate() - 30);
+    }
+
+    setStartDate(start.toISOString().split('T')[0]);
+    setEndDate(end.toISOString().split('T')[0]);
+  };
+
+  const getActiveQuickDate = () => {
+    const today = new Date().toISOString().split('T')[0];
+    const d7 = new Date(); d7.setDate(d7.getDate() - 7); const days7 = d7.toISOString().split('T')[0];
+    const d30 = new Date(); d30.setDate(d30.getDate() - 30); const days30 = d30.toISOString().split('T')[0];
+
+    if (endDate === today && startDate === today) return 'today';
+    if (endDate === today && startDate === days7) return '7days';
+    if (endDate === today && startDate === days30) return '30days';
+    return 'custom';
+  };
+
+  const activeDateFilter = getActiveQuickDate();
+
   useEffect(() => {
     const fetchUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -96,7 +142,7 @@ export default function Reports() {
       fetchTableData();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startDate, endDate, reportType, debouncedSearch, currentPage, pageSize, authLoading]);
+  }, [startDate, endDate, reportType, debouncedSearch, authLoading]);
 
   const fetchKPIs = async () => {
     const adjustedEndDate = new Date(endDate);
@@ -152,44 +198,56 @@ export default function Reports() {
       const adjustedEndDate = new Date(endDate);
       adjustedEndDate.setHours(23, 59, 59, 999);
 
-      const from = (currentPage - 1) * pageSize;
-      const to = from + pageSize - 1;
-
       let query = supabase.from('orders').select(`
         id, created_at, status, subtotal, shipping_amount, tax_amount, total_amount, company_id,
         shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
         companies ( name )
         ${reportType === 'itemized' ? `, order_items ( quantity_variants, unit_price, line_total, status, product_variants ( name, sku, products ( name, base_sku ) ) )` : ''}
-      `, { count: 'exact' })
+      `)
       .in('status', ['delivered', 'delivered_partial'])
       .gte('created_at', new Date(startDate).toISOString())
       .lte('created_at', adjustedEndDate.toISOString())
       .order('created_at', { ascending: false });
 
-      if (debouncedSearch) {
-        const cleanSearch = debouncedSearch.trim();
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanSearch);
-        
-        const { data: compData } = await supabase
-          .from('companies')
-          .select('id')
-          .ilike('name', `%${cleanSearch}%`);
-        const compIds = compData?.map(c => c.id) || [];
+      let allData = [];
+      let currentOffset = 0;
+      const chunk = 1000;
+      let hasMore = true;
 
-        const orFilters = [`shipping_name.ilike.%${cleanSearch}%`];
-        if (isUUID) orFilters.push(`id.eq.${cleanSearch}`);
-        if (compIds.length > 0) orFilters.push(`company_id.in.(${compIds.join(',')})`);
-
-        query = query.or(orFilters.join(','));
+      while (hasMore) {
+        const { data, error } = await query.range(currentOffset, currentOffset + chunk - 1);
+        if (error) throw error;
+        allData = [...allData, ...data];
+        if (data.length < chunk) hasMore = false;
+        currentOffset += chunk;
       }
 
-      const { data, count, error } = await query.range(from, to);
-      if (error) throw error;
+      let formatted = formatData(allData);
 
-      let formatted = formatData(data || []);
+      if (debouncedSearch) {
+        const s = debouncedSearch.trim().toLowerCase();
+        formatted = formatted.filter(row => {
+          if (reportType === 'itemized') {
+            return (
+              (row.orderId && row.orderId.toLowerCase().includes(s)) ||
+              (row.customer && row.customer.toLowerCase().includes(s)) ||
+              (row.patientName && row.patientName.toLowerCase().includes(s)) ||
+              (row.product && row.product.toLowerCase().includes(s)) ||
+              (row.sku && row.sku.toLowerCase().includes(s)) ||
+              (row.streetAddress && row.streetAddress.toLowerCase().includes(s))
+            );
+          } else {
+            return (
+              (row.id && row.id.toLowerCase().includes(s)) ||
+              (row.customer && row.customer.toLowerCase().includes(s)) ||
+              (row.streetAddress && row.streetAddress.toLowerCase().includes(s))
+            );
+          }
+        });
+      }
 
       setTableData(formatted);
-      setTotalCount(count || 0); 
+      setTotalCount(formatted.length); 
     } catch (error) {
       console.error('Error fetching table data:', error.message);
     } finally {
@@ -326,7 +384,6 @@ export default function Reports() {
         const qty = Number(row.quantity_variants || 0);
         const lineTotal = Number(row.line_total || 0);
         
-        // Since cost_price isn't in DB yet, fallback safely to 0
         const costPrice = 0;
         const lineCogs = qty * costPrice;
 
@@ -506,7 +563,7 @@ export default function Reports() {
           
           formatted.push({
             orderId: order.id.substring(0, 8).toUpperCase(),
-            date: new Date(order.created_at).toLocaleDateString(),
+            date: formatToMMDDYYYY(order.created_at),
             customer,
             patientName: order.shipping_name || 'N/A',
             product: item.product_variants?.products?.name || item.product_variants?.name || 'Unknown Product',
@@ -520,7 +577,7 @@ export default function Reports() {
       } else {
         formatted.push({
           id: order.id.substring(0, 8).toUpperCase(),
-          date: new Date(order.created_at).toLocaleDateString(),
+          date: formatToMMDDYYYY(order.created_at),
           customer, streetAddress, city, state, zipCode,
           isCA: ['ca', 'california'].includes(state.toLowerCase()),
           subtotal: Number(order.subtotal || 0),
@@ -533,57 +590,10 @@ export default function Reports() {
     return formatted;
   };
 
-  const fetchFullDataForExport = async () => {
-    const adjustedEndDate = new Date(endDate);
-    adjustedEndDate.setHours(23, 59, 59, 999);
-
-    let query = supabase.from('orders').select(`
-      id, created_at, status, subtotal, shipping_amount, tax_amount, total_amount, company_id,
-      shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
-      companies ( name, address, city, state, zip )
-      ${reportType === 'itemized' ? `, order_items ( quantity_variants, unit_price, line_total, status, product_variants ( name, sku, products ( name, base_sku ) ) )` : ''}
-    `)
-    .in('status', ['delivered', 'delivered_partial'])
-    .gte('created_at', new Date(startDate).toISOString())
-    .lte('created_at', adjustedEndDate.toISOString())
-    .order('created_at', { ascending: false });
-
-    if (debouncedSearch) {
-      const cleanSearch = debouncedSearch.trim();
-      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanSearch);
-      
-      const { data: compData } = await supabase
-        .from('companies')
-        .select('id')
-        .ilike('name', `%${cleanSearch}%`);
-      const compIds = compData?.map(c => c.id) || [];
-
-      const orFilters = [`shipping_name.ilike.%${cleanSearch}%`];
-      if (isUUID) orFilters.push(`id.eq.${cleanSearch}`);
-      if (compIds.length > 0) orFilters.push(`company_id.in.(${compIds.join(',')})`);
-
-      query = query.or(orFilters.join(','));
-    }
-
-    let allData = [];
-    let currentOffset = 0;
-    const chunk = 1000;
-    let hasMore = true;
-
-    while (hasMore) {
-      const { data, error } = await query.range(currentOffset, currentOffset + chunk - 1);
-      if (error) throw error;
-      allData = [...allData, ...data];
-      if (data.length < chunk) hasMore = false;
-      currentOffset += chunk;
-    }
-
-    return formatData(allData);
-  };
-
   const paginatedTopProducts = topProductsData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const paginatedProfitability = profitabilityData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const paginatedWarehouse = warehouseData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const paginatedTableData = tableData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   const exportToCSV = async () => {
     setIsExporting(true);
@@ -626,7 +636,7 @@ export default function Reports() {
         fileName = `Tricore_Warehouse_Order_Summary_${startDate}_to_${endDate}.csv`;
 
       } else {
-        const fullExportData = await fetchFullDataForExport();
+        const fullExportData = tableData;
 
         const headers = reportType === 'itemized' 
           ? ["Order ID", "Date", "Agency/Customer", "Patient Name", "Product", "Variant", "SKU", "Qty", "Street", "City", "State", "Zip"]
@@ -714,10 +724,10 @@ export default function Reports() {
       doc.text(title, pageWidth - 14, 18, { align: "right" });
       
       doc.setFontSize(10); doc.setFont("helvetica", "normal"); doc.setTextColor(100, 100, 100);
-      const startStr = new Date(startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const endStr = new Date(endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      doc.text(`Period: ${startStr} - ${endStr}`, pageWidth - 14, 25, { align: "right" });
-      doc.text(`Date: ${new Date().toLocaleDateString()}`, pageWidth - 14, 30, { align: "right" });
+      
+      // 🚀 Format PDF Dates to strict MM/DD/YYYY
+      doc.text(`Period: ${formatInputDateForDisplay(startDate)} - ${formatInputDateForDisplay(endDate)}`, pageWidth - 14, 25, { align: "right" });
+      doc.text(`Date: ${formatToMMDDYYYY(new Date().toISOString())}`, pageWidth - 14, 30, { align: "right" });
       
       tableStartY = textStartY + 12; 
     };
@@ -810,7 +820,7 @@ export default function Reports() {
       doc.save(`Tricore_Profitability_Report_${startDate}_to_${endDate}.pdf`);
 
     } else {
-      const fullExportData = await fetchFullDataForExport();
+      const fullExportData = tableData;
       
       let tableRows = [];
       if (reportType === 'ca_tax') {
@@ -850,8 +860,8 @@ export default function Reports() {
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12 relative px-4 sm:px-6">
       
-      {/* --- HEADER --- */}
-      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 pb-2">
+      {/* --- HEADER (Export Buttons Moved Here!) --- */}
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-6 pb-2">
         <div className="flex items-center gap-4">
           <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md shrink-0">
             <FileBarChart size={28} strokeWidth={1.5} />
@@ -861,144 +871,126 @@ export default function Reports() {
             <p className="text-xs md:text-sm text-slate-500 mt-1 font-medium">Manage and generate location-based order summaries.</p>
           </div>
         </div>
+
+        {/* Export Actions in Header */}
+        <div className="flex gap-3 w-full sm:w-auto shrink-0">
+          <button onClick={exportToCSV} disabled={totalCount === 0 || loading || isExporting} className="flex-1 sm:flex-none px-5 py-3 bg-white text-slate-700 border border-slate-200 text-sm font-bold rounded-2xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm flex items-center justify-center gap-2 min-w-[100px] disabled:opacity-50">
+            {isExporting ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />} CSV
+          </button>
+          <button onClick={exportToPDF} disabled={totalCount === 0 || loading || isExporting} className="flex-1 sm:flex-none px-5 py-3 bg-slate-900 text-white text-sm font-bold rounded-2xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center justify-center gap-2 min-w-[130px] disabled:opacity-50">
+            {isExporting ? <Loader2 className="animate-spin" size={16} /> : <FileDown size={16} />} Print PDF
+          </button>
+        </div>
       </div>
 
-      {/* --- CONTROL PANEL --- */}
-      <div className="bg-white p-4 md:p-6 rounded-3xl border border-slate-200 shadow-sm space-y-6">
-        <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-6">
+      {/* --- REDESIGNED CONTROL PANEL --- */}
+      <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-5">
+        
+        {/* Filters Row */}
+        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6">
           
-          <div className="flex flex-col md:flex-row gap-6 items-start md:items-center w-full xl:w-auto">
+          <div className="flex flex-col md:flex-row gap-6 items-start md:items-end w-full">
             
-            {authLoading ? (
-              <div className="w-full md:w-72 lg:w-80 h-[46px] bg-slate-100 animate-pulse rounded-2xl shrink-0"></div>
-            ) : (
-              <div className="w-full md:w-72 lg:w-80 shrink-0 relative z-20">
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">
-                  Report Type
-                </label>
-                
-                {userRole === 'warehouse' ? (
-                  <div className="relative w-full flex items-center justify-between pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-500 shadow-sm cursor-not-allowed">
-                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 flex items-center justify-center">
-                      <FileText size={18} />
-                    </div>
-                    <span className="truncate pr-2">Warehouse Order Summary</span>
-                    <div className="text-slate-400 shrink-0 flex items-center justify-center">
-                      <Lock size={16} />
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <button 
-                      type="button"
-                      onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                      className={`
-                        relative w-full flex items-center justify-between pl-11 pr-4 py-3 
-                        bg-blue-50 border border-blue-200 
-                        rounded-2xl outline-none transition-all 
-                        focus:ring-4 focus:ring-blue-100 focus:border-blue-400
-                        text-sm font-bold text-blue-900 shadow-sm cursor-pointer hover:bg-blue-100/50
-                      `}
-                    >
-                      <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-500 pointer-events-none">
-                        <FileText size={18} />
-                      </div>
-                      
-                      <span className="truncate pr-2">
-                        {adminReportOptions.find(o => o.value === reportType)?.label || 'Select Report'}
-                      </span>
-                      
-                      <div className="text-blue-400 pointer-events-none shrink-0">
-                        <ChevronDown size={18} className={`transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`} />
-                      </div>
-                    </button>
-
-                    {isDropdownOpen && (
-                      <>
-                        <div 
-                          className="fixed inset-0 z-30" 
-                          onClick={() => setIsDropdownOpen(false)}
-                        ></div>
-                        
-                        <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-blue-100 rounded-2xl shadow-xl overflow-hidden z-40 py-1">
-                          {adminReportOptions.map((option) => (
-                            <button
-                              key={option.value}
-                              onClick={() => {
-                                setTableData([]); 
-                                setWarehouseData([]);
-                                setTopProductsData([]);
-                                setProfitabilityData([]);
-                                setReportType(option.value); 
-                                setSearchTerm(''); 
-                                setIsDropdownOpen(false);
-                              }}
-                              className={`
-                                w-full text-left px-4 py-3 text-sm font-bold transition-colors
-                                ${reportType === option.value 
-                                  ? 'bg-blue-600 text-white' 
-                                  : 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'
-                                }
-                              `}
-                            >
-                              {option.label}
-                            </button>
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
-
-            <div className="hidden md:block w-px h-12 bg-slate-100 mx-2"></div>
-
-            <div className="flex flex-col sm:flex-row gap-4 items-center w-full md:w-auto">
-              <div className="w-full sm:w-auto">
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Start Date</label>
-                <div className="relative">
-                  <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full sm:w-40 pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-700" />
+            {/* Report Type Selector */}
+            <div className="w-full md:w-64 shrink-0">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Report Type</label>
+              {authLoading ? (
+                <div className="w-full h-[42px] bg-slate-100 animate-pulse rounded-xl"></div>
+              ) : userRole === 'warehouse' ? (
+                <div className="relative w-full flex items-center justify-between px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-500 shadow-sm cursor-not-allowed">
+                  <span className="flex items-center gap-2 truncate">
+                    <FileText size={16} className="text-slate-400" /> Warehouse Order Summary
+                  </span>
+                  <Lock size={14} className="text-slate-400 shrink-0" />
                 </div>
-              </div>
-              <ArrowRight className="hidden sm:block text-slate-300 mt-5" size={18} />
-              <div className="w-full sm:w-auto">
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">End Date</label>
-                <div className="relative">
-                  <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full sm:w-40 pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-700" />
+              ) : (
+                <div className="relative z-20">
+                  <button 
+                    type="button"
+                    onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                    className={`relative w-full flex items-center justify-between px-4 py-2.5 bg-blue-50/80 border border-blue-200 rounded-xl outline-none transition-all focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm font-bold text-blue-900 shadow-sm hover:bg-blue-100/50`}
+                  >
+                    <span className="flex items-center gap-2 truncate">
+                      <FileText size={16} className="text-blue-500 shrink-0" />
+                      {adminReportOptions.find(o => o.value === reportType)?.label || 'Select Report'}
+                    </span>
+                    <ChevronDown size={16} className={`text-blue-400 shrink-0 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {isDropdownOpen && (
+                    <>
+                      <div className="fixed inset-0 z-30" onClick={() => setIsDropdownOpen(false)}></div>
+                      <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-blue-100 rounded-2xl shadow-xl overflow-hidden z-40 py-1">
+                        {adminReportOptions.map((option) => (
+                          <button
+                            key={option.value}
+                            onClick={() => {
+                              setTableData([]); setWarehouseData([]); setTopProductsData([]); setProfitabilityData([]);
+                              setReportType(option.value); setSearchTerm(''); setIsDropdownOpen(false);
+                            }}
+                            className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors ${reportType === option.value ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'}`}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
-              </div>
+              )}
             </div>
-          </div>
 
-          <div className="flex gap-3 w-full xl:w-auto shrink-0">
-            <button onClick={exportToCSV} disabled={totalCount === 0 || loading || isExporting} className="flex-1 xl:flex-none px-5 py-3 bg-white text-slate-700 border border-slate-200 text-sm font-bold rounded-2xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm flex items-center justify-center gap-2 min-w-[100px] disabled:opacity-50">
-              {isExporting ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />} CSV
-            </button>
-            <button onClick={exportToPDF} disabled={totalCount === 0 || loading || isExporting} className="flex-1 xl:flex-none px-5 py-3 bg-slate-900 text-white text-sm font-bold rounded-2xl hover:bg-slate-800 active:scale-95 transition-all shadow-md flex items-center justify-center gap-2 min-w-[130px] disabled:opacity-50">
-              {isExporting ? <Loader2 className="animate-spin" size={16} /> : <FileDown size={16} />} Print PDF
-            </button>
+            <div className="hidden md:block w-px h-10 bg-slate-200 mx-1 mb-1"></div>
+
+            {/* Quick Select & Dates Wrapper */}
+            <div className="flex flex-col sm:flex-row gap-6 items-start sm:items-end w-full">
+              
+              {/* Quick Select Pills */}
+              <div className="shrink-0 w-full sm:w-auto">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Quick Select</label>
+                <div className="flex bg-slate-100/80 p-1 rounded-xl border border-slate-200/60 shadow-inner">
+                  <button type="button" onClick={() => setQuickDate('today')} className={`flex-1 sm:flex-none px-5 py-1.5 text-xs font-bold rounded-lg transition-all ${activeDateFilter === 'today' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>Today</button>
+                  <button type="button" onClick={() => setQuickDate('7days')} className={`flex-1 sm:flex-none px-5 py-1.5 text-xs font-bold rounded-lg transition-all ${activeDateFilter === '7days' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>7 Days</button>
+                  <button type="button" onClick={() => setQuickDate('30days')} className={`flex-1 sm:flex-none px-5 py-1.5 text-xs font-bold rounded-lg transition-all ${activeDateFilter === '30days' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>30 Days</button>
+                </div>
+              </div>
+
+              {/* 🚀 MOBILE FIX: Start & End Dates (Stacked horizontally strictly at 50% using Grid) */}
+              <div className="grid grid-cols-2 sm:flex sm:items-center gap-3 w-full sm:w-auto">
+                <div className="w-full sm:w-auto">
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Start Date</label>
+                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full sm:w-36 px-2.5 sm:px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-[13px] sm:text-sm font-bold text-slate-700 shadow-sm transition-all hover:border-slate-300" />
+                </div>
+                
+                <ArrowRight className="hidden sm:block text-slate-300 mt-5 shrink-0" size={16} />
+                
+                <div className="w-full sm:w-auto">
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">End Date</label>
+                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full sm:w-36 px-2.5 sm:px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-[13px] sm:text-sm font-bold text-slate-700 shadow-sm transition-all hover:border-slate-300" />
+                </div>
+              </div>
+              
+            </div>
           </div>
         </div>
 
-        <div className="pt-2 relative z-10">
-          <div className="relative w-full">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-            <input 
-              type="text" 
-              placeholder={
-                reportType === 'top_products' ? "Filter by product, SKU, or buyer..." : 
-                reportType === 'profitability' ? "Filter by product or SKU..." :
-                reportType === 'warehouse_summary' ? "Search for an Agency or Address..." :
-                reportType === 'itemized' ? "Search patient names, order IDs, or customers..." : "Search orders or customers..."
-              }
-              value={searchTerm} 
-              onChange={(e) => setSearchTerm(e.target.value)} 
-              className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-slate-900 focus:bg-white outline-none text-sm font-medium transition-all shadow-sm" 
-            />
-          </div>
+        <div className="h-px w-full bg-slate-100"></div>
+
+        {/* Bottom Row: Full Width Search */}
+        <div className="relative w-full">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 mt-0.5" size={18} />
+          <input 
+            type="text" 
+            placeholder={
+              reportType === 'top_products' ? "Filter by product, SKU, or buyer..." : 
+              reportType === 'profitability' ? "Filter by product or SKU..." :
+              reportType === 'warehouse_summary' ? "Search for an Agency or Address..." :
+              reportType === 'itemized' ? "Search patient names, order IDs, or customers..." : "Search orders or customers..."
+            }
+            value={searchTerm} 
+            onChange={(e) => setSearchTerm(e.target.value)} 
+            className="w-full pl-12 pr-4 py-3.5 bg-slate-50/50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-slate-900 focus:bg-white focus:border-transparent outline-none text-sm font-medium transition-all shadow-sm placeholder:text-slate-400" 
+          />
         </div>
       </div>
 
@@ -1357,7 +1349,7 @@ export default function Reports() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {tableData.map((row, index) => (
+                {paginatedTableData.map((row, index) => (
                   <tr key={`item-${row.orderId}-${index}`} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-3 font-mono font-bold text-slate-900">{row.orderId}</td>
                     <td className="px-6 py-3 font-medium text-slate-600">{row.date}</td>
@@ -1398,7 +1390,7 @@ export default function Reports() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {tableData.map((row, index) => (
+                {paginatedTableData.map((row, index) => (
                   <tr key={`tax-${row.id}-${index}`} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-3 font-mono font-bold text-slate-900">{row.id}</td>
                     <td className="px-6 py-3 font-medium text-slate-600">{row.date}</td>
