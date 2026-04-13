@@ -104,7 +104,7 @@ export default function Reports() {
 
     let query = supabase.from('orders')
       .select('id, total_amount, tax_amount, shipping_amount, subtotal, shipping_state, shipping_name, status, companies(name)')
-      .neq('status', 'cancelled')
+      .in('status', ['delivered', 'delivered_partial'])
       .gte('created_at', new Date(startDate).toISOString())
       .lte('created_at', adjustedEndDate.toISOString());
 
@@ -159,9 +159,9 @@ export default function Reports() {
         id, created_at, status, subtotal, shipping_amount, tax_amount, total_amount, company_id,
         shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
         companies ( name )
-        ${reportType === 'itemized' ? `, order_items ( quantity_variants, unit_price, line_total, product_variants ( name, sku, products ( name, base_sku ) ) )` : ''}
+        ${reportType === 'itemized' ? `, order_items ( quantity_variants, unit_price, line_total, status, product_variants ( name, sku, products ( name, base_sku ) ) )` : ''}
       `, { count: 'exact' })
-      .neq('status', 'cancelled')
+      .in('status', ['delivered', 'delivered_partial'])
       .gte('created_at', new Date(startDate).toISOString())
       .lte('created_at', adjustedEndDate.toISOString())
       .order('created_at', { ascending: false });
@@ -203,14 +203,14 @@ export default function Reports() {
       const adjustedEndDate = new Date(endDate);
       adjustedEndDate.setHours(23, 59, 59, 999);
 
-      // FIX: Added base_sku to the products fetch request!
       let query = supabase.from('order_items').select(`
         quantity_variants, line_total, status, product_variant_id,
         orders!inner ( id, created_at, status, shipping_name, companies(name), user_profiles(full_name) ),
         product_variants ( name, sku, products(name, base_sku) )
       `)
       .neq('status', 'cancelled')
-      .neq('orders.status', 'cancelled')
+      .neq('status', 'rejected')
+      .in('orders.status', ['delivered', 'delivered_partial'])
       .gte('orders.created_at', new Date(startDate).toISOString())
       .lte('orders.created_at', adjustedEndDate.toISOString());
 
@@ -237,8 +237,6 @@ export default function Reports() {
         const up = Array.isArray(row.orders.user_profiles) ? row.orders.user_profiles[0] : row.orders.user_profiles;
         const buyerName = isB2B ? row.orders.companies.name : (up?.full_name || row.orders.shipping_name || 'Retail Customer');
         const pName = row.product_variants?.products?.name || row.product_variants?.name || 'Unknown';
-        
-        // FIX: Now securely assigns base_sku if variant sku is missing!
         const pSku = row.product_variants?.sku || row.product_variants?.products?.base_sku || '';
 
         uniqueOrders.add(row.orders.id);
@@ -270,7 +268,6 @@ export default function Reports() {
       }).sort((a, b) => b.totalQty - a.totalQty);
 
       if (debouncedSearch) {
-        // FIX: Now cleanly searches Name, SKU (including base), AND Buyers!
         const s = debouncedSearch.trim().toLowerCase();
         sortedProducts = sortedProducts.filter(p => 
           (p.name && p.name.toLowerCase().includes(s)) || 
@@ -294,28 +291,78 @@ export default function Reports() {
       const adjustedEndDate = new Date(endDate);
       adjustedEndDate.setHours(23, 59, 59, 999);
 
-      const { data, error } = await supabase.rpc('get_profitability_report', {
-        p_start_date: new Date(startDate).toISOString(),
-        p_end_date: adjustedEndDate.toISOString(),
-        p_search: debouncedSearch.trim() || ''
-      });
+      let query = supabase.from('order_items').select(`
+        quantity_variants, line_total, status, product_variant_id,
+        orders!inner ( id, created_at, status, shipping_name, companies(name) ),
+        product_variants ( name, sku, products(name, base_sku) )
+      `)
+      .neq('status', 'cancelled')
+      .neq('status', 'rejected')
+      .in('orders.status', ['delivered', 'delivered_partial'])
+      .gte('orders.created_at', new Date(startDate).toISOString())
+      .lte('orders.created_at', adjustedEndDate.toISOString());
 
-      if (error) throw error;
+      let allData = [];
+      let currentOffset = 0;
+      const chunk = 1000;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data, error } = await query.range(currentOffset, currentOffset + chunk - 1);
+        if (error) throw error;
+        allData = [...allData, ...data];
+        if (data.length < chunk) hasMore = false;
+        currentOffset += chunk;
+      }
 
       let rev = 0;
       let cogs = 0;
-      
-      (data || []).forEach(product => {
-        rev += Number(product.totalRevenue || 0);
-        cogs += Number(product.totalCogs || 0);
+      const productMap = {};
+
+      allData.forEach(row => {
+        const pName = row.product_variants?.products?.name || row.product_variants?.name || 'Unknown';
+        const pSku = row.product_variants?.sku || row.product_variants?.products?.base_sku || '';
+        
+        const qty = Number(row.quantity_variants || 0);
+        const lineTotal = Number(row.line_total || 0);
+        
+        // Since cost_price isn't in DB yet, fallback safely to 0
+        const costPrice = 0;
+        const lineCogs = qty * costPrice;
+
+        rev += lineTotal;
+        cogs += lineCogs;
+
+        const vId = row.product_variant_id;
+        if (!productMap[vId]) {
+          productMap[vId] = { id: vId, name: pName, sku: pSku, totalQty: 0, totalRevenue: 0, totalCogs: 0 };
+        }
+
+        productMap[vId].totalQty += qty;
+        productMap[vId].totalRevenue += lineTotal;
+        productMap[vId].totalCogs += lineCogs;
       });
+
+      let sortedProducts = Object.values(productMap).map(p => {
+        p.grossProfit = p.totalRevenue - p.totalCogs;
+        p.margin = p.totalRevenue > 0 ? (p.grossProfit / p.totalRevenue) * 100 : 0;
+        return p;
+      }).sort((a, b) => b.totalRevenue - a.totalRevenue);
+
+      if (debouncedSearch) {
+        const s = debouncedSearch.trim().toLowerCase();
+        sortedProducts = sortedProducts.filter(p => 
+          (p.name && p.name.toLowerCase().includes(s)) || 
+          (p.sku && p.sku.toLowerCase().includes(s))
+        );
+      }
 
       const profit = rev - cogs;
       const avgMargin = rev > 0 ? ((profit / rev) * 100) : 0;
       
       setProfitabilityKpis({ revenue: rev, cogs, profit, avgMargin });
-      setProfitabilityData(data || []);
-      setTotalCount((data || []).length);
+      setProfitabilityData(sortedProducts);
+      setTotalCount(sortedProducts.length);
 
     } catch (error) {
       console.error('Error generating profitability:', error);
@@ -330,14 +377,13 @@ export default function Reports() {
       const adjustedEndDate = new Date(endDate);
       adjustedEndDate.setHours(23, 59, 59, 999);
 
-      // FIX: Added base_sku to this request too to keep everything identical!
       let query = supabase.from('orders').select(`
         id, status, company_id, created_at,
         shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
         companies ( name, address, city, state, zip ),
         order_items ( quantity_variants, status, product_variant_id, product_variants ( name, sku, products ( name, base_sku ) ) )
       `)
-      .neq('status', 'cancelled')
+      .in('status', ['processing', 'ready_for_delivery', 'shipped', 'delivered', 'delivered_partial'])
       .gte('created_at', new Date(startDate).toISOString())
       .lte('created_at', adjustedEndDate.toISOString())
       .order('created_at', { ascending: false });
@@ -384,13 +430,11 @@ export default function Reports() {
         const patientName = order.shipping_name ? String(order.shipping_name).trim().toUpperCase() : '';
 
         order.order_items?.forEach(item => {
-          if (item.status === 'cancelled') return;
+          if (item.status === 'cancelled' || item.status === 'rejected') return;
 
           const qty = Number(item.quantity_variants || 0);
           const pName = item.product_variants?.products?.name || 'Unknown Item';
           const vName = item.product_variants?.name || '';
-          
-          // FIX: Added base_sku fallback here too!
           const sku = item.product_variants?.sku || item.product_variants?.products?.base_sku || '';
           
           const itemKey = `${sku}_${pName}_${patientName}`; 
@@ -458,6 +502,8 @@ export default function Reports() {
 
       if (reportType === 'itemized') {
         (order.order_items || []).forEach(item => {
+          if (item.status === 'cancelled' || item.status === 'rejected') return;
+          
           formatted.push({
             orderId: order.id.substring(0, 8).toUpperCase(),
             date: new Date(order.created_at).toLocaleDateString(),
@@ -467,6 +513,7 @@ export default function Reports() {
             variant: item.product_variants?.name || 'N/A',
             sku: item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A',
             qty: item.quantity_variants || 0,
+            status: item.status,
             streetAddress, city, state, zipCode
           });
         });
@@ -494,9 +541,9 @@ export default function Reports() {
       id, created_at, status, subtotal, shipping_amount, tax_amount, total_amount, company_id,
       shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
       companies ( name, address, city, state, zip )
-      ${reportType === 'itemized' ? `, order_items ( quantity_variants, unit_price, line_total, product_variants ( name, sku, products ( name, base_sku ) ) )` : ''}
+      ${reportType === 'itemized' ? `, order_items ( quantity_variants, unit_price, line_total, status, product_variants ( name, sku, products ( name, base_sku ) ) )` : ''}
     `)
-    .neq('status', 'cancelled')
+    .in('status', ['delivered', 'delivered_partial'])
     .gte('created_at', new Date(startDate).toISOString())
     .lte('created_at', adjustedEndDate.toISOString())
     .order('created_at', { ascending: false });
@@ -822,9 +869,7 @@ export default function Reports() {
           
           <div className="flex flex-col md:flex-row gap-6 items-start md:items-center w-full xl:w-auto">
             
-            {/* 🚀 CONDITIONAL REPORT DROPDOWN/BADGE */}
             {authLoading ? (
-              // Loading Skeleton to prevent Dropdown FOUC
               <div className="w-full md:w-72 lg:w-80 h-[46px] bg-slate-100 animate-pulse rounded-2xl shrink-0"></div>
             ) : (
               <div className="w-full md:w-72 lg:w-80 shrink-0 relative z-20">
@@ -833,7 +878,6 @@ export default function Reports() {
                 </label>
                 
                 {userRole === 'warehouse' ? (
-                  // 🚀 Perfectly aligned locked badge
                   <div className="relative w-full flex items-center justify-between pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-500 shadow-sm cursor-not-allowed">
                     <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 flex items-center justify-center">
                       <FileText size={18} />
