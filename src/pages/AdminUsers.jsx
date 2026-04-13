@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { createClient } from '@supabase/supabase-js'; 
+import Papa from 'papaparse'; 
 import { 
   Search, UserPlus, Trash2, Shield, Mail, Phone, Lock, 
   CheckCircle2, XCircle, X, Users, Building, ShoppingBag, 
   MapPin, Building2, DollarSign, UploadCloud, 
-  DownloadCloud, Save, ChevronLeft, ChevronRight, Package, ChevronDown, Wallet, MoreVertical, Edit, Truck, User
+  DownloadCloud, Save, ChevronLeft, ChevronRight, Package, ChevronDown, Wallet, MoreVertical, Edit, Truck, User, UserMinus
 } from 'lucide-react';
 
 export default function AdminUsers() {
@@ -18,7 +19,9 @@ export default function AdminUsers() {
   const [users, setUsers] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [page, setPage] = useState(0);
-  const ITEMS_PER_PAGE = 15;
+  
+  // 🚀 NEW: Dynamic Page Size State (Defaults to 10)
+  const [pageSize, setPageSize] = useState(10); 
   
   // KPI & Secondary Data
   const [kpiData, setKpiData] = useState({ b2b: 0, retail: 0, staff: 0, outstanding: 0 });
@@ -44,6 +47,8 @@ export default function AdminUsers() {
   const [pricingSearch, setPricingSearch] = useState('');
   const [pricingPage, setPricingPage] = useState(0);
   const [isImporting, setIsImporting] = useState(false);
+  
+  const PRICING_PAGE_SIZE = 15; // Kept static for the modal layout
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [confirmAction, setConfirmAction] = useState({ show: false, type: '', title: '', message: '', data: null });
@@ -78,14 +83,12 @@ export default function AdminUsers() {
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
-  // --- EFFICIENT KPI FETCHING ---
   const fetchKPIs = async () => {
     try {
-      const { count: b2bCount } = await supabase.from('user_profiles').select('*', { count: 'exact', head: true }).eq('role', 'b2b');
-      const { count: retailCount } = await supabase.from('user_profiles').select('*', { count: 'exact', head: true }).in('role', ['retail', 'user']);
-      const { count: staffCount } = await supabase.from('user_profiles').select('*', { count: 'exact', head: true }).in('role', ['admin', 'warehouse', 'driver']);
+      const { count: b2bCount } = await supabase.from('user_profiles').select('*', { count: 'exact', head: true }).eq('role', 'b2b').eq('status', 'active');
+      const { count: retailCount } = await supabase.from('user_profiles').select('*', { count: 'exact', head: true }).in('role', ['retail', 'user']).eq('status', 'active');
+      const { count: staffCount } = await supabase.from('user_profiles').select('*', { count: 'exact', head: true }).in('role', ['admin', 'warehouse', 'driver']).eq('status', 'active');
       
-      // 🚀 FIXED: Ensure we strictly exclude cancelled orders from the outstanding total KPI
       const { data: unpaidOrders } = await supabase.from('orders')
         .select('total_amount')
         .eq('payment_status', 'unpaid')
@@ -101,13 +104,14 @@ export default function AdminUsers() {
   // --- SERVER-SIDE PAGINATED FETCHING ---
   useEffect(() => {
     fetchUsers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, page, debouncedSearch]);
+    // 🚀 FIXED: Added pageSize to dependency array so it refetches when changed
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, page, debouncedSearch, pageSize]);
 
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      let query = supabase.from('user_profiles').select('*, companies(*)', { count: 'exact' });
+      let query = supabase.from('user_profiles').select('*, companies(*)', { count: 'exact' }).eq('status', 'active');
 
       if (activeTab === 'staff') query = query.in('role', ['admin', 'warehouse', 'driver']);
       else if (activeTab === 'b2b') query = query.eq('role', 'b2b');
@@ -117,8 +121,9 @@ export default function AdminUsers() {
         query = query.or(`full_name.ilike.%${debouncedSearch}%,email.ilike.%${debouncedSearch}%`);
       }
 
-      const from = page * ITEMS_PER_PAGE;
-      const to = from + ITEMS_PER_PAGE - 1;
+      // 🚀 Apply the dynamic pageSize
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
       query = query.order('full_name', { ascending: true }).range(from, to);
 
       const { data, count, error } = await query;
@@ -126,7 +131,6 @@ export default function AdminUsers() {
 
       let processedData = data || [];
 
-      // Filter logic to prevent sub-admin clutter in B2B tab
       if (activeTab === 'b2b') {
         const uniqueB2bMap = new Map();
         processedData.forEach(p => {
@@ -149,12 +153,10 @@ export default function AdminUsers() {
       setUsers(processedData);
       setTotalCount(count || 0);
 
-      // Fetch supplementary B2B data only for the displayed agencies
       if (activeTab === 'b2b' && processedData.length > 0) {
         const companyIds = processedData.map(u => u.companies?.id).filter(Boolean);
         if (companyIds.length > 0) {
           
-          // 🚀 FIXED: Ensure we strictly exclude cancelled orders from deducting against their credit limit!
           const { data: unpaidOrders } = await supabase.from('orders')
             .select('company_id, total_amount')
             .eq('payment_status', 'unpaid')
@@ -176,7 +178,7 @@ export default function AdminUsers() {
     finally { setLoading(false); }
   };
 
-  const totalPages = Math.ceil(totalCount / ITEMS_PER_PAGE);
+  const totalPages = Math.ceil(totalCount / pageSize);
 
   const getInitials = (name) => {
     if (!name) return '??';
@@ -221,7 +223,8 @@ export default function AdminUsers() {
             contact_number: confirmAction.data.contact_number, 
             company_id: null,
             license_number: confirmAction.data.role === 'Driver' ? confirmAction.data.license_number : null,
-            license_expiry: confirmAction.data.role === 'Driver' ? confirmAction.data.license_expiry : null
+            license_expiry: confirmAction.data.role === 'Driver' ? confirmAction.data.license_expiry : null,
+            status: 'active'
           } 
         } 
       });
@@ -257,7 +260,7 @@ export default function AdminUsers() {
       const tempSupabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
       const { data, error: authError } = await tempSupabase.auth.signUp({ 
         email: confirmAction.data.email, password: confirmAction.data.password, 
-        options: { data: { full_name: confirmAction.data.full_name, role: 'retail', contact_number: confirmAction.data.contact_number } } 
+        options: { data: { full_name: confirmAction.data.full_name, role: 'retail', contact_number: confirmAction.data.contact_number, status: 'active' } } 
       });
       if (authError) throw authError;
 
@@ -290,7 +293,7 @@ export default function AdminUsers() {
       if (companyError) throw companyError;
 
       const tempSupabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
-      const { error: authError } = await tempSupabase.auth.signUp({ email: confirmAction.data.admin_email, password: confirmAction.data.password, options: { data: { full_name: confirmAction.data.admin_name, role: 'b2b', contact_number: confirmAction.data.admin_phone, company_id: company.id } } });
+      const { error: authError } = await tempSupabase.auth.signUp({ email: confirmAction.data.admin_email, password: confirmAction.data.password, options: { data: { full_name: confirmAction.data.admin_name, role: 'b2b', contact_number: confirmAction.data.admin_phone, company_id: company.id, status: 'active' } } });
       if (authError) throw authError;
 
       setTimeout(() => { fetchUsers(); fetchKPIs(); setShowAddB2bModal(false); setB2bForm({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '', shipping_fee: '' }); showToast('Agency account created successfully!'); setIsSubmitting(false); }, 1500);
@@ -318,14 +321,21 @@ export default function AdminUsers() {
     } finally { setIsSubmitting(false); }
   };
 
-  const triggerDeleteConfirmation = (id, name) => setConfirmAction({ show: true, type: 'delete', title: 'Delete User?', message: `Permanently delete ${name}?`, data: id });
+  const triggerDeleteConfirmation = (id, name) => setConfirmAction({ show: true, type: 'delete', title: 'Deactivate Account?', message: `Are you sure you want to deactivate ${name}? Their past orders and invoices will be safely preserved.`, data: id });
+  
   const executeDeleteUser = async () => {
     setConfirmAction({ show: false });
     try {
-      const { error } = await supabase.rpc('delete_user', { user_id: confirmAction.data });
+      const { error } = await supabase
+        .from('user_profiles')
+        .update({ status: 'inactive' })
+        .eq('id', confirmAction.data);
+        
       if (error) throw error;
-      fetchUsers(); fetchKPIs(); showToast('User deleted.');
-    } catch (error) { showToast(error.message, true); }
+      fetchUsers(); fetchKPIs(); showToast('Account safely deactivated.');
+    } catch (error) { 
+      showToast(error.message, true); 
+    }
   };
 
   const handleSaveCreditLimit = async (e) => {
@@ -400,26 +410,91 @@ export default function AdminUsers() {
   };
 
   const importPricingCSV = async (e) => {
-    const file = e.target.files[0]; if (!file) return; setIsImporting(true);
-    try {
-      const text = await file.text(); const lines = text.split('\n').filter(l => l.trim()); const newEdits = { ...editedRules };
-      for (let i = 1; i < lines.length; i++) {
-        const parts = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/); const vId = parts[0]?.trim(); const rType = parts[5]?.replace(/"/g, '')?.trim()?.toLowerCase(); const rVal = parts[6]?.replace(/"/g, '')?.trim();
-        if (!vId) continue;
-        if (rVal && Number(rVal) > 0) newEdits[vId] = { rule_type: rType === 'fixed' ? 'fixed' : 'percentage', value: rVal }; else if (companyRules[vId]) newEdits[vId] = { rule_type: 'percentage', value: '' }; 
+    const file = e.target.files[0]; 
+    if (!file) return; 
+    
+    setIsImporting(true);
+
+    Papa.parse(file, {
+      header: true,         
+      skipEmptyLines: true, 
+      complete: async (results) => {
+        try {
+          const rows = results.data;
+          const newRulesToInsert = [];
+
+          for (const row of rows) {
+            const variantId = row.Variant_ID?.trim();
+            const discountType = row.Discount_Type?.trim()?.toLowerCase() === 'fixed' ? 'fixed' : 'percentage';
+            const discountValue = parseFloat(row.Discount_Value);
+
+            if (!variantId || isNaN(discountValue) || discountValue <= 0) continue;
+
+            let productId = null;
+            for (const p of catalogProducts) {
+              if (p.product_variants?.some(v => v.id === variantId)) {
+                productId = p.id;
+                break;
+              }
+            }
+
+            if (productId) {
+              newRulesToInsert.push({
+                company_id: activeCompany.id,
+                product_id: productId,
+                variant_id: variantId,
+                rule_type: discountType,
+                value: discountValue
+              });
+            }
+          }
+
+          const { error: deleteError } = await supabase
+            .from('pricing_rules')
+            .delete()
+            .eq('company_id', activeCompany.id);
+
+          if (deleteError) throw deleteError;
+
+          if (newRulesToInsert.length > 0) {
+            const { error: insertError } = await supabase
+              .from('pricing_rules')
+              .insert(newRulesToInsert);
+
+            if (insertError) throw insertError;
+          }
+
+          const updatedRulesMap = {};
+          newRulesToInsert.forEach(r => {
+            updatedRulesMap[r.variant_id] = { rule_type: r.rule_type, value: r.value };
+          });
+
+          setCompanyRules(updatedRulesMap);
+          setEditedRules({}); 
+          showToast(`Successfully wiped and replaced pricing with ${newRulesToInsert.length} rules!`);
+
+        } catch (err) {
+          console.error(err);
+          showToast(`Database error: ${err.message}`, true);
+        } finally {
+          setIsImporting(false);
+          e.target.value = ''; 
+        }
+      },
+      error: (error) => {
+        showToast(`Failed to parse CSV: ${error.message}`, true);
+        setIsImporting(false);
+        e.target.value = '';
       }
-      setEditedRules(newEdits); const newExpanded = { ...expandedPricingRows };
-      catalogProducts.forEach(p => { if (p.product_variants?.some(v => newEdits[v.id] !== undefined)) newExpanded[p.id] = true; });
-      setExpandedPricingRows(newExpanded); showToast('CSV loaded! Review changes and click Save.');
-    } catch (err) { showToast("Failed to parse CSV.", true); } finally { setIsImporting(false); e.target.value = ''; }
+    });
   };
 
   const filteredCatalog = catalogProducts.filter(p => 
     p.name.toLowerCase().includes(pricingSearch.toLowerCase()) || p.base_sku.toLowerCase().includes(pricingSearch.toLowerCase()) ||
     p.product_variants?.some(v => v.sku.toLowerCase().includes(pricingSearch.toLowerCase()) || v.name.toLowerCase().includes(pricingSearch.toLowerCase()))
   );
-  const catalogPageCount = Math.ceil(filteredCatalog.length / ITEMS_PER_PAGE);
-  const paginatedCatalog = filteredCatalog.slice(pricingPage * ITEMS_PER_PAGE, (pricingPage + 1) * ITEMS_PER_PAGE);
+  const catalogPageCount = Math.ceil(filteredCatalog.length / PRICING_PAGE_SIZE);
+  const paginatedCatalog = filteredCatalog.slice(pricingPage * PRICING_PAGE_SIZE, (pricingPage + 1) * PRICING_PAGE_SIZE);
 
   const tabBaseClass = "flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95";
   const tabActiveClass = "bg-slate-900 text-white shadow-md";
@@ -689,7 +764,7 @@ export default function AdminUsers() {
                               <div className="h-px w-full bg-slate-100 my-1"></div>
                             </>
                           )}
-                          <button onClick={() => triggerDeleteConfirmation(user.id, user.full_name)} className="w-full px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100 transition-colors flex items-center gap-3"><Trash2 size={16} /> Delete Account</button>
+                          <button onClick={() => triggerDeleteConfirmation(user.id, user.full_name)} className="w-full px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100 transition-colors flex items-center gap-3"><UserMinus size={16} /> Deactivate Account</button>
                         </div>
                       )}
                     </td>
@@ -699,16 +774,35 @@ export default function AdminUsers() {
             </table>
           </div>
           
-          {/* --- THE PAGINATION FOOTER --- */}
-          {totalCount > ITEMS_PER_PAGE && (
-            <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex justify-between items-center shrink-0">
-              <p className="text-sm text-slate-500 font-medium">
-                Showing <span className="font-bold text-slate-900">{page * ITEMS_PER_PAGE + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * ITEMS_PER_PAGE, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> results
+          {/* 🚀 FIXED: Dynamic Pagination Footer with Dropdown */}
+          {totalCount > 0 && (
+            <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex flex-col sm:flex-row justify-between items-center gap-4 shrink-0">
+              
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-slate-500 font-medium">Rows per page:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setPage(0); // Reset to first page when changing size
+                  }}
+                  className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-slate-900 cursor-pointer shadow-sm"
+                >
+                  <option value={10}>10</option>
+                  <option value={20}>20</option>
+                  <option value={30}>30</option>
+                </select>
+              </div>
+
+              <p className="text-sm text-slate-500 font-medium text-center">
+                Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> results
               </p>
+              
               <div className="flex gap-2">
                 <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-1.5 rounded-lg border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:scale-95 disabled:opacity-50 shadow-sm transition-all"><ChevronLeft size={18} /></button>
                 <button onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1} className="p-1.5 rounded-lg border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:scale-95 disabled:opacity-50 shadow-sm transition-all"><ChevronRight size={18} /></button>
               </div>
+
             </div>
           )}
         </div>
@@ -1031,7 +1125,7 @@ export default function AdminUsers() {
             </div>
 
             <div className="px-6 py-4 border-t border-slate-100 flex justify-between items-center bg-white shrink-0">
-              <p className="text-sm text-slate-500 font-medium">Showing {paginatedCatalog.length > 0 ? pricingPage * ITEMS_PER_PAGE + 1 : 0} to {Math.min((pricingPage + 1) * ITEMS_PER_PAGE, filteredCatalog.length)} of {filteredCatalog.length} products</p>
+              <p className="text-sm text-slate-500 font-medium">Showing {paginatedCatalog.length > 0 ? pricingPage * PRICING_PAGE_SIZE + 1 : 0} to {Math.min((pricingPage + 1) * PRICING_PAGE_SIZE, filteredCatalog.length)} of {filteredCatalog.length} products</p>
               <div className="flex gap-2"><button onClick={() => setPricingPage(p => Math.max(0, p - 1))} disabled={pricingPage === 0} className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 active:bg-slate-100 active:scale-95 disabled:opacity-50 transition-all shadow-sm"><ChevronLeft size={18} /></button><button onClick={() => setPricingPage(p => p + 1)} disabled={pricingPage >= catalogPageCount - 1} className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 active:bg-slate-100 active:scale-95 disabled:opacity-50 transition-all shadow-sm"><ChevronRight size={18} /></button></div>
             </div>
           </div>
@@ -1043,7 +1137,7 @@ export default function AdminUsers() {
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
             <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm ${confirmAction.type === 'delete' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-900 border-slate-200'}`}>
-              {confirmAction.type === 'delete' ? <Trash2 size={32} /> : confirmAction.type === 'add_retail' ? <UserPlus size={32} /> : confirmAction.type === 'add_b2b' ? <Building2 size={32} /> : <UserPlus size={32} />}
+              {confirmAction.type === 'delete' ? <UserMinus size={32} /> : confirmAction.type === 'add_retail' ? <UserPlus size={32} /> : confirmAction.type === 'add_b2b' ? <Building2 size={32} /> : <UserPlus size={32} />}
             </div>
             <h4 className="text-xl font-bold text-slate-900 tracking-tight">{confirmAction.title}</h4>
             <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">{confirmAction.message}</p>

@@ -2,16 +2,28 @@ import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { createClient } from '@supabase/supabase-js';
 import { useAuth } from '../lib/AuthContext';
+import Papa from 'papaparse';
 import { 
   Search, UserPlus, Trash2, Mail, Phone, Lock, 
   CheckCircle2, XCircle, X, Users, Building, 
   MapPin, Edit, MoreVertical, Wallet, Activity, UserCog, Save, ShieldCheck,
-  UploadCloud, DownloadCloud, ChevronLeft, ChevronRight
+  UploadCloud, DownloadCloud, ChevronLeft, ChevronRight, Archive, ArchiveRestore
 } from 'lucide-react';
+
+const ARCHIVE_REASONS = [
+  "Deceased / Passed Away",
+  "Transferred to Another Agency",
+  "Admitted to Hospital",
+  "Admitted to Skilled Nursing Facility (SNF)",
+  "Goals Met / Discharged to Self-Care",
+  "Relocated / Moved",
+  "Patient Refused Care / Revoked Consent",
+  "Other"
+];
 
 export default function AgencyDashboard() {
   const { profile } = useAuth();
-  const [activeTab, setActiveTab] = useState('patients'); 
+  const [activeTab, setActiveTab] = useState('patients'); // 'patients', 'subadmins', 'archived'
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -22,7 +34,7 @@ export default function AgencyDashboard() {
   const [financials, setFinancials] = useState({ limit: 0, outstanding: 0, available: 0 });
   const [activeMenuId, setActiveMenuId] = useState(null); 
 
-  // 🚀 SERVER-SIDE PAGINATION STATES (Updated to 10 per page)
+  // SERVER-SIDE PAGINATION STATES
   const [patientPage, setPatientPage] = useState(0);
   const [totalPatientsCount, setTotalPatientsCount] = useState(0);
   const pageSize = 10;
@@ -39,6 +51,7 @@ export default function AgencyDashboard() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isImporting, setIsImporting] = useState(false); 
   const [confirmAction, setConfirmAction] = useState({ show: false, type: '', title: '', message: '', data: null });
+  const [selectedArchiveReason, setSelectedArchiveReason] = useState('');
   const [toast, setToast] = useState({ show: false, message: '', isError: false });
 
   // Forms
@@ -53,11 +66,11 @@ export default function AgencyDashboard() {
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
-  // 🚀 Debounce search input
+  // Debounce search input
   useEffect(() => {
     const handler = setTimeout(() => {
       setDebouncedSearch(searchTerm);
-      if (activeTab === 'patients') {
+      if (activeTab === 'patients' || activeTab === 'archived') {
         setPatientPage(0); // Reset page on new search
       }
     }, 500);
@@ -68,21 +81,27 @@ export default function AgencyDashboard() {
     if (profile?.company_id) {
       fetchDashboardData();
     }
-  }, [profile?.company_id, debouncedSearch, patientPage]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.company_id, debouncedSearch, patientPage, activeTab]); 
 
   const fetchDashboardData = async () => {
     setLoading(true);
     try {
-      
-      // 🚀 SERVER-SIDE PAGINATION QUERY FOR PATIENTS
+      // SERVER-SIDE PAGINATION QUERY FOR PATIENTS
       let patientsQuery = supabase
         .from('agency_patients')
         .select('*', { count: 'exact' })
         .eq('agency_id', profile.company_id)
         .order('full_name', { ascending: true });
 
+      // Filter based on active or archived tab
+      if (activeTab === 'archived') {
+        patientsQuery = patientsQuery.eq('status', 'archived');
+      } else {
+        patientsQuery = patientsQuery.eq('status', 'active');
+      }
+
       if (debouncedSearch) {
-        // Search by name or email
         patientsQuery = patientsQuery.or(`full_name.ilike.%${debouncedSearch}%,email.ilike.%${debouncedSearch}%`);
       }
 
@@ -108,11 +127,10 @@ export default function AgencyDashboard() {
       setCompanyEmail(cEmail);
       setIsPrimaryAdmin(profile.email === cEmail);
 
-      // --- FEATURE: Sort Users so Primary Admin is always on top ---
       const sortedUsers = (usersRes.data || []).sort((a, b) => {
         if (a.email === cEmail && b.email !== cEmail) return -1;
         if (b.email === cEmail && a.email !== cEmail) return 1;
-        return 0; // Keep alphabetical order for the rest
+        return 0; 
       });
       setSubAdminList(sortedUsers);
 
@@ -144,7 +162,12 @@ export default function AgencyDashboard() {
     e.preventDefault();
     setIsSubmitting(true);
     try {
-      const { error } = await supabase.from('agency_patients').insert([{ ...patientForm, email: patientForm.email.trim(), agency_id: profile.company_id }]);
+      const { error } = await supabase.from('agency_patients').insert([{ 
+        ...patientForm, 
+        email: patientForm.email.trim(), 
+        agency_id: profile.company_id,
+        status: 'active'
+      }]);
       if (error) throw error;
       
       fetchDashboardData();
@@ -184,27 +207,78 @@ export default function AgencyDashboard() {
     }
   };
 
-  const triggerDeletePatient = (patient) => {
-    setConfirmAction({ show: true, type: 'delete_patient', title: 'Delete Patient?', message: `Are you sure you want to remove ${patient.full_name}? This cannot be undone.`, data: patient.id });
+  // 🚀 ARCHIVE PATIENT LOGIC
+  const triggerArchivePatient = (patient) => {
+    setSelectedArchiveReason(''); // Reset the dropdown
+    setConfirmAction({ 
+      show: true, 
+      type: 'archive_patient', 
+      title: 'Archive Patient?', 
+      message: `Are you sure you want to archive ${patient.full_name}? They will be removed from your active roster but historical data will be preserved.`, 
+      data: patient.id 
+    });
   };
 
-  const executeDeletePatient = async () => {
+  const executeArchivePatient = async () => {
     setConfirmAction({ show: false });
+    setIsSubmitting(true);
     try {
-      const { error } = await supabase.from('agency_patients').delete().eq('id', confirmAction.data);
+      const { error } = await supabase
+        .from('agency_patients')
+        .update({ 
+          status: 'archived', 
+          archive_reason: selectedArchiveReason 
+        })
+        .eq('id', confirmAction.data);
+
       if (error) throw error;
       fetchDashboardData();
-      showToast('Patient removed successfully.');
+      showToast('Patient successfully archived.');
     } catch (error) {
       showToast(error.message, true);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  // CSV PATIENT IMPORT LOGIC
+  // 🚀 RESTORE PATIENT LOGIC
+  const triggerRestorePatient = (patient) => {
+    setConfirmAction({ 
+      show: true, 
+      type: 'restore_patient', 
+      title: 'Restore Patient?', 
+      message: `Are you sure you want to restore ${patient.full_name} back to the active roster?`, 
+      data: patient.id 
+    });
+  };
+
+  const executeRestorePatient = async () => {
+    setConfirmAction({ show: false });
+    setIsSubmitting(true);
+    try {
+      const { error } = await supabase
+        .from('agency_patients')
+        .update({ 
+          status: 'active', 
+          archive_reason: null // Clear out the previous archive reason
+        })
+        .eq('id', confirmAction.data);
+
+      if (error) throw error;
+      fetchDashboardData();
+      showToast('Patient successfully restored!');
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // CSV PATIENT IMPORT LOGIC (PapaParse)
   const downloadPatientCSVFormat = () => {
-    const headers = "Full Name,Email,Phone Number,Street Address,City,State,ZIP Code\n";
+    const headers = "Full Name,Email,Phone Number,Street Address,City,State,Zip Code\n";
     const sample1 = "John Doe,johndoe@example.com,555-123-4567,123 Main St,San Francisco,CA,94105\n";
-    const sample2 = "Jane Smith,,,456 Oak Ave,Los Angeles,CA,90001\n"; // Missing email and phone is allowed
+    const sample2 = "Jane Smith,,,456 Oak Ave,Los Angeles,CA,90001\n"; 
     const blob = new Blob([headers + sample1 + sample2], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -218,42 +292,76 @@ export default function AgencyDashboard() {
     if (!file) return;
     setIsImporting(true);
     
-    try {
-      const text = await file.text();
-      const lines = text.split('\n').filter(l => l.trim());
-      const patientsToInsert = [];
-      
-      for (let i = 1; i < lines.length; i++) {
-        const parts = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.replace(/(^"|"$)/g, '').trim());
-        
-        if (parts[0]) { 
-          patientsToInsert.push({
-            agency_id: profile.company_id,
-            full_name: parts[0] || '',
-            email: parts[1] || null,
-            contact_number: parts[2] || null,
-            address: parts[3] || null,
-            city: parts[4] || null,
-            state: parts[5] || null,
-            zip: parts[6] || null,
-          });
-        }
-      }
+    Papa.parse(file, {
+      header: true,         
+      skipEmptyLines: true, 
+      complete: async (results) => {
+        try {
+          const rows = results.data;
+          const patientsToInsert = [];
 
-      if (patientsToInsert.length > 0) {
-        const { error } = await supabase.from('agency_patients').insert(patientsToInsert);
-        if (error) throw error;
-        showToast(`${patientsToInsert.length} patients imported successfully!`);
-        fetchDashboardData();
-      } else {
-        showToast("No valid patient data found in CSV.", true);
+          for (const row of rows) {
+            // Forgiving column checks to avoid undefined entries
+            const fullName = (row['Full Name'] || row['Full name'] || row['Name'] || '').trim();
+            if (!fullName) continue;
+
+            const email = (row['Email'] || row['Email Address'] || row['email'] || '').trim();
+            const phone = (row['Phone Number'] || row['Phone'] || row['Contact Number'] || '').trim();
+            const address = (row['Street Address'] || row['Address'] || row['Street'] || '').trim();
+            const city = (row['City'] || row['city'] || '').trim();
+            const state = (row['State'] || row['state'] || '').trim();
+            
+            // 🚀 FIX: Forgiving zip code check targeting standard variations
+            const zipCode = (row['Zip Code'] || row['ZIP Code'] || row['Zipcode'] || row['Zip'] || row['zip'] || '').trim();
+
+            patientsToInsert.push({
+              agency_id: profile.company_id,
+              full_name: fullName,
+              email: email || null,
+              contact_number: phone || null,
+              address: address || null,
+              city: city || null,
+              state: state || null,
+              zip: zipCode || null,
+              status: 'active'
+            });
+          }
+
+          if (patientsToInsert.length > 0) {
+            const { error: deleteError } = await supabase
+              .from('agency_patients')
+              .delete()
+              .eq('agency_id', profile.company_id)
+              .eq('status', 'active'); // Only replace active ones
+
+            if (deleteError) throw deleteError;
+
+            const { error: insertError } = await supabase
+              .from('agency_patients')
+              .insert(patientsToInsert);
+
+            if (insertError) throw insertError;
+
+            showToast(`Successfully wiped and replaced with ${patientsToInsert.length} active patients!`);
+            setPatientPage(0);
+            fetchDashboardData();
+          } else {
+            showToast("No valid patient data found in CSV.", true);
+          }
+        } catch (error) {
+          console.error(error);
+          showToast("Database error: " + error.message, true);
+        } finally {
+          setIsImporting(false);
+          e.target.value = ''; 
+        }
+      },
+      error: (error) => {
+        showToast("Failed to parse CSV: " + error.message, true);
+        setIsImporting(false);
+        e.target.value = '';
       }
-    } catch (error) {
-      showToast("Error importing CSV: " + error.message, true);
-    } finally {
-      setIsImporting(false);
-      e.target.value = ''; 
-    }
+    });
   };
 
   // --- SUB-ADMIN ACTIONS ---
@@ -319,13 +427,13 @@ export default function AgencyDashboard() {
     }
   };
 
-  // --- FILTERING (Only applies to subadmins now since patients are server-paginated) ---
+  // --- FILTERING ---
   const filteredSubAdmins = subAdminList.filter(item => 
     (item.full_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
     (item.email || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const getActiveList = () => activeTab === 'patients' ? patientsList : filteredSubAdmins;
+  const getActiveList = () => (activeTab === 'patients' || activeTab === 'archived') ? patientsList : filteredSubAdmins;
 
   // --- THEME CONSTANTS ---
   const tabBaseClass = "flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95";
@@ -382,10 +490,12 @@ export default function AgencyDashboard() {
             <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
               <div className="absolute -right-4 -top-4 w-16 h-16 rounded-full bg-emerald-50 transition-transform group-hover:scale-110"></div>
               <div className="flex justify-between items-center mb-2 relative">
-                <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Patients</h4>
+                <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Active Patients</h4>
                 <div className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 shadow-sm border border-emerald-100"><Users size={16} /></div>
               </div>
-              <h2 className="text-2xl font-bold text-slate-800 tracking-tight relative">{totalPatientsCount}</h2>
+              <h2 className="text-2xl font-bold text-slate-800 tracking-tight relative">
+                {activeTab === 'patients' ? totalPatientsCount : patientsList.length}
+              </h2>
             </div>
 
             <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
@@ -423,11 +533,12 @@ export default function AgencyDashboard() {
       <div className="flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full lg:w-auto overflow-x-auto shrink-0">
           <button onClick={() => setActiveTab('patients')} className={`${tabBaseClass} ${activeTab === 'patients' ? tabActiveClass : tabInactiveClass}`}><Activity size={16}/> Patient Roster</button>
+          <button onClick={() => setActiveTab('archived')} className={`${tabBaseClass} ${activeTab === 'archived' ? tabActiveClass : tabInactiveClass}`}><Archive size={16}/> Archived Patients</button>
           <button onClick={() => setActiveTab('subadmins')} className={`${tabBaseClass} ${activeTab === 'subadmins' ? tabActiveClass : tabInactiveClass}`}><Users size={16}/> Sub-Admins</button>
         </div>
         <div className="relative w-full lg:w-80 shrink-0">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all shadow-sm" />
+          <input type="text" placeholder={`Search ${activeTab}...`} value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all shadow-sm" />
         </div>
       </div>
 
@@ -436,7 +547,11 @@ export default function AgencyDashboard() {
         <div className="text-slate-500 font-medium mt-6">Loading dashboard...</div>
       ) : getActiveList().length === 0 ? (
         <div className="p-16 text-center bg-white rounded-2xl border border-slate-200 shadow-sm mt-6">
-          <Users size={48} strokeWidth={1.5} className="mx-auto text-slate-300 mb-4" />
+          {activeTab === 'archived' ? (
+            <Archive size={48} strokeWidth={1.5} className="mx-auto text-slate-300 mb-4" />
+          ) : (
+            <Users size={48} strokeWidth={1.5} className="mx-auto text-slate-300 mb-4" />
+          )}
           <h3 className="text-lg font-bold text-slate-900 mb-1">No records found</h3>
           <p className="text-slate-500 text-sm">There is nothing here yet or your search matched no results.</p>
         </div>
@@ -456,6 +571,8 @@ export default function AgencyDashboard() {
                       <th className="px-4 py-4 font-bold">State</th>
                       <th className="px-4 py-4 font-bold">Zip Code</th>
                     </>
+                  ) : activeTab === 'archived' ? (
+                    <th className="px-4 py-4 font-bold">Discharge Reason</th>
                   ) : (
                     <th className="px-4 py-4 font-bold">Role Type</th>
                   )}
@@ -470,12 +587,12 @@ export default function AgencyDashboard() {
                   return (
                     <tr 
                       key={item.id} 
-                      className={`group transition-colors ${isCurrentUser && activeTab === 'subadmins' ? 'bg-slate-50' : 'hover:bg-slate-50/80'}`}
+                      className={`group transition-colors ${isCurrentUser && activeTab === 'subadmins' ? 'bg-slate-50' : 'hover:bg-slate-50/80'} ${activeTab === 'archived' ? 'opacity-80 hover:opacity-100' : ''}`}
                     >
                       {/* Full Name & Avatar */}
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 border shadow-sm ${activeTab === 'patients' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : isCurrentUser ? 'bg-slate-800 text-white border-slate-900' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 border shadow-sm ${activeTab === 'patients' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : activeTab === 'archived' ? 'bg-slate-100 text-slate-500 border-slate-200' : isCurrentUser ? 'bg-slate-800 text-white border-slate-900' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
                             {getInitials(item.full_name)}
                           </div>
                           <div className="font-bold text-slate-900 flex items-center gap-2">
@@ -505,6 +622,12 @@ export default function AgencyDashboard() {
                           <td className="px-4 py-3 text-slate-600">{item.state ? item.state : <span className="text-slate-300">-</span>}</td>
                           <td className="px-4 py-3 text-slate-600">{item.zip ? item.zip : <span className="text-slate-300">-</span>}</td>
                         </>
+                      ) : activeTab === 'archived' ? (
+                        <td className="px-4 py-3">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 text-amber-700 text-[10px] font-bold uppercase tracking-wider rounded border border-amber-200">
+                            {item.archive_reason || 'No Reason Provided'}
+                          </span>
+                        </td>
                       ) : (
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2 text-slate-700 font-semibold text-xs uppercase tracking-wider">
@@ -519,20 +642,22 @@ export default function AgencyDashboard() {
 
                       {/* Actions */}
                       <td className="px-4 py-3 text-right relative">
-                        {(activeTab === 'patients' || (isPrimaryAdmin && !isThisRowPrimaryAdmin)) ? (
+                        {(activeTab === 'patients' || activeTab === 'archived' || (isPrimaryAdmin && !isThisRowPrimaryAdmin)) ? (
                           <button onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === item.id ? null : item.id); }} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-200 active:scale-95 transition-all"><MoreVertical size={18} /></button>
                         ) : (
                           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pr-3">Secured</span>
                         )}
 
                         {activeMenuId === item.id && (
-                          <div className="absolute right-8 top-8 w-44 bg-white border border-slate-200 rounded-xl shadow-xl z-[90] py-1.5 flex flex-col text-left overflow-hidden animate-in fade-in zoom-in-95">
+                          <div className="absolute right-8 top-8 w-48 bg-white border border-slate-200 rounded-xl shadow-xl z-[90] py-1.5 flex flex-col text-left overflow-hidden animate-in fade-in zoom-in-95">
                             {activeTab === 'patients' ? (
                               <>
                                 <button onClick={() => { setActiveMenuId(null); setEditPatientForm(item); setShowEditPatientModal(true); }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-100 transition-colors flex items-center gap-3"><Edit size={16} className="text-slate-500" /> Edit Patient</button>
                                 <div className="h-px w-full bg-slate-100 my-1"></div>
-                                <button onClick={() => triggerDeletePatient(item)} className="w-full px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50 transition-colors flex items-center gap-3"><Trash2 size={16} /> Delete</button>
+                                <button onClick={() => triggerArchivePatient(item)} className="w-full px-4 py-2.5 text-sm font-semibold text-amber-600 hover:bg-amber-50 transition-colors flex items-center gap-3"><Archive size={16} /> Archive</button>
                               </>
+                            ) : activeTab === 'archived' ? (
+                              <button onClick={() => { setActiveMenuId(null); triggerRestorePatient(item); }} className="w-full px-4 py-2.5 text-sm font-semibold text-emerald-600 hover:bg-emerald-50 transition-colors flex items-center gap-3"><ArchiveRestore size={16} /> Restore Patient</button>
                             ) : (
                               <button onClick={() => triggerDeleteSubAdmin(item)} className="w-full px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50 transition-colors flex items-center gap-3"><Trash2 size={16} /> Revoke Access</button>
                             )}
@@ -547,10 +672,10 @@ export default function AgencyDashboard() {
           </div>
 
           {/* 🚀 PAGINATION FOOTER */}
-          {activeTab === 'patients' && totalPatientsCount > pageSize && (
+          {(activeTab === 'patients' || activeTab === 'archived') && totalPatientsCount > pageSize && (
             <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-2xl mt-auto">
               <span className="text-sm font-medium text-slate-500">
-                Showing <span className="font-bold text-slate-900">{patientPage * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((patientPage + 1) * pageSize, totalPatientsCount)}</span> of <span className="font-bold text-slate-900">{totalPatientsCount}</span> patients
+                Showing <span className="font-bold text-slate-900">{patientPage * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((patientPage + 1) * pageSize, totalPatientsCount)}</span> of <span className="font-bold text-slate-900">{totalPatientsCount}</span> {activeTab === 'archived' ? 'archived records' : 'patients'}
               </span>
               <div className="flex gap-2">
                 <button 
@@ -677,18 +802,43 @@ export default function AgencyDashboard() {
       {confirmAction.show && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm ${confirmAction.type.includes('delete') ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-900 border-slate-200'}`}>
-              {confirmAction.type.includes('delete') ? <Trash2 size={32} /> : <UserPlus size={32} />}
+            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm ${confirmAction.type === 'delete_subadmin' ? 'bg-red-50 text-red-600 border-red-100' : confirmAction.type === 'archive_patient' ? 'bg-amber-50 text-amber-600 border-amber-100' : confirmAction.type === 'restore_patient' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-slate-50 text-slate-900 border-slate-200'}`}>
+              {confirmAction.type === 'delete_subadmin' ? <Trash2 size={32} /> : confirmAction.type === 'archive_patient' ? <Archive size={32} /> : confirmAction.type === 'restore_patient' ? <ArchiveRestore size={32} /> : <UserPlus size={32} />}
             </div>
             <h4 className="text-xl font-bold text-slate-900 tracking-tight">{confirmAction.title}</h4>
             <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">{confirmAction.message}</p>
-            <div className="flex gap-3 pt-5">
+            
+            {/* DROP-DOWN FOR ARCHIVE REASON */}
+            {confirmAction.type === 'archive_patient' && (
+              <div className="mt-5 text-left">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Select Discharge Reason</label>
+                <select 
+                  value={selectedArchiveReason}
+                  onChange={(e) => setSelectedArchiveReason(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all"
+                >
+                  <option value="" disabled>-- Select a Reason --</option>
+                  {ARCHIVE_REASONS.map(reason => (
+                    <option key={reason} value={reason}>{reason}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-6">
               <button onClick={() => setConfirmAction({ show: false })} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button>
-              <button disabled={isSubmitting} onClick={
-                confirmAction.type === 'add_subadmin' ? executeAddSubAdmin : 
-                confirmAction.type === 'delete_subadmin' ? executeDeleteSubAdmin : 
-                executeDeletePatient
-              } className={`w-full py-3 text-sm text-white font-bold rounded-xl shadow-md active:scale-95 flex items-center justify-center gap-2 transition-all ${confirmAction.type.includes('delete') ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-900 hover:bg-slate-800'}`}>{isSubmitting ? 'Processing...' : 'Confirm'}</button>
+              <button 
+                disabled={isSubmitting || (confirmAction.type === 'archive_patient' && !selectedArchiveReason)} 
+                onClick={
+                  confirmAction.type === 'add_subadmin' ? executeAddSubAdmin : 
+                  confirmAction.type === 'delete_subadmin' ? executeDeleteSubAdmin : 
+                  confirmAction.type === 'restore_patient' ? executeRestorePatient :
+                  executeArchivePatient
+                } 
+                className={`w-full py-3 text-sm text-white font-bold rounded-xl shadow-md active:scale-95 flex items-center justify-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed ${confirmAction.type === 'delete_subadmin' ? 'bg-red-600 hover:bg-red-700' : confirmAction.type === 'restore_patient' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-900 hover:bg-slate-800'}`}
+              >
+                {isSubmitting ? 'Processing...' : 'Confirm'}
+              </button>
             </div>
           </div>
         </div>

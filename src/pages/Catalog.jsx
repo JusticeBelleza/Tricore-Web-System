@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
-import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, Tag } from 'lucide-react';
+import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, Building2 } from 'lucide-react';
 
 function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVariantPrice, onClick }) {
   const [selectedProductId, setSelectedProductId] = useState(familyProducts[0].id);
@@ -19,8 +19,7 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
 
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
   
-  // 🚀 FIXED: Only destructure what we need for the clean UI
-  const { finalPrice: displayPrice, hasRule } = getVariantPrice(activeProduct, activeVariant);
+  const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
 
   let stockAmount = 0;
   if (Array.isArray(activeProduct?.inventory)) {
@@ -46,13 +45,6 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
             <span className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-amber-50 text-amber-700 text-[8px] sm:text-[9px] font-bold uppercase tracking-widest rounded shadow-sm border border-amber-200 w-fit">Backorder</span>
           ) : (
             <span className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-red-50 text-red-700 text-[8px] sm:text-[9px] font-bold uppercase tracking-widest rounded shadow-sm border border-red-200 flex items-center gap-1 w-fit">Out <span className="hidden sm:inline">of Stock</span></span>
-          )}
-
-          {/* 🚀 NEW: Professional Contract Rate Badge */}
-          {hasRule && (
-            <span className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-blue-50 text-blue-700 text-[8px] sm:text-[9px] font-bold uppercase tracking-widest rounded shadow-sm border border-blue-200 flex items-center gap-1 w-fit">
-              <Tag size={10} /> Contract
-            </span>
           )}
         </div>
 
@@ -106,7 +98,7 @@ export default function Catalog() {
   
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
-  const pageSize = 12; // 🚀 Adjusted for cleaner grid layout
+  const pageSize = 12; 
   const [searchTerm, setSearchTerm] = useState('');
   
   const [selectedCategory, setSelectedCategory] = useState('All Categories');
@@ -225,7 +217,6 @@ export default function Catalog() {
     }
   };
 
-  // 🚀 FIXED PRICING ENGINE
   const getVariantPrice = (product, variant) => {
     if (!product) return { finalPrice: 0, hasRule: false };
     
@@ -236,21 +227,17 @@ export default function Catalog() {
       return { finalPrice: variantRetail, hasRule: false };
     }
 
-    let applicableRule = 
-      pricingRules.find(r => r.variant_id === variant?.id) ||
-      pricingRules.find(r => r.product_id === product.id) ||
-      pricingRules.find(r => r.category === product.category) ||
-      pricingRules.find(r => r.rule_type === 'global');
+    let applicableRule = pricingRules.find(r => r.variant_id === variant?.id);
 
     if (!applicableRule) return { finalPrice: variantRetail, hasRule: false };
 
     let finalPrice = variantRetail;
-    if (applicableRule.discount_type === 'percentage') {
-      finalPrice = variantRetail * (1 - Number(applicableRule.discount_value) / 100);
-    } else if (applicableRule.discount_type === 'fixed_amount') {
-      finalPrice = Math.max(0, variantRetail - Number(applicableRule.discount_value));
-    } else if (applicableRule.discount_type === 'fixed_price') {
-      finalPrice = Number(applicableRule.discount_value);
+    const ruleValue = Number(applicableRule.value);
+
+    if (applicableRule.rule_type === 'percentage') {
+      finalPrice = variantRetail * (1 - (ruleValue / 100));
+    } else if (applicableRule.rule_type === 'fixed') {
+      finalPrice = ruleValue;
     }
 
     return { 
@@ -364,7 +351,7 @@ export default function Catalog() {
   return (
     <div className="space-y-4 sm:space-y-6 pb-20 relative max-w-7xl mx-auto px-4 sm:px-6">
       
-      {/* 🚀 CSS ANIMATIONS */}
+      {/* CSS ANIMATIONS */}
       <style>
         {`
           /* Opening Animations */
@@ -404,7 +391,7 @@ export default function Catalog() {
           {profile?.role?.toLowerCase() === 'b2b' ? (
             <div className="mt-2 sm:mt-3 flex flex-wrap items-center gap-2 sm:gap-3">
               <span className="px-2.5 py-1 bg-blue-50 text-blue-700 text-[10px] sm:text-[11px] font-bold uppercase tracking-widest rounded-lg border border-blue-100 flex items-center gap-1.5">
-                <Tag size={12}/> Contract Pricing Active
+                <Building2 size={12}/> B2B Portal
               </span>
               <div className="flex items-center gap-1.5 sm:gap-2 text-[11px] sm:text-xs font-medium text-slate-500 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-sm">
                 <Wallet size={14} className="text-slate-400" />
@@ -521,7 +508,7 @@ export default function Catalog() {
         </div>
       )}
 
-      {/* 🚀 FIXED PRODUCT MODAL: Perfect iOS-style Slide Up for Mobile */}
+      {/* PRODUCT MODAL: Perfect iOS-style Slide Up for Mobile */}
       {viewingFamily && activeProduct && (
         <div className={`fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm sm:p-4 pb-0 sm:pb-4 ${isClosing ? 'modal-overlay-close-anim' : 'modal-overlay-anim'}`}>
           
@@ -535,11 +522,7 @@ export default function Catalog() {
             
             {/* Left/Top: Image Side */}
             <div className="w-full sm:w-1/2 bg-slate-50/50 flex flex-col justify-center items-center p-6 sm:p-8 border-b sm:border-b-0 sm:border-r border-slate-100 h-[35dvh] sm:h-auto sm:min-h-[400px] shrink-0 relative">
-              {modalHasRule && (
-                <div className="absolute top-6 left-6 z-10 bg-blue-50 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest shadow-md border border-blue-200 flex items-center gap-1.5">
-                  <Tag size={14} /> Contract Pricing Applied
-                </div>
-              )}
+              {/* Note: The Contract/B2B pricing badge was also removed from the large modal image area as requested */}
 
               {activeProduct.image_urls?.[0] ? (
                 <img src={activeProduct.image_urls[0]} alt="" className={`w-full h-full object-contain mix-blend-multiply ${modalPreventPurchase ? 'grayscale opacity-75' : ''}`} />
