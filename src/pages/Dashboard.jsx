@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
+import { useMetricsStore } from '../store/useMetricsStore';
 import { 
   BarChart3, Package, DollarSign, Clock, Truck, 
   TrendingUp, AlertTriangle, ShoppingCart, ChevronRight, CheckCircle2,
@@ -11,7 +12,15 @@ import { Link, useNavigate } from 'react-router-dom';
 export default function Dashboard() {
   const { profile } = useAuth();
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(true);
+  
+  // 🚀 ZUSTAND METRICS
+  const { dashboardData, isLoading: storeLoading, fetchDashboardMetrics, badges } = useMetricsStore();
+
+  // Local List State
+  const [recentOrders, setRecentOrders] = useState([]);
+  const [lowStockItems, setLowStockItems] = useState([]);
+  const [activeCustomerOrders, setActiveCustomerOrders] = useState(0);
+  const [listsLoading, setListsLoading] = useState(true);
   
   // 🚀 DYNAMIC DATE BOUNDARIES
   const now = new Date();
@@ -30,46 +39,93 @@ export default function Dashboard() {
   const [filterType, setFilterType] = useState('month'); 
   const [filterDetail, setFilterDetail] = useState(currentMonth.toString()); 
 
-  // Admin & Warehouse Metrics
-  const [adminMetrics, setAdminMetrics] = useState({
-    filteredRevenue: 0, pendingOrders: 0, activeDispatches: 0,
-    lowStockItems: [], recentOrders: []
-  });
-
-  // Customer Metrics (B2B & Retail)
-  const [customerMetrics, setCustomerMetrics] = useState({
-    totalSpend: 0, activeOrders: 0, recentOrders: [],
-    financials: { limit: 0, outstanding: 0, available: 0 }
-  });
-
   // Re-fetch when the filters change
   useEffect(() => {
-    if (profile?.id) {
-      if (profile.role === 'admin' || profile.role === 'warehouse') fetchAdminDashboard();
-      else if (profile.role === 'driver') setLoading(false);
-      else fetchCustomerDashboard();
+    if (!profile?.id) return;
+    
+    // Drivers don't use this dashboard
+    if (profile.role === 'driver') {
+      setListsLoading(false);
+      return;
     }
+
+    const year = parseInt(filterYear);
+    let startIso = '';
+    let endIso = '';
+
+    if (filterType === 'month') {
+      const m = parseInt(filterDetail);
+      startIso = new Date(year, m, 1).toISOString();
+      endIso = new Date(year, m + 1, 0, 23, 59, 59, 999).toISOString();
+    } else if (filterType === 'quarter') {
+      const q = parseInt(filterDetail); 
+      const startMonth = (q - 1) * 3;
+      startIso = new Date(year, startMonth, 1).toISOString();
+      endIso = new Date(year, startMonth + 3, 0, 23, 59, 59, 999).toISOString();
+    } else if (filterType === 'semester') {
+      const s = parseInt(filterDetail); 
+      const startMonth = (s - 1) * 6;
+      startIso = new Date(year, startMonth, 1).toISOString();
+      endIso = new Date(year, startMonth + 6, 0, 23, 59, 59, 999).toISOString();
+    } else if (filterType === 'annual') {
+      startIso = new Date(year, 0, 1).toISOString();
+      endIso = new Date(year, 12, 0, 23, 59, 59, 999).toISOString();
+    }
+
+    // 1. Trigger the heavy server-side RPC math via Zustand
+    fetchDashboardMetrics(new Date(startIso), new Date(endIso));
+
+    // 2. Fetch the lightweight UI lists locally
+    const fetchLists = async () => {
+      setListsLoading(true);
+      try {
+        if (profile.role === 'admin' || profile.role === 'warehouse') {
+          const [
+            { data: lowStock }, 
+            { data: recent }
+          ] = await Promise.all([
+            supabase.from('inventory').select('product_id, base_units_on_hand, products(name)').lte('base_units_on_hand', 10).limit(5),
+            supabase.from('orders').select('id, created_at, total_amount, status, shipping_name, companies(name)').order('created_at', { ascending: false }).limit(5)
+          ]);
+          setLowStockItems(lowStock || []);
+          setRecentOrders(recent || []);
+        } else {
+          let activeQuery = supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['pending', 'processing', 'ready_for_delivery', 'shipped', 'out_for_delivery']);
+          let recentQuery = supabase.from('orders').select('id, created_at, total_amount, status').order('created_at', { ascending: false }).limit(5);
+
+          if (profile.company_id) {
+            activeQuery = activeQuery.eq('company_id', profile.company_id);
+            recentQuery = recentQuery.eq('company_id', profile.company_id);
+          } else {
+            activeQuery = activeQuery.eq('user_id', profile.id);
+            recentQuery = recentQuery.eq('user_id', profile.id);
+          }
+
+          const [ { count: activeCount }, { data: recent } ] = await Promise.all([activeQuery, recentQuery]);
+          setActiveCustomerOrders(activeCount || 0);
+          setRecentOrders(recent || []);
+        }
+      } catch (error) {
+        console.error("Error fetching lists:", error);
+      } finally {
+        setListsLoading(false);
+      }
+    };
+
+    fetchLists();
   }, [profile?.id, profile?.role, profile?.company_id, filterType, filterDetail, filterYear]);
 
-  // 🚀 SMART HANDLER: Automatically snaps to the max available period when changing Category
   const handleFilterTypeChange = (e) => {
     const newType = e.target.value;
     setFilterType(newType);
-    
     const isCurrentYear = parseInt(filterYear) === currentYear;
     
-    if (newType === 'month') {
-      setFilterDetail(isCurrentYear ? currentMonth.toString() : "11");
-    } else if (newType === 'quarter') {
-      setFilterDetail(isCurrentYear ? currentQuarter.toString() : "4");
-    } else if (newType === 'semester') {
-      setFilterDetail(isCurrentYear ? currentSemester.toString() : "2");
-    } else {
-      setFilterDetail("1"); // Placeholder for annual
-    }
+    if (newType === 'month') setFilterDetail(isCurrentYear ? currentMonth.toString() : "11");
+    else if (newType === 'quarter') setFilterDetail(isCurrentYear ? currentQuarter.toString() : "4");
+    else if (newType === 'semester') setFilterDetail(isCurrentYear ? currentSemester.toString() : "2");
+    else setFilterDetail("1"); 
   };
 
-  // 🚀 SMART HANDLER: Automatically prevents looking into future months if year is changed to current
   const handleFilterYearChange = (e) => {
     const newYear = parseInt(e.target.value);
     setFilterYear(e.target.value);
@@ -79,93 +135,6 @@ export default function Dashboard() {
       if (filterType === 'quarter' && parseInt(filterDetail) > currentQuarter) setFilterDetail(currentQuarter.toString());
       if (filterType === 'semester' && parseInt(filterDetail) > currentSemester) setFilterDetail(currentSemester.toString());
     }
-  };
-
-  const fetchAdminDashboard = async () => {
-    setLoading(true);
-    try {
-      const year = parseInt(filterYear);
-      let startIso = '';
-      let endIso = '';
-
-      if (filterType === 'month') {
-        const m = parseInt(filterDetail);
-        startIso = new Date(year, m, 1).toISOString();
-        endIso = new Date(year, m + 1, 0, 23, 59, 59, 999).toISOString();
-      } else if (filterType === 'quarter') {
-        const q = parseInt(filterDetail); 
-        const startMonth = (q - 1) * 3;
-        startIso = new Date(year, startMonth, 1).toISOString();
-        endIso = new Date(year, startMonth + 3, 0, 23, 59, 59, 999).toISOString();
-      } else if (filterType === 'semester') {
-        const s = parseInt(filterDetail); 
-        const startMonth = (s - 1) * 6;
-        startIso = new Date(year, startMonth, 1).toISOString();
-        endIso = new Date(year, startMonth + 6, 0, 23, 59, 59, 999).toISOString();
-      } else if (filterType === 'annual') {
-        startIso = new Date(year, 0, 1).toISOString();
-        endIso = new Date(year, 12, 0, 23, 59, 59, 999).toISOString();
-      }
-
-      const [
-        { data: revData }, { count: pendingCount }, { count: dispatchCount },
-        { data: lowStock }, { data: recentOrders }
-      ] = await Promise.all([
-        // 🚀 FIXED: Only fetch revenue from DELIVERED orders
-        supabase.from('orders').select('total_amount').in('status', ['delivered', 'delivered_partial']).gte('created_at', startIso).lte('created_at', endIso),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery']),
-        supabase.from('inventory').select('product_id, base_units_on_hand, products(name)').lte('base_units_on_hand', 10).limit(5),
-        supabase.from('orders').select('id, created_at, total_amount, status, shipping_name, companies(name)').order('created_at', { ascending: false }).limit(5)
-      ]);
-
-      const filteredRevenue = (revData || []).reduce((sum, order) => sum + Number(order.total_amount || 0), 0);
-
-      setAdminMetrics({
-        filteredRevenue, pendingOrders: pendingCount || 0, activeDispatches: dispatchCount || 0,
-        lowStockItems: lowStock || [], recentOrders: recentOrders || []
-      });
-    } catch (error) { console.error('Error:', error); } 
-    finally { setLoading(false); }
-  };
-
-  const fetchCustomerDashboard = async () => {
-    setLoading(true);
-    try {
-      // 🚀 FIXED: Lifetime spend should only count delivered orders
-      let spendQuery = supabase.from('orders').select('total_amount').in('status', ['delivered', 'delivered_partial']);
-      let activeQuery = supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['pending', 'processing', 'ready_for_delivery', 'shipped', 'out_for_delivery']);
-      let recentQuery = supabase.from('orders').select('id, created_at, total_amount, status').order('created_at', { ascending: false }).limit(5);
-      let unpaidQuery = supabase.from('orders').select('total_amount').eq('payment_status', 'unpaid');
-
-      if (profile.company_id) {
-        spendQuery = spendQuery.eq('company_id', profile.company_id);
-        activeQuery = activeQuery.eq('company_id', profile.company_id);
-        recentQuery = recentQuery.eq('company_id', profile.company_id);
-        unpaidQuery = unpaidQuery.eq('company_id', profile.company_id);
-      } else {
-        spendQuery = spendQuery.eq('user_id', profile.id);
-        activeQuery = activeQuery.eq('user_id', profile.id);
-        recentQuery = recentQuery.eq('user_id', profile.id);
-        unpaidQuery = unpaidQuery.eq('user_id', profile.id);
-      }
-
-      const [
-        { data: spendData }, { count: activeCount }, { data: recentOrders }, { data: unpaidData }
-      ] = await Promise.all([ spendQuery, activeQuery, recentQuery, unpaidQuery ]);
-
-      const totalSpend = (spendData || []).reduce((sum, order) => sum + Number(order.total_amount || 0), 0);
-      const outstanding = (unpaidData || []).reduce((sum, order) => sum + Number(order.total_amount || 0), 0);
-      
-      const limit = Number(profile?.companies?.credit_limit || 0);
-      const available = Math.max(0, limit - outstanding);
-
-      setCustomerMetrics({
-        totalSpend, activeOrders: activeCount || 0, recentOrders: recentOrders || [],
-        financials: { limit, outstanding, available }
-      });
-    } catch (error) { console.error('Error:', error); } 
-    finally { setLoading(false); }
   };
 
   const getStatusBadge = (status) => {
@@ -196,7 +165,7 @@ export default function Dashboard() {
     return 'Delivered Revenue';
   };
 
-  if (loading) {
+  if (storeLoading || listsLoading) {
     return (
       <div className="max-w-7xl mx-auto space-y-6 px-4 sm:px-6 lg:px-8">
         <div className="h-10 w-48 bg-slate-200 rounded-lg animate-pulse mb-6"></div>
@@ -228,6 +197,9 @@ export default function Dashboard() {
   // ==========================================
   if (profile?.role === 'b2b' || profile?.role === 'retail' || profile?.role === 'user' || !profile?.role) {
     const isB2B = !!profile?.company_id;
+    const limit = Number(profile?.companies?.credit_limit || 0);
+    const available = Math.max(0, limit - dashboardData.outstanding);
+
     return (
       <div className="max-w-6xl mx-auto space-y-6 pb-12 px-4 sm:px-6 lg:px-8">
         
@@ -265,7 +237,7 @@ export default function Dashboard() {
                 <div className="p-2.5 bg-purple-100 text-purple-600 rounded-xl"><Package size={20} /></div>
                 <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">In Transit / Pending</p>
               </div>
-              <p className="text-4xl font-black text-slate-900 tracking-tight">{customerMetrics.activeOrders}</p>
+              <p className="text-4xl font-black text-slate-900 tracking-tight">{activeCustomerOrders}</p>
               <p className="text-sm font-medium text-slate-500 mt-1">Active Deliveries</p>
             </div>
           </div>
@@ -279,10 +251,10 @@ export default function Dashboard() {
                     <div className="p-2.5 bg-emerald-100 text-emerald-600 rounded-xl"><Wallet size={20} /></div>
                     <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Available Credit</p>
                   </div>
-                  <p className={`text-4xl font-black tracking-tight ${customerMetrics.financials.available <= 0 ? 'text-red-500' : 'text-slate-900'}`}>
-                    ${customerMetrics.financials.available.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                  <p className={`text-4xl font-black tracking-tight ${available <= 0 ? 'text-red-500' : 'text-slate-900'}`}>
+                    ${available.toLocaleString(undefined, {minimumFractionDigits: 2})}
                   </p>
-                  <p className="text-sm font-medium text-slate-500 mt-1">of ${customerMetrics.financials.limit.toLocaleString()} Limit</p>
+                  <p className="text-sm font-medium text-slate-500 mt-1">of ${limit.toLocaleString()} Limit</p>
                 </div>
               </div>
 
@@ -294,7 +266,7 @@ export default function Dashboard() {
                     <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Unpaid Invoices</p>
                   </div>
                   <p className="text-4xl font-black text-slate-900 tracking-tight">
-                    ${customerMetrics.financials.outstanding.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                    ${dashboardData.outstanding.toLocaleString(undefined, {minimumFractionDigits: 2})}
                   </p>
                   <Link to="/orders" className="text-sm font-bold text-amber-600 hover:text-amber-700 mt-2 flex items-center gap-1">Pay Balance <ChevronRight size={14}/></Link>
                 </div>
@@ -308,7 +280,7 @@ export default function Dashboard() {
                   <div className="p-2.5 bg-blue-100 text-blue-600 rounded-xl"><DollarSign size={20} /></div>
                   <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Lifetime Spend</p>
                 </div>
-                <p className="text-4xl font-black text-slate-900 tracking-tight">${customerMetrics.totalSpend.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+                <p className="text-4xl font-black text-slate-900 tracking-tight">${dashboardData.totalSpend.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
                 <p className="text-sm font-medium text-slate-500 mt-1">Total account history (Delivered)</p>
               </div>
             </div>
@@ -332,7 +304,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {customerMetrics.recentOrders.map(order => (
+                {recentOrders.map(order => (
                   <tr key={order.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
@@ -345,7 +317,7 @@ export default function Dashboard() {
                     <td className="px-6 py-4 text-right font-extrabold text-slate-900 text-base">${Number(order.total_amount).toFixed(2)}</td>
                   </tr>
                 ))}
-                {customerMetrics.recentOrders.length === 0 && (
+                {recentOrders.length === 0 && (
                   <tr>
                     <td colSpan="4" className="px-6 py-12 text-center">
                       <Package size={40} className="mx-auto text-slate-200 mb-3" />
@@ -367,15 +339,11 @@ export default function Dashboard() {
   // 🏢 ADMIN & WAREHOUSE DASHBOARD
   // ==========================================
   const isCurrentYearSelected = parseInt(filterYear) === currentYear;
-
-  // 🚀 GENERATE DYNAMIC OPTION LISTS BASED ON SELECTED YEAR
   const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const maxMonth = isCurrentYearSelected ? currentMonth : 11;
   const availableMonths = Array.from({ length: maxMonth + 1 }, (_, i) => i);
-  
   const maxQuarter = isCurrentYearSelected ? currentQuarter : 4;
   const availableQuarters = Array.from({ length: maxQuarter }, (_, i) => i + 1);
-
   const maxSemester = isCurrentYearSelected ? currentSemester : 2;
   const availableSemesters = Array.from({ length: maxSemester }, (_, i) => i + 1);
 
@@ -399,9 +367,7 @@ export default function Dashboard() {
                 onChange={handleFilterYearChange}
                 className="w-full pl-10 pr-8 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-700 shadow-sm appearance-none cursor-pointer transition-all"
               >
-                {availableYears.map(y => (
-                  <option key={y} value={y}>{y}</option>
-                ))}
+                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
               </select>
               <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
             </div>
@@ -433,11 +399,9 @@ export default function Dashboard() {
                   {filterType === 'month' && availableMonths.map(m => (
                     <option key={m} value={m}>{monthNames[m]} {filterYear}</option>
                   ))}
-                  
                   {filterType === 'quarter' && availableQuarters.map(q => (
                     <option key={q} value={q}>{q === 1 ? '1st' : q === 2 ? '2nd' : q === 3 ? '3rd' : '4th'} Quarter {filterYear}</option>
                   ))}
-                  
                   {filterType === 'semester' && availableSemesters.map(s => (
                     <option key={s} value={s}>{s === 1 ? '1st' : '2nd'} Semester {filterYear}</option>
                   ))}
@@ -449,9 +413,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Dynamic Grid depending on Admin vs Warehouse */}
       <div className={`grid grid-cols-1 ${profile?.role === 'admin' ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-6`}>
-        
         {profile?.role === 'admin' && (
           <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
             <div className="absolute -right-4 -top-4 w-24 h-24 bg-emerald-50 rounded-full group-hover:scale-150 transition-transform duration-500 ease-out z-0"></div>
@@ -460,7 +422,7 @@ export default function Dashboard() {
                 <div className="p-2 bg-emerald-100 text-emerald-600 rounded-xl"><DollarSign size={20} /></div>
                 <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">{getRevenueTitle()}</p>
               </div>
-              <p className="text-4xl font-black text-slate-900 tracking-tight">${adminMetrics.filteredRevenue.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+              <p className="text-4xl font-black text-slate-900 tracking-tight">${dashboardData.filteredRevenue.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
             </div>
           </div>
         )}
@@ -473,9 +435,9 @@ export default function Dashboard() {
                 <div className="p-2 bg-red-100 text-red-600 rounded-xl"><Clock size={20} /></div>
                 <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">Action Needed</p>
               </div>
-              {adminMetrics.pendingOrders > 0 && <span className="flex w-3 h-3"><span className="animate-ping absolute inline-flex h-3 w-3 rounded-full bg-red-400 opacity-75"></span><span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span></span>}
+              {badges.pendingCount > 0 && <span className="flex w-3 h-3"><span className="animate-ping absolute inline-flex h-3 w-3 rounded-full bg-red-400 opacity-75"></span><span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span></span>}
             </div>
-            <p className="text-4xl font-black text-slate-900 tracking-tight">{adminMetrics.pendingOrders}</p>
+            <p className="text-4xl font-black text-slate-900 tracking-tight">{badges.pendingCount}</p>
             <p className="text-xs font-bold text-slate-400 mt-1 uppercase">Pending Orders</p>
           </div>
         </div>
@@ -487,7 +449,7 @@ export default function Dashboard() {
               <div className="p-2 bg-blue-100 text-blue-600 rounded-xl"><Truck size={20} /></div>
               <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">In Transit</p>
             </div>
-            <p className="text-4xl font-black text-slate-900 tracking-tight">{adminMetrics.activeDispatches}</p>
+            <p className="text-4xl font-black text-slate-900 tracking-tight">{badges.needsDispatchCount}</p>
             <p className="text-xs font-bold text-slate-400 mt-1 uppercase">Active Deliveries</p>
           </div>
         </div>
@@ -516,7 +478,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {adminMetrics.recentOrders.map(order => (
+                {recentOrders.map(order => (
                   <tr key={order.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-4 font-mono font-bold text-slate-900 text-xs">#{order.id.substring(0,8).toUpperCase()}</td>
                     <td className="px-6 py-4 font-medium text-slate-700">{order.companies?.name || order.shipping_name || 'Retail'}</td>
@@ -526,7 +488,7 @@ export default function Dashboard() {
                     )}
                   </tr>
                 ))}
-                {adminMetrics.recentOrders.length === 0 && <tr><td colSpan={profile?.role === 'admin' ? "4" : "3"} className="px-6 py-8 text-center text-slate-400 font-medium">No recent orders found.</td></tr>}
+                {recentOrders.length === 0 && <tr><td colSpan={profile?.role === 'admin' ? "4" : "3"} className="px-6 py-8 text-center text-slate-400 font-medium">No recent orders found.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -539,9 +501,9 @@ export default function Dashboard() {
             <h3 className="text-lg font-bold text-slate-900 tracking-tight">Low Stock Alerts</h3>
           </div>
           <div className="p-2 flex-1">
-            {adminMetrics.lowStockItems.length > 0 ? (
+            {lowStockItems.length > 0 ? (
               <div className="divide-y divide-slate-50">
-                {adminMetrics.lowStockItems.map(item => (
+                {lowStockItems.map(item => (
                   <div key={item.product_id} className="p-4 hover:bg-slate-50 transition-colors rounded-xl flex justify-between items-center">
                     <p className="font-semibold text-slate-900 text-sm truncate pr-4">{item.products?.name}</p>
                     <span className="px-2.5 py-1 bg-red-50 text-red-600 font-extrabold text-xs rounded-lg shrink-0 border border-red-100">

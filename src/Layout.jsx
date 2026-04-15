@@ -2,10 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from './lib/AuthContext';
 import { supabase } from './lib/supabase';
+import { useMetricsStore } from './store/useMetricsStore';
 import { 
   LayoutDashboard, Package, ShoppingCart, Truck, Warehouse, 
   Users, BarChart3, ClipboardList, LogOut, Menu, X, Car, Navigation,
-  AlertCircle, CheckCircle2, XCircle, Share, PlusSquare, RotateCcw
+  AlertCircle, CheckCircle2, XCircle, Share, PlusSquare
 } from "lucide-react"; 
 
 export default function Layout() {
@@ -16,12 +17,11 @@ export default function Layout() {
 
   const isCustomer = !profile?.role || ['user', 'retail', 'b2b'].includes(profile?.role);
 
-  // --- Real-time Badge States ---
-  const [pendingCount, setPendingCount] = useState(0);
-  const [overdueCount, setOverdueCount] = useState(0);
-  const [processingCount, setProcessingCount] = useState(0);
-  const [needsDispatchCount, setNeedsDispatchCount] = useState(0);
-  const [returnsCount, setReturnsCount] = useState(0);
+  // 🚀 ZUSTAND GLOBAL METRICS
+  const badges = useMetricsStore((state) => state.badges);
+  const fetchBadges = useMetricsStore((state) => state.fetchBadges);
+  const initRealtime = useMetricsStore((state) => state.initRealtime);
+  const cleanupRealtime = useMetricsStore((state) => state.cleanupRealtime);
   
   // --- Customer Notification Popup State ---
   const [customerAlert, setCustomerAlert] = useState({ show: false, type: 'info', message: '', description: '' });
@@ -52,80 +52,34 @@ export default function Layout() {
     localStorage.setItem('dismissedPwaPrompt', 'true');
   };
 
+  // 🚀 Initialize Global Metrics & Local Toasts
   useEffect(() => {
     if (!profile) return;
     
-    const fetchBadges = async () => {
-      if (profile.role === 'admin' || profile.role === 'warehouse') {
-        const lastViewedPending = localStorage.getItem('lastViewedPending') || new Date(0).toISOString();
-        const { count: pCount } = await supabase
-          .from('orders')
-          .select('*', { count: 'exact', head: true })
-          .eq('status', 'pending')
-          .gt('created_at', lastViewedPending); 
-        setPendingCount(pCount || 0);
-      }
-      
-      if (profile.role === 'admin' || profile.role === 'warehouse') {
-        const { count: prCount } = await supabase
-          .from('orders')
-          .select('*', { count: 'exact', head: true })
-          .eq('status', 'processing');
-        setProcessingCount(prCount || 0);
+    // 1. Fire up the global Zustand fetchers
+    fetchBadges(profile);
+    initRealtime(profile);
 
-        const lastViewedDispatch = localStorage.getItem('lastViewedDispatch') || new Date(0).toISOString();
-        const { count: dispatchCount } = await supabase
-          .from('orders')
-          .select('*', { count: 'exact', head: true })
-          .eq('status', 'ready_for_delivery')
-          .gt('updated_at', lastViewedDispatch); 
-        setNeedsDispatchCount(dispatchCount || 0);
+    // 2. Custom Event Listeners (Triggers Zustand refetch)
+    const handleUpdate = () => fetchBadges(profile);
+    window.addEventListener('orderStatusChanged', handleUpdate);
+    window.addEventListener('podViewed', handleUpdate);
+    window.addEventListener('pendingViewed', handleUpdate);
+    window.addEventListener('dispatchViewed', handleUpdate);
 
-        // 🚀 Counts BOTH attempted and partial deliveries for the red badge!
-        const { count: rCount } = await supabase
-          .from('orders')
-          .select('*', { count: 'exact', head: true })
-          .in('status', ['attempted', 'delivered_partial'])
-          .is('is_restocked', false);
-        setReturnsCount(rCount || 0);
-      }
-
-      if (isCustomer) {
-        const threshold = new Date();
-        threshold.setDate(threshold.getDate() - 25); 
-        
-        let query = supabase
-          .from('orders')
-          .select('*', { count: 'exact', head: true })
-          .eq('status', 'delivered') 
-          .eq('payment_status', 'unpaid')
-          .eq('payment_method', 'net_30')
-          .lte('created_at', threshold.toISOString());
-
-        if (profile.company_id) {
-          query = query.eq('company_id', profile.company_id);
-        } else if (profile.id) {
-          query = query.eq('user_id', profile.id);
-        }
-
-        const { count } = await query;
-        setOverdueCount(count || 0);
-      }
-    };
-
-    fetchBadges();
-    
-    const sub = supabase.channel('global_orders_channel')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
-        fetchBadges();
-        
-        if (isCustomer && payload.eventType === 'UPDATE') {
-          const oldData = payload.old;
-          const newData = payload.new;
-          
-          const isMyOrder = profile.company_id ? newData.company_id === profile.company_id : newData.user_id === profile.id;
-          
-          if (isMyOrder) {
+    // 3. Lightweight channel strictly for customer UI Toast Popups
+    let alertSub = null;
+    if (isCustomer) {
+      alertSub = supabase.channel('customer_ui_alerts')
+        .on('postgres_changes', { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: 'orders',
+          filter: profile.company_id ? `company_id=eq.${profile.company_id}` : `user_id=eq.${profile.id}`
+        }, (payload) => {
+            const oldData = payload.old;
+            const newData = payload.new;
+            
             if (newData.status === 'cancelled' && oldData.status !== 'cancelled') {
               setCustomerAlert({
                 show: true, type: 'error',
@@ -150,22 +104,16 @@ export default function Layout() {
               });
               setTimeout(() => setCustomerAlert(prev => ({...prev, show: false})), 8000);
             }
-          }
-        }
-      })
-      .subscribe();
-
-    window.addEventListener('orderStatusChanged', fetchBadges);
-    window.addEventListener('podViewed', fetchBadges);
-    window.addEventListener('pendingViewed', fetchBadges);
-    window.addEventListener('dispatchViewed', fetchBadges);
+        }).subscribe();
+    }
 
     return () => {
-      supabase.removeChannel(sub);
-      window.removeEventListener('orderStatusChanged', fetchBadges);
-      window.removeEventListener('podViewed', fetchBadges);
-      window.removeEventListener('pendingViewed', fetchBadges);
-      window.removeEventListener('dispatchViewed', fetchBadges);
+      cleanupRealtime();
+      if (alertSub) supabase.removeChannel(alertSub);
+      window.removeEventListener('orderStatusChanged', handleUpdate);
+      window.removeEventListener('podViewed', handleUpdate);
+      window.removeEventListener('pendingViewed', handleUpdate);
+      window.removeEventListener('dispatchViewed', handleUpdate);
     };
   }, [profile, isCustomer]);
 
@@ -213,11 +161,7 @@ export default function Layout() {
         
         <div className="h-16 flex items-center justify-between px-4 border-b border-slate-200 shrink-0">
           <div className="flex-1 flex justify-center items-center h-full pt-1">
-            <img 
-              src="/images/tricore-logo2.png" 
-              alt="TriCore Logo" 
-              className="h-12 w-auto object-contain" 
-            />
+            <img src="/images/tricore-logo2.png" alt="TriCore Logo" className="h-12 w-auto object-contain" />
           </div>
           <button onClick={closeMobileMenu} className="lg:hidden text-slate-400 hover:text-slate-900 p-1 bg-slate-100 rounded-md transition-colors absolute right-4">
             <X size={20} />
@@ -249,11 +193,11 @@ export default function Layout() {
                     <Link to="/orders" onClick={closeMobileMenu} className={navItemClass('/orders')}>
                       <ShoppingCart size={18} /> 
                       <span className="flex-1">My Orders</span>
-                      {overdueCount > 0 && (
+                      {badges.overdueCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
                           <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-bold text-white bg-red-600 rounded-full shadow-sm">
-                            {overdueCount} Due
+                            {badges.overdueCount} Due
                           </span>
                         </div>
                       )}
@@ -272,11 +216,11 @@ export default function Layout() {
                     <Link to="/admin/orders" onClick={closeMobileMenu} className={navItemClass('/admin/orders')}>
                       <ShoppingCart size={18} /> 
                       <span className="flex-1">All Orders</span>
-                      {pendingCount > 0 && (
+                      {badges.pendingCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
                           <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-bold text-white bg-red-600 rounded-full shadow-sm">
-                            {pendingCount} New
+                            {badges.pendingCount} New
                           </span>
                         </div>
                       )}
@@ -286,20 +230,20 @@ export default function Layout() {
                       <Warehouse size={18} /> 
                       <span className="flex-1">Pick & Pack</span>
                       
-                      {processingCount > 0 && returnsCount === 0 && (
+                      {badges.processingCount > 0 && badges.returnsCount === 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75 animate-ping"></span>
                           <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-bold text-white bg-blue-600 rounded-full shadow-sm">
-                            {processingCount} New
+                            {badges.processingCount} New
                           </span>
                         </div>
                       )}
 
-                      {returnsCount > 0 && (
-                        <div className="relative flex items-center justify-center ml-auto" title={`${returnsCount} Returned Orders need restocking`}>
+                      {badges.returnsCount > 0 && (
+                        <div className="relative flex items-center justify-center ml-auto" title={`${badges.returnsCount} Returned Orders need restocking`}>
                           <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
                           <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-bold text-white bg-red-600 rounded-full shadow-sm">
-                            {returnsCount} Returns
+                            {badges.returnsCount} Returns
                           </span>
                         </div>
                       )}
@@ -308,11 +252,11 @@ export default function Layout() {
                     <Link to="/dispatch" onClick={closeMobileMenu} className={navItemClass('/dispatch')}>
                       <Navigation size={18} /> 
                       <span className="flex-1">Dispatch & POD</span>
-                      {needsDispatchCount > 0 && (
+                      {badges.needsDispatchCount > 0 && (
                         <div className="relative flex items-center justify-center ml-auto">
                           <span className="absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75 animate-ping"></span>
                           <span className="relative inline-flex items-center justify-center px-2 py-0.5 text-[10px] font-bold text-white bg-purple-600 rounded-full shadow-sm">
-                            {needsDispatchCount} New
+                            {badges.needsDispatchCount} New
                           </span>
                         </div>
                       )}
