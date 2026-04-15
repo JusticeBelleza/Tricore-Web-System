@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import react from '@vitejs/plugin-react-swc' // 🚀 Switched to the faster SWC compiler
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
@@ -44,4 +44,10 @@ export default defineConfig({
       }
     })
   ],
+  // 🚀 VITEST CONFIGURATION ADDED HERE
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: './src/setupTests.js',
+  }
 })

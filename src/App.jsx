@@ -1,30 +1,45 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './Layout';
-import Login from './pages/Login';
-import Catalog from './pages/Catalog';
-import Checkout from './pages/Checkout';
 import { useAuth } from './lib/AuthContext';
-import Warehouse from './pages/Warehouse';
-import DriverRoutes from './pages/DriverRoutes';
-import MyOrders from './pages/MyOrders';
-import AdminOrders from './pages/AdminOrders';
-import AdminUsers from './pages/AdminUsers';
-import Dashboard from './pages/Dashboard';
-import Reports from './pages/Reports';
-import FleetManagement from './pages/FleetManagement';
-import AgencyDashboard from './pages/AgencyDashboard';
-import DispatchMonitor from './pages/DispatchMonitor';
-import Profile from './pages/Profile';
-import Products from './pages/Products';
-import PurchaseOrders from './pages/PurchaseOrders';
+import { ErrorBoundary } from './components/ErrorBoundary'; 
+
+// 🚀 1. LAZY LOAD THE PAGES
+// These are only downloaded from the server when the user actually navigates to them!
+const Login = React.lazy(() => import('./pages/Login'));
+const Catalog = React.lazy(() => import('./pages/Catalog'));
+const Checkout = React.lazy(() => import('./pages/Checkout'));
+const Warehouse = React.lazy(() => import('./pages/Warehouse'));
+const DriverRoutes = React.lazy(() => import('./pages/DriverRoutes'));
+const MyOrders = React.lazy(() => import('./pages/MyOrders'));
+const AdminOrders = React.lazy(() => import('./pages/AdminOrders'));
+const AdminUsers = React.lazy(() => import('./pages/AdminUsers'));
+const Dashboard = React.lazy(() => import('./pages/Dashboard'));
+const Reports = React.lazy(() => import('./pages/Reports'));
+const FleetManagement = React.lazy(() => import('./pages/FleetManagement'));
+const AgencyDashboard = React.lazy(() => import('./pages/AgencyDashboard'));
+const DispatchMonitor = React.lazy(() => import('./pages/DispatchMonitor'));
+const Profile = React.lazy(() => import('./pages/Profile'));
+const Products = React.lazy(() => import('./pages/Products'));
+const PurchaseOrders = React.lazy(() => import('./pages/PurchaseOrders'));
+
+// 🚀 2. CREATE A SUSPENSE FALLBACK UI
+// This displays for a fraction of a second while the requested page chunk downloads
+const PageLoader = () => (
+  <div className="min-h-[60vh] flex items-center justify-center flex-1">
+    <div className="flex flex-col items-center gap-4">
+      <img src="/images/tricore-logo.png" alt="Loading" className="w-10 h-10 animate-spin drop-shadow-sm opacity-50" />
+      <span className="text-xs font-bold text-slate-400 tracking-wider uppercase animate-pulse">
+        Loading module...
+      </span>
+    </div>
+  </div>
+);
 
 // Component to protect routes - redirects to login if there is no active session
 const ProtectedRoute = ({ children }) => {
-  // Grab profile as well so we can ensure it's loaded before rendering the app
   const { user, profile, loading } = useAuth();
   
-  // Wait if AuthContext is loading OR if we have a user but their profile hasn't arrived yet
   if (loading || (user && !profile)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -52,11 +67,8 @@ const ProtectedRoute = ({ children }) => {
 // Component to strictly enforce Role-Based Access Control (RBAC)
 const RoleProtectedRoute = ({ allowedRoles, children }) => {
   const { profile } = useAuth();
-  
-  // Default to 'user' if no role is explicitly set in the database
   const userRole = profile?.role || 'user'; 
 
-  // If the user's role is NOT in the allowed list, boot them back to the dashboard safely
   if (!allowedRoles.includes(userRole)) {
     return <Navigate to="/dashboard" replace />;
   }
@@ -67,102 +79,51 @@ const RoleProtectedRoute = ({ allowedRoles, children }) => {
 // Component to handle Dashboard routing based on Role
 const DashboardRouter = () => {
     const { profile } = useAuth();
-    
-    // Because ProtectedRoute forces the app to wait for the profile, 
-    // we can securely rely on profile.role being instantly available here!
     const role = profile?.role;
 
-    // Instantly redirects Drivers to their Routes page instead of the Dashboard
     if (role === 'driver') {
         return <Navigate to="/driver" replace />;
     }
 
-    // Route B2B and Agency Admins to their specific dashboard
     if (role === 'b2b' || role === 'agency_admin') {
         return <AgencyDashboard />;
     }
 
-    // Everyone else (Admins, Warehouse, etc.) gets the standard Dashboard
     return <Dashboard />;
 };
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        {/* Public Route */}
-        <Route path="/login" element={<Login />} />
-        
-        {/* Protected Routes wrapped in the Sidebar Layout */}
-        <Route path="/" element={
-          <ProtectedRoute>
-            <Layout />
-          </ProtectedRoute>
-        }>
-          {/* Automatically redirect from root "/" to "/dashboard" */}
-          <Route index element={<Navigate to="/dashboard" replace />} />
-          
-          <Route path="dashboard" element={<DashboardRouter />} />
-          <Route path="catalog" element={<Catalog />} />
-          <Route path="checkout" element={<Checkout />} />
-          <Route path="orders" element={<MyOrders />} /> 
-          <Route path="/profile" element={<Profile />} />
-          
-          {/* 🚀 STRICT ROLE PROTECTION: Admin & Warehouse Only */}
-          <Route path="admin/orders" element={
-            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
-              <AdminOrders />
-            </RoleProtectedRoute>
-          } />
-          <Route path="warehouse" element={
-            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
-              <Warehouse />
-            </RoleProtectedRoute>
-          } />
-          <Route path="dispatch" element={
-            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
-              <DispatchMonitor />
-            </RoleProtectedRoute>
-          } />
-          <Route path="admin/products" element={
-            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
-              <Products />
-            </RoleProtectedRoute>
-          } />
-          <Route path="fleet" element={
-            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
-              <FleetManagement />
-            </RoleProtectedRoute>
-          } />
-          <Route path="purchase-orders" element={
-            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
-              <PurchaseOrders />
-            </RoleProtectedRoute>
-          } />
-          
-          {/* 🚀 FIXED: Added 'warehouse' to allowed roles for Reports! */}
-          <Route path="admin/reports" element={
-            <RoleProtectedRoute allowedRoles={['admin', 'warehouse']}>
-              <Reports />
-            </RoleProtectedRoute>
-          } />
-          
-          {/* 🚀 STRICT ROLE PROTECTION: Admin Only */}
-          <Route path="admin/users" element={
-            <RoleProtectedRoute allowedRoles={['admin']}>
-              <AdminUsers />
-            </RoleProtectedRoute>
-          } />
-
-          {/* 🚀 STRICT ROLE PROTECTION: Drivers (and Admins for debugging) */}
-          <Route path="driver" element={
-            <RoleProtectedRoute allowedRoles={['admin', 'driver']}>
-              <DriverRoutes />
-            </RoleProtectedRoute>
-          } />
-
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        {/* 🚀 3. WRAP YOUR ROUTES IN THE SUSPENSE BOUNDARY */}
+        <Suspense fallback={<PageLoader />}>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            
+            <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+              <Route index element={<Navigate to="/dashboard" replace />} />
+              
+              <Route path="dashboard" element={<DashboardRouter />} />
+              <Route path="catalog" element={<Catalog />} />
+              <Route path="checkout" element={<Checkout />} />
+              <Route path="orders" element={<MyOrders />} /> 
+              <Route path="/profile" element={<Profile />} />
+              
+              <Route path="admin/orders" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><AdminOrders /></RoleProtectedRoute>} />
+              <Route path="warehouse" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Warehouse /></RoleProtectedRoute>} />
+              <Route path="dispatch" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><DispatchMonitor /></RoleProtectedRoute>} />
+              <Route path="admin/products" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Products /></RoleProtectedRoute>} />
+              <Route path="fleet" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><FleetManagement /></RoleProtectedRoute>} />
+              <Route path="purchase-orders" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><PurchaseOrders /></RoleProtectedRoute>} />
+              <Route path="admin/reports" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Reports /></RoleProtectedRoute>} />
+              
+              <Route path="admin/users" element={<RoleProtectedRoute allowedRoles={['admin']}><AdminUsers /></RoleProtectedRoute>} />
+              <Route path="driver" element={<RoleProtectedRoute allowedRoles={['admin', 'driver']}><DriverRoutes /></RoleProtectedRoute>} />
+            </Route>
+          </Routes>
+        </Suspense>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }
