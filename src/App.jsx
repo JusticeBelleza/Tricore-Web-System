@@ -36,8 +36,9 @@ const PageLoader = () => (
   </div>
 );
 
+// 🚀 ADDED 'export' HERE
 // Component to protect routes - redirects to login if there is no active session
-const ProtectedRoute = ({ children }) => {
+export const ProtectedRoute = ({ children }) => {
   const { user, profile, loading } = useAuth();
   
   if (loading || (user && !profile)) {
@@ -64,8 +65,9 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
+// 🚀 ADDED 'export' HERE
 // Component to strictly enforce Role-Based Access Control (RBAC)
-const RoleProtectedRoute = ({ allowedRoles, children }) => {
+export const RoleProtectedRoute = ({ allowedRoles, children }) => {
   const { profile } = useAuth();
   const userRole = profile?.role || 'user'; 
 
