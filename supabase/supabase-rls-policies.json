@@ -1,0 +1,346 @@
+[
+  {
+    "table_name": "agency_patients",
+    "policy_name": "Agency staff manage their own patients",
+    "target_roles": ["authenticated"],
+    "using_condition": "(((agency_id = get_my_company_id()) AND (get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text]))) OR (get_user_role() = 'admin'::text))",
+    "with_check_condition": "(((agency_id = get_my_company_id()) AND (get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text]))) OR (get_user_role() = 'admin'::text))",
+    "raw_sql": "ALTER POLICY \"Agency staff manage their own patients\" ON \"public\".\"agency_patients\" TO authenticated USING ((((agency_id = get_my_company_id()) AND (get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text]))) OR (get_user_role() = 'admin'::text))) WITH CHECK ((((agency_id = get_my_company_id()) AND (get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text]))) OR (get_user_role() = 'admin'::text)));"
+  },
+  {
+    "table_name": "companies",
+    "policy_name": "Staff delete companies",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Staff delete companies\" ON \"public\".\"companies\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "companies",
+    "policy_name": "Staff insert companies",
+    "target_roles": ["authenticated"],
+    "using_condition": null,
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff insert companies\" ON \"public\".\"companies\" TO authenticated WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "companies",
+    "policy_name": "Staff update companies",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff update companies\" ON \"public\".\"companies\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))) WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "companies",
+    "policy_name": "Users can view relevant companies",
+    "target_roles": ["authenticated"],
+    "using_condition": "((id = get_my_company_id()) OR (get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Users can view relevant companies\" ON \"public\".\"companies\" TO authenticated USING (((id = get_my_company_id()) OR (get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))));"
+  },
+  {
+    "table_name": "inventory",
+    "policy_name": "Everyone can update inventory",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'retail'::text, 'b2b'::text, 'driver'::text]))",
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'retail'::text, 'b2b'::text, 'driver'::text]))",
+    "raw_sql": "ALTER POLICY \"Everyone can update inventory\" ON \"public\".\"inventory\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'retail'::text, 'b2b'::text, 'driver'::text]))) WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'retail'::text, 'b2b'::text, 'driver'::text])));"
+  },
+  {
+    "table_name": "inventory",
+    "policy_name": "Logged in users can view inventory",
+    "target_roles": ["authenticated"],
+    "using_condition": "true",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Logged in users can view inventory\" ON \"public\".\"inventory\" TO authenticated USING (true);"
+  },
+  {
+    "table_name": "inventory",
+    "policy_name": "Only staff can delete inventory",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Only staff can delete inventory\" ON \"public\".\"inventory\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "inventory",
+    "policy_name": "Only staff can insert inventory",
+    "target_roles": ["authenticated"],
+    "using_condition": null,
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Only staff can insert inventory\" ON \"public\".\"inventory\" TO authenticated WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "order_items",
+    "policy_name": "Delete order items",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Delete order items\" ON \"public\".\"order_items\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "order_items",
+    "policy_name": "Insert order items",
+    "target_roles": ["authenticated"],
+    "using_condition": null,
+    "with_check_condition": "((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])) OR (EXISTS ( SELECT 1 FROM orders WHERE ((orders.id = order_items.order_id) AND ((orders.user_id = ( SELECT auth.uid() AS uid)) OR (orders.company_id = get_my_company_id()))))))",
+    "raw_sql": "ALTER POLICY \"Insert order items\" ON \"public\".\"order_items\" TO authenticated WITH CHECK (((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])) OR (EXISTS ( SELECT 1 FROM orders WHERE ((orders.id = order_items.order_id) AND ((orders.user_id = ( SELECT auth.uid() AS uid)) OR (orders.company_id = get_my_company_id())))))));"
+  },
+  {
+    "table_name": "order_items",
+    "policy_name": "Update order items",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text]))",
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text]))",
+    "raw_sql": "ALTER POLICY \"Update order items\" ON \"public\".\"order_items\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text]))) WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])));"
+  },
+  {
+    "table_name": "order_items",
+    "policy_name": "View order items",
+    "target_roles": ["authenticated"],
+    "using_condition": "((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])) OR (EXISTS ( SELECT 1 FROM orders WHERE ((orders.id = order_items.order_id) AND ((orders.user_id = ( SELECT auth.uid() AS uid)) OR (orders.company_id = get_my_company_id()))))))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"View order items\" ON \"public\".\"order_items\" TO authenticated USING (((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])) OR (EXISTS ( SELECT 1 FROM orders WHERE ((orders.id = order_items.order_id) AND ((orders.user_id = ( SELECT auth.uid() AS uid)) OR (orders.company_id = get_my_company_id())))))));"
+  },
+  {
+    "table_name": "orders",
+    "policy_name": "Delete orders",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Delete orders\" ON \"public\".\"orders\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "orders",
+    "policy_name": "Insert orders",
+    "target_roles": ["authenticated"],
+    "using_condition": null,
+    "with_check_condition": "((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])) OR ((get_user_role() = 'retail'::text) AND (user_id = ( SELECT auth.uid() AS uid))) OR ((get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text])) AND (company_id = get_my_company_id())))",
+    "raw_sql": "ALTER POLICY \"Insert orders\" ON \"public\".\"orders\" TO authenticated WITH CHECK (((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])) OR ((get_user_role() = 'retail'::text) AND (user_id = ( SELECT auth.uid() AS uid))) OR ((get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text])) AND (company_id = get_my_company_id()))));"
+  },
+  {
+    "table_name": "orders",
+    "policy_name": "Update orders",
+    "target_roles": ["authenticated"],
+    "using_condition": "((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])) OR ((get_user_role() = 'retail'::text) AND (user_id = ( SELECT auth.uid() AS uid))) OR ((get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text])) AND (company_id = get_my_company_id())))",
+    "with_check_condition": "((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])) OR ((get_user_role() = 'retail'::text) AND (user_id = ( SELECT auth.uid() AS uid))) OR ((get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text])) AND (company_id = get_my_company_id())))",
+    "raw_sql": "ALTER POLICY \"Update orders\" ON \"public\".\"orders\" TO authenticated USING (((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])) OR ((get_user_role() = 'retail'::text) AND (user_id = ( SELECT auth.uid() AS uid))) OR ((get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text])) AND (company_id = get_my_company_id())))) WITH CHECK (((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])) OR ((get_user_role() = 'retail'::text) AND (user_id = ( SELECT auth.uid() AS uid))) OR ((get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text])) AND (company_id = get_my_company_id()))));"
+  },
+  {
+    "table_name": "orders",
+    "policy_name": "View orders",
+    "target_roles": ["authenticated"],
+    "using_condition": "((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])) OR ((get_user_role() = 'retail'::text) AND (user_id = ( SELECT auth.uid() AS uid))) OR ((get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text])) AND (company_id = get_my_company_id())))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"View orders\" ON \"public\".\"orders\" TO authenticated USING (((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])) OR ((get_user_role() = 'retail'::text) AND (user_id = ( SELECT auth.uid() AS uid))) OR ((get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text])) AND (company_id = get_my_company_id()))));"
+  },
+  {
+    "table_name": "pricing_rules",
+    "policy_name": "Staff delete pricing rules",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Staff delete pricing rules\" ON \"public\".\"pricing_rules\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "pricing_rules",
+    "policy_name": "Staff insert pricing rules",
+    "target_roles": ["authenticated"],
+    "using_condition": null,
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff insert pricing rules\" ON \"public\".\"pricing_rules\" TO authenticated WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "pricing_rules",
+    "policy_name": "Staff update pricing rules",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff update pricing rules\" ON \"public\".\"pricing_rules\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))) WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "pricing_rules",
+    "policy_name": "View pricing rules",
+    "target_roles": ["authenticated"],
+    "using_condition": "((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])) OR ((get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text])) AND (company_id = get_my_company_id())))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"View pricing rules\" ON \"public\".\"pricing_rules\" TO authenticated USING (((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])) OR ((get_user_role() = ANY (ARRAY['b2b'::text, 'agency_admin'::text])) AND (company_id = get_my_company_id()))));"
+  },
+  {
+    "table_name": "product_variants",
+    "policy_name": "Anyone can view variants",
+    "target_roles": ["public"],
+    "using_condition": "true",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Anyone can view variants\" ON \"public\".\"product_variants\" TO public USING (true);"
+  },
+  {
+    "table_name": "product_variants",
+    "policy_name": "Staff delete variants",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Staff delete variants\" ON \"public\".\"product_variants\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "product_variants",
+    "policy_name": "Staff insert variants",
+    "target_roles": ["authenticated"],
+    "using_condition": null,
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff insert variants\" ON \"public\".\"product_variants\" TO authenticated WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "product_variants",
+    "policy_name": "Staff update variants",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff update variants\" ON \"public\".\"product_variants\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))) WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "products",
+    "policy_name": "Anyone can view products",
+    "target_roles": ["public"],
+    "using_condition": "true",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Anyone can view products\" ON \"public\".\"products\" TO public USING (true);"
+  },
+  {
+    "table_name": "products",
+    "policy_name": "Staff delete products",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Staff delete products\" ON \"public\".\"products\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "products",
+    "policy_name": "Staff insert products",
+    "target_roles": ["authenticated"],
+    "using_condition": null,
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff insert products\" ON \"public\".\"products\" TO authenticated WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "products",
+    "policy_name": "Staff update products",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff update products\" ON \"public\".\"products\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))) WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "profiles",
+    "policy_name": "Update profiles",
+    "target_roles": ["authenticated"],
+    "using_condition": "((( SELECT auth.uid() AS uid) = id) OR (get_user_role() = 'admin'::text))",
+    "with_check_condition": "((( SELECT auth.uid() AS uid) = id) OR (get_user_role() = 'admin'::text))",
+    "raw_sql": "ALTER POLICY \"Update profiles\" ON \"public\".\"profiles\" TO authenticated USING (((( SELECT auth.uid() AS uid) = id) OR (get_user_role() = 'admin'::text))) WITH CHECK (((( SELECT auth.uid() AS uid) = id) OR (get_user_role() = 'admin'::text)));"
+  },
+  {
+    "table_name": "profiles",
+    "policy_name": "View profiles",
+    "target_roles": ["authenticated"],
+    "using_condition": "true",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"View profiles\" ON \"public\".\"profiles\" TO authenticated USING (true);"
+  },
+  {
+    "table_name": "purchase_order_items",
+    "policy_name": "Staff manage PO Items",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff manage PO Items\" ON \"public\".\"purchase_order_items\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))) WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "stock_movements",
+    "policy_name": "Staff can insert stock movements",
+    "target_roles": ["authenticated"],
+    "using_condition": null,
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff can insert stock movements\" ON \"public\".\"stock_movements\" TO authenticated WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "tax_rates",
+    "policy_name": "Anyone can view tax rates",
+    "target_roles": ["public"],
+    "using_condition": "true",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Anyone can view tax rates\" ON \"public\".\"tax_rates\" TO public USING (true);"
+  },
+  {
+    "table_name": "tax_rates",
+    "policy_name": "Staff delete tax rates",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Staff delete tax rates\" ON \"public\".\"tax_rates\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "tax_rates",
+    "policy_name": "Staff insert tax rates",
+    "target_roles": ["authenticated"],
+    "using_condition": null,
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff insert tax rates\" ON \"public\".\"tax_rates\" TO authenticated WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "tax_rates",
+    "policy_name": "Staff update tax rates",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff update tax rates\" ON \"public\".\"tax_rates\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))) WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "user_profiles",
+    "policy_name": "Update user profiles",
+    "target_roles": ["authenticated"],
+    "using_condition": "((id = ( SELECT auth.uid() AS uid)) OR (get_user_role() = 'admin'::text) OR ((get_user_role() = 'agency_admin'::text) AND (company_id = get_my_company_id())))",
+    "with_check_condition": "((id = ( SELECT auth.uid() AS uid)) OR (get_user_role() = 'admin'::text) OR ((get_user_role() = 'agency_admin'::text) AND (company_id = get_my_company_id())))",
+    "raw_sql": "ALTER POLICY \"Update user profiles\" ON \"public\".\"user_profiles\" TO authenticated USING (((id = ( SELECT auth.uid() AS uid)) OR (get_user_role() = 'admin'::text) OR ((get_user_role() = 'agency_admin'::text) AND (company_id = get_my_company_id())))) WITH CHECK (((id = ( SELECT auth.uid() AS uid)) OR (get_user_role() = 'admin'::text) OR ((get_user_role() = 'agency_admin'::text) AND (company_id = get_my_company_id()))));"
+  },
+  {
+    "table_name": "user_profiles",
+    "policy_name": "View user profiles",
+    "target_roles": ["authenticated"],
+    "using_condition": "((id = ( SELECT auth.uid() AS uid)) OR (get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])) OR ((company_id IS NOT NULL) AND (company_id = get_my_company_id())) OR (role = 'driver'::text))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"View user profiles\" ON \"public\".\"user_profiles\" TO authenticated USING (((id = ( SELECT auth.uid() AS uid)) OR (get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])) OR ((company_id IS NOT NULL) AND (company_id = get_my_company_id())) OR (role = 'driver'::text)));"
+  },
+  {
+    "table_name": "vehicles",
+    "policy_name": "Staff and drivers view vehicles",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text]))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Staff and drivers view vehicles\" ON \"public\".\"vehicles\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text, 'driver'::text])));"
+  },
+  {
+    "table_name": "vehicles",
+    "policy_name": "Staff delete vehicles",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": null,
+    "raw_sql": "ALTER POLICY \"Staff delete vehicles\" ON \"public\".\"vehicles\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "vehicles",
+    "policy_name": "Staff insert vehicles",
+    "target_roles": ["authenticated"],
+    "using_condition": null,
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff insert vehicles\" ON \"public\".\"vehicles\" TO authenticated WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  },
+  {
+    "table_name": "vehicles",
+    "policy_name": "Staff update vehicles",
+    "target_roles": ["authenticated"],
+    "using_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "with_check_condition": "(get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))",
+    "raw_sql": "ALTER POLICY \"Staff update vehicles\" ON \"public\".\"vehicles\" TO authenticated USING ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text]))) WITH CHECK ((get_user_role() = ANY (ARRAY['admin'::text, 'warehouse'::text])));"
+  }
+]
