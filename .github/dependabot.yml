@@ -1,0 +1,7 @@
+version: 2
+updates:
+  - package-ecosystem: "npm" # Check for npm package updates
+    directory: "/"           # Look in the root package.json
+    schedule:
+      interval: "weekly"     # Run once a week
+    open-pull-requests-limit: 5

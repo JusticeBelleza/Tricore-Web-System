@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { createClient } from '@supabase/supabase-js'; 
 import Papa from 'papaparse'; 
+import { Turnstile } from '@marsidev/react-turnstile';
 import { 
   Search, UserPlus, Trash2, Shield, Mail, Phone, Lock, 
   CheckCircle2, XCircle, X, Users, Building, ShoppingBag, 
@@ -9,18 +10,35 @@ import {
   DownloadCloud, Save, ChevronLeft, ChevronRight, Package, ChevronDown, Wallet, MoreVertical, Edit, Truck, User, UserMinus
 } from 'lucide-react';
 
+// 🚀 THE FIX: Create the secondary client exactly ONCE outside the component 
+// to prevent the "Multiple GoTrueClient instances" memory warning.
+const adminAuthClient = createClient(
+  import.meta.env.VITE_SUPABASE_URL, 
+  import.meta.env.VITE_SUPABASE_ANON_KEY, 
+  { 
+    auth: { 
+      persistSession: false, 
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      storageKey: 'tricore-admin-temp-key' // 🚀 Adding this completely kills the warning!
+    } 
+  }
+);
+
 export default function AdminUsers() {
   const [activeTab, setActiveTab] = useState('staff'); 
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [loading, setLoading] = useState(true);
   
+  // --- CAPTCHA STATE ---
+  const [captchaToken, setCaptchaToken] = useState(null);
+  const turnstileRef = useRef(null);
+
   // --- SERVER-SIDE PAGINATION STATE ---
   const [users, setUsers] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [page, setPage] = useState(0);
-  
-  // 🚀 NEW: Dynamic Page Size State (Defaults to 10)
   const [pageSize, setPageSize] = useState(10); 
   
   // KPI & Secondary Data
@@ -48,7 +66,7 @@ export default function AdminUsers() {
   const [pricingPage, setPricingPage] = useState(0);
   const [isImporting, setIsImporting] = useState(false);
   
-  const PRICING_PAGE_SIZE = 15; // Kept static for the modal layout
+  const PRICING_PAGE_SIZE = 15;
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [confirmAction, setConfirmAction] = useState({ show: false, type: '', title: '', message: '', data: null });
@@ -60,7 +78,12 @@ export default function AdminUsers() {
   const [retailForm, setRetailForm] = useState({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '', password: '', confirm_password: '' });
   const [editAgencyForm, setEditAgencyForm] = useState({ userId: '', companyId: '', company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_phone: '' });
 
-  // --- DEBOUNCE SEARCH EFFECT ---
+  // Helper to reset captcha manually when closing modals
+  const resetCaptcha = () => {
+    setCaptchaToken(null);
+    if (turnstileRef.current) turnstileRef.current.reset();
+  };
+
   useEffect(() => {
     const handler = setTimeout(() => {
       setDebouncedSearch(searchTerm);
@@ -69,7 +92,6 @@ export default function AdminUsers() {
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
-  // Reset page when switching tabs
   useEffect(() => {
     setPage(0);
     setSearchTerm('');
@@ -101,10 +123,8 @@ export default function AdminUsers() {
     } catch (error) { console.error('Error fetching KPIs:', error); }
   };
 
-  // --- SERVER-SIDE PAGINATED FETCHING ---
   useEffect(() => {
     fetchUsers();
-    // 🚀 FIXED: Added pageSize to dependency array so it refetches when changed
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, page, debouncedSearch, pageSize]);
 
@@ -121,7 +141,6 @@ export default function AdminUsers() {
         query = query.or(`full_name.ilike.%${debouncedSearch}%,email.ilike.%${debouncedSearch}%`);
       }
 
-      // 🚀 Apply the dynamic pageSize
       const from = page * pageSize;
       const to = from + pageSize - 1;
       query = query.order('full_name', { ascending: true }).range(from, to);
@@ -156,7 +175,6 @@ export default function AdminUsers() {
       if (activeTab === 'b2b' && processedData.length > 0) {
         const companyIds = processedData.map(u => u.companies?.id).filter(Boolean);
         if (companyIds.length > 0) {
-          
           const { data: unpaidOrders } = await supabase.from('orders')
             .select('company_id, total_amount')
             .eq('payment_status', 'unpaid')
@@ -204,6 +222,7 @@ export default function AdminUsers() {
   // --- ACTIONS ---
   const triggerAddStaffConfirm = (e) => {
     e.preventDefault();
+    if (!captchaToken) return showToast("Please wait for security verification.", true);
     if (staffForm.password !== staffForm.confirm_password) return showToast("Passwords do not match!", true);
     if (staffForm.password.length < 6) return showToast("Password must be at least 6 characters.", true);
     setConfirmAction({ show: true, type: 'add_staff', title: 'Create Staff Account?', message: `Are you sure you want to create an account for ${staffForm.full_name}?`, data: staffForm });
@@ -212,11 +231,13 @@ export default function AdminUsers() {
   const executeAddStaff = async () => {
     setConfirmAction({ show: false }); setIsSubmitting(true);
     try {
-      const tempSupabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
-      const { data, error: authError } = await tempSupabase.auth.signUp({ 
+      if (!captchaToken) throw new Error("Security verification missing.");
+      
+      const { data, error: authError } = await adminAuthClient.auth.signUp({ 
         email: confirmAction.data.email, 
         password: confirmAction.data.password, 
         options: { 
+          captchaToken,
           data: { 
             full_name: confirmAction.data.full_name, 
             role: confirmAction.data.role.toLowerCase(), 
@@ -243,12 +264,18 @@ export default function AdminUsers() {
         setStaffForm({ full_name: '', email: '', contact_number: '', role: 'Warehouse', password: '', confirm_password: '', license_number: '', license_expiry: '' }); 
         showToast('Staff account created successfully!'); 
         setIsSubmitting(false); 
+        resetCaptcha();
       }, 1500);
-    } catch (error) { showToast(error.message, true); setIsSubmitting(false); }
+    } catch (error) { 
+      showToast(error.message, true); 
+      setIsSubmitting(false); 
+      resetCaptcha(); 
+    }
   };
 
   const triggerAddRetailConfirm = (e) => {
     e.preventDefault();
+    if (!captchaToken) return showToast("Please wait for security verification.", true);
     if (retailForm.password !== retailForm.confirm_password) return showToast("Passwords do not match!", true);
     if (retailForm.password.length < 6) return showToast("Password must be at least 6 characters.", true);
     setConfirmAction({ show: true, type: 'add_retail', title: 'Add Retail Customer?', message: `Create account for ${retailForm.full_name}?`, data: retailForm });
@@ -257,10 +284,14 @@ export default function AdminUsers() {
   const executeAddRetail = async () => {
     setConfirmAction({ show: false }); setIsSubmitting(true);
     try {
-      const tempSupabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
-      const { data, error: authError } = await tempSupabase.auth.signUp({ 
+      if (!captchaToken) throw new Error("Security verification missing.");
+      
+      const { data, error: authError } = await adminAuthClient.auth.signUp({ 
         email: confirmAction.data.email, password: confirmAction.data.password, 
-        options: { data: { full_name: confirmAction.data.full_name, role: 'retail', contact_number: confirmAction.data.contact_number, status: 'active' } } 
+        options: { 
+          captchaToken,
+          data: { full_name: confirmAction.data.full_name, role: 'retail', contact_number: confirmAction.data.contact_number, status: 'active' } 
+        } 
       });
       if (authError) throw authError;
 
@@ -270,12 +301,23 @@ export default function AdminUsers() {
         }).eq('id', data.user.id);
       }
 
-      setTimeout(() => { fetchUsers(); fetchKPIs(); setShowAddRetailModal(false); setRetailForm({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '', password: '', confirm_password: '' }); showToast('Retail customer created successfully!'); setIsSubmitting(false); }, 1500);
-    } catch (error) { showToast(error.message, true); setIsSubmitting(false); }
+      setTimeout(() => { 
+        fetchUsers(); fetchKPIs(); setShowAddRetailModal(false); 
+        setRetailForm({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '', password: '', confirm_password: '' }); 
+        showToast('Retail customer created successfully!'); 
+        setIsSubmitting(false); 
+        resetCaptcha(); 
+      }, 1500);
+    } catch (error) { 
+      showToast(error.message, true); 
+      setIsSubmitting(false); 
+      resetCaptcha(); 
+    }
   };
 
   const triggerAddB2bConfirm = (e) => {
     e.preventDefault();
+    if (!captchaToken) return showToast("Please wait for security verification.", true);
     if (b2bForm.password !== b2bForm.confirm_password) return showToast("Passwords do not match!", true);
     if (b2bForm.password.length < 6) return showToast("Password must be at least 6 characters.", true);
     setConfirmAction({ show: true, type: 'add_b2b', title: 'Create B2B Agency?', message: `Register ${b2bForm.company_name}?`, data: b2bForm });
@@ -284,20 +326,47 @@ export default function AdminUsers() {
   const executeAddB2b = async () => {
     setConfirmAction({ show: false }); setIsSubmitting(true);
     try {
+      if (!captchaToken) throw new Error("Security verification missing.");
       const rawLimit = Number(confirmAction.data.credit_limit.replace(/,/g, '')) || 0; 
       const rawShippingFee = Number(confirmAction.data.shipping_fee.replace(/,/g, '')) || 0; 
       
+      // 1. Create the Company Record
       const { data: company, error: companyError } = await supabase.from('companies').insert([{
         name: confirmAction.data.company_name, address: confirmAction.data.address, city: confirmAction.data.city, state: confirmAction.data.state, zip: confirmAction.data.zip, phone: confirmAction.data.admin_phone, email: confirmAction.data.admin_email, account_type: 'B2B', credit_limit: rawLimit, shipping_fee: rawShippingFee
       }]).select().single();
       if (companyError) throw companyError;
 
-      const tempSupabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
-      const { error: authError } = await tempSupabase.auth.signUp({ email: confirmAction.data.admin_email, password: confirmAction.data.password, options: { data: { full_name: confirmAction.data.admin_name, role: 'b2b', contact_number: confirmAction.data.admin_phone, company_id: company.id, status: 'active' } } });
+      // 2. Create the Auth User
+      const { data: authData, error: authError } = await adminAuthClient.auth.signUp({ 
+        email: confirmAction.data.admin_email, password: confirmAction.data.password, 
+        options: { 
+          captchaToken,
+          data: { full_name: confirmAction.data.admin_name, role: 'b2b', contact_number: confirmAction.data.admin_phone, company_id: company.id, status: 'active' } 
+        } 
+      });
       if (authError) throw authError;
 
-      setTimeout(() => { fetchUsers(); fetchKPIs(); setShowAddB2bModal(false); setB2bForm({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '', shipping_fee: '' }); showToast('Agency account created successfully!'); setIsSubmitting(false); }, 1500);
-    } catch (error) { showToast(error.message, true); setIsSubmitting(false); }
+      // 3. Explicitly link the new User to the new Company in user_profiles
+      if (authData?.user?.id) {
+        const { error: updateError } = await supabase.from('user_profiles').update({
+          company_id: company.id
+        }).eq('id', authData.user.id);
+        
+        if (updateError) throw updateError;
+      }
+
+      setTimeout(() => { 
+        fetchUsers(); fetchKPIs(); setShowAddB2bModal(false); 
+        setB2bForm({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '', shipping_fee: '' }); 
+        showToast('Agency account created successfully!'); 
+        setIsSubmitting(false); 
+        resetCaptcha(); 
+      }, 1500);
+    } catch (error) { 
+      showToast(error.message, true); 
+      setIsSubmitting(false); 
+      resetCaptcha(); 
+    }
   };
 
   const handleEditAgencySubmit = async (e) => {
@@ -774,7 +843,6 @@ export default function AdminUsers() {
             </table>
           </div>
           
-          {/* 🚀 FIXED: Dynamic Pagination Footer with Dropdown */}
           {totalCount > 0 && (
             <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex flex-col sm:flex-row justify-between items-center gap-4 shrink-0">
               
@@ -814,7 +882,7 @@ export default function AdminUsers() {
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl flex flex-col border border-slate-100 overflow-hidden">
             <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
               <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><UserPlus size={18}/> Add Retail Customer</h3>
-              <button onClick={() => setShowAddRetailModal(false)} className="p-1 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
+              <button onClick={() => { setShowAddRetailModal(false); resetCaptcha(); }} className="p-1 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
             </div>
             
             <form onSubmit={triggerAddRetailConfirm} className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
@@ -847,46 +915,21 @@ export default function AdminUsers() {
                 </div>
               </div>
 
-              <div className="pt-2 flex gap-3"><button type="button" onClick={() => setShowAddRetailModal(false)} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button><button type="submit" disabled={isSubmitting} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all">{isSubmitting ? 'Processing...' : <><UserPlus size={16} /> Create Customer</>}</button></div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* --- EDIT AGENCY & CONTACT MODAL --- */}
-      {showEditAgencyModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl flex flex-col border border-slate-100 overflow-hidden">
-            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-              <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><Edit size={18}/> Edit Agency Profile</h3>
-              <button onClick={() => setShowEditAgencyModal(false)} className="p-1 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
-            </div>
-            
-            <form onSubmit={handleEditAgencySubmit} className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
-              
-              <div>
-                <h4 className="text-sm font-bold text-slate-900 mb-3 border-b border-slate-100 pb-2">Agency Details</h4>
-                <div className="space-y-4">
-                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Company Name</label><input type="text" required value={editAgencyForm.company_name} onChange={e => setEditAgencyForm({...editAgencyForm, company_name: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold transition-all" /></div>
-                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Street Address</label><div className="relative"><MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="text" required value={editAgencyForm.address} onChange={e => setEditAgencyForm({...editAgencyForm, address: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
-                  <div className="grid grid-cols-3 gap-4">
-                    <div className="col-span-1"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">City</label><input type="text" required value={editAgencyForm.city} onChange={e => setEditAgencyForm({...editAgencyForm, city: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div>
-                    <div className="col-span-1"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">State</label><input type="text" required value={editAgencyForm.state} onChange={e => setEditAgencyForm({...editAgencyForm, state: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div>
-                    <div className="col-span-1"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">ZIP Code</label><input type="text" required value={editAgencyForm.zip} onChange={e => setEditAgencyForm({...editAgencyForm, zip: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div>
-                  </div>
-                </div>
+              {/* Turnstile Widget */}
+              <div className="flex justify-center pt-2 pb-1 min-h-[65px]">
+                <Turnstile 
+                  ref={turnstileRef}
+                  siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY || ''} 
+                  onSuccess={(token) => setCaptchaToken(token)}
+                  onExpire={() => setCaptchaToken(null)}
+                  options={{ theme: 'light' }}
+                />
               </div>
 
-              <div>
-                <h4 className="text-sm font-bold text-slate-900 mb-3 border-b border-slate-100 pb-2">Primary Contact (Admin)</h4>
-                <p className="text-[10px] text-slate-500 mb-3 italic">Note: For security reasons, if the login email must change completely, please create a new user account.</p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Contact Name</label><input type="text" required value={editAgencyForm.admin_name} onChange={e => setEditAgencyForm({...editAgencyForm, admin_name: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold transition-all" /></div>
-                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Phone Number</label><div className="relative"><Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="tel" required value={editAgencyForm.admin_phone} onChange={e => setEditAgencyForm({...editAgencyForm, admin_phone: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
-                </div>
+              <div className="pt-2 flex gap-3">
+                <button type="button" onClick={() => { setShowAddRetailModal(false); resetCaptcha(); }} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button>
+                <button type="submit" disabled={isSubmitting || !captchaToken} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 disabled:bg-slate-400 transition-all">{isSubmitting ? 'Processing...' : <><UserPlus size={16} /> Create Customer</>}</button>
               </div>
-
-              <div className="pt-2 flex gap-3"><button type="button" onClick={() => setShowEditAgencyModal(false)} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button><button type="submit" disabled={isSubmitting} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all">{isSubmitting ? 'Saving...' : <><Save size={16} /> Save Changes</>}</button></div>
             </form>
           </div>
         </div>
@@ -898,7 +941,7 @@ export default function AdminUsers() {
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl flex flex-col border border-slate-100 overflow-hidden">
             <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
               <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><Building2 size={18}/> Register B2B Agency</h3>
-              <button onClick={() => setShowAddB2bModal(false)} className="p-1 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
+              <button onClick={() => { setShowAddB2bModal(false); resetCaptcha(); }} className="p-1 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
             </div>
             
             <form onSubmit={triggerAddB2bConfirm} className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
@@ -955,7 +998,21 @@ export default function AdminUsers() {
                 </div>
               </div>
 
-              <div className="pt-2 flex gap-3"><button type="button" onClick={() => setShowAddB2bModal(false)} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button><button type="submit" disabled={isSubmitting} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all">{isSubmitting ? 'Processing...' : <><Building2 size={16} /> Register Agency</>}</button></div>
+              {/* Turnstile Widget */}
+              <div className="flex justify-center pt-2 pb-1 min-h-[65px]">
+                <Turnstile 
+                  ref={turnstileRef}
+                  siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY || ''} 
+                  onSuccess={(token) => setCaptchaToken(token)}
+                  onExpire={() => setCaptchaToken(null)}
+                  options={{ theme: 'light' }}
+                />
+              </div>
+
+              <div className="pt-2 flex gap-3">
+                <button type="button" onClick={() => { setShowAddB2bModal(false); resetCaptcha(); }} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button>
+                <button type="submit" disabled={isSubmitting || !captchaToken} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 disabled:bg-slate-400 transition-all">{isSubmitting ? 'Processing...' : <><Building2 size={16} /> Register Agency</>}</button>
+              </div>
             </form>
           </div>
         </div>
@@ -965,7 +1022,10 @@ export default function AdminUsers() {
       {showAddStaffModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-xl flex flex-col border border-slate-100 overflow-hidden">
-            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50"><h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><UserPlus size={18}/> Add New Staff Member</h3><button onClick={() => setShowAddStaffModal(false)} className="p-1 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button></div>
+            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><UserPlus size={18}/> Add New Staff Member</h3>
+              <button onClick={() => { setShowAddStaffModal(false); resetCaptcha(); }} className="p-1 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
+            </div>
             <form onSubmit={triggerAddStaffConfirm} className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
               <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Full Name</label><input type="text" name="full_name" required value={staffForm.full_name} onChange={e => setStaffForm({...staffForm, full_name: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold transition-all" /></div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -992,7 +1052,61 @@ export default function AdminUsers() {
                 <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Temporary Password</label><div className="relative"><Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="password" name="password" required value={staffForm.password} onChange={e => setStaffForm({...staffForm, password: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
                 <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Confirm Password</label><div className="relative"><Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="password" name="confirm_password" required value={staffForm.confirm_password} onChange={e => setStaffForm({...staffForm, confirm_password: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
               </div>
-              <div className="pt-2 flex gap-3"><button type="button" onClick={() => setShowAddStaffModal(false)} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button><button type="submit" disabled={isSubmitting} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all">{isSubmitting ? 'Processing...' : <><UserPlus size={16} /> Create Staff</>}</button></div>
+
+              {/* Turnstile Widget */}
+              <div className="flex justify-center pt-2 pb-1 min-h-[65px]">
+                <Turnstile 
+                  ref={turnstileRef}
+                  siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY || ''} 
+                  onSuccess={(token) => setCaptchaToken(token)}
+                  onExpire={() => setCaptchaToken(null)}
+                  options={{ theme: 'light' }}
+                />
+              </div>
+
+              <div className="pt-2 flex gap-3">
+                <button type="button" onClick={() => { setShowAddStaffModal(false); resetCaptcha(); }} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button>
+                <button type="submit" disabled={isSubmitting || !captchaToken} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 disabled:bg-slate-400 transition-all">{isSubmitting ? 'Processing...' : <><UserPlus size={16} /> Create Staff</>}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- EDIT AGENCY & CONTACT MODAL --- */}
+      {showEditAgencyModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl flex flex-col border border-slate-100 overflow-hidden">
+            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><Edit size={18}/> Edit Agency Profile</h3>
+              <button onClick={() => setShowEditAgencyModal(false)} className="p-1 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
+            </div>
+            
+            <form onSubmit={handleEditAgencySubmit} className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+              
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 mb-3 border-b border-slate-100 pb-2">Agency Details</h4>
+                <div className="space-y-4">
+                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Company Name</label><input type="text" required value={editAgencyForm.company_name} onChange={e => setEditAgencyForm({...editAgencyForm, company_name: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold transition-all" /></div>
+                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Street Address</label><div className="relative"><MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="text" required value={editAgencyForm.address} onChange={e => setEditAgencyForm({...editAgencyForm, address: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="col-span-1"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">City</label><input type="text" required value={editAgencyForm.city} onChange={e => setEditAgencyForm({...editAgencyForm, city: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div>
+                    <div className="col-span-1"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">State</label><input type="text" required value={editAgencyForm.state} onChange={e => setEditAgencyForm({...editAgencyForm, state: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div>
+                    <div className="col-span-1"><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">ZIP Code</label><input type="text" required value={editAgencyForm.zip} onChange={e => setEditAgencyForm({...editAgencyForm, zip: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 mb-3 border-b border-slate-100 pb-2">Primary Contact (Admin)</h4>
+                <p className="text-[10px] text-slate-500 mb-3 italic">Note: For security reasons, if the login email must change completely, please create a new user account.</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Contact Name</label><input type="text" required value={editAgencyForm.admin_name} onChange={e => setEditAgencyForm({...editAgencyForm, admin_name: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold transition-all" /></div>
+                  <div><label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Phone Number</label><div className="relative"><Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="tel" required value={editAgencyForm.admin_phone} onChange={e => setEditAgencyForm({...editAgencyForm, admin_phone: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" /></div></div>
+                </div>
+              </div>
+
+              <div className="pt-2 flex gap-3"><button type="button" onClick={() => setShowEditAgencyModal(false)} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button><button type="submit" disabled={isSubmitting} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all">{isSubmitting ? 'Saving...' : <><Save size={16} /> Save Changes</>}</button></div>
             </form>
           </div>
         </div>
