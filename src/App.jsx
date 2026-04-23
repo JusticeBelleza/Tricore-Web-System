@@ -5,7 +5,7 @@ import { useAuth } from './lib/AuthContext';
 import { ErrorBoundary } from './components/ErrorBoundary'; 
 
 // 🚀 1. LAZY LOAD THE PAGES
-const Home = React.lazy(() => import('./pages/Home')); // <-- The new Public Storefront
+const Home = React.lazy(() => import('./pages/Home')); // <-- The Public Storefront
 const Login = React.lazy(() => import('./pages/Login'));
 const Catalog = React.lazy(() => import('./pages/Catalog'));
 const Checkout = React.lazy(() => import('./pages/Checkout'));
@@ -101,8 +101,10 @@ export default function App() {
             {/* ==========================================
                 PUBLIC ROUTES (Accessible without logging in)
                 ========================================== */}
-            {/* If they go to your main URL, they see the Storefront! */}
+            
+            {/* 🚀 Make the Storefront the default landing page */}
             <Route path="/" element={<Home />} />
+            
             {/* If they accidentally type /home, invisibly bounce them to the main URL */}
             <Route path="/home" element={<Navigate to="/" replace />} />
             <Route path="/login" element={<Login />} />
@@ -111,7 +113,6 @@ export default function App() {
                 PROTECTED ROUTES (Requires Login & Layout)
                 ========================================== */}
             <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-              {/* (The conflicting index route has been completely removed) */}
               
               <Route path="/dashboard" element={<DashboardRouter />} />
               <Route path="/catalog" element={<Catalog />} />
