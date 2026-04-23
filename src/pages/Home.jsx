@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase';
 import { 
   Truck, ShieldCheck, Clock, ArrowRight, Package, Lock, 
   ShoppingCart, Search, UserPlus, ChevronLeft, ChevronRight, 
-  User, LayoutDashboard, Award, ChevronDown, MapPin, Mail, Phone
+  User, LayoutDashboard, Award, ChevronDown, MapPin, Mail, Phone, Users
 } from 'lucide-react';
 
 export default function Home() {
@@ -195,9 +195,59 @@ export default function Home() {
       </section>
 
       {/* =========================================
-          3. STOREFRONT & CATALOG
+          3. WHY CHOOSE US
           ========================================= */}
-      <section id="catalog" className="max-w-7xl mx-auto px-6 py-16 w-full flex-grow flex flex-col scroll-mt-24">
+      <section className="bg-slate-50 py-20 sm:py-28 border-b border-slate-200 relative">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="text-center mb-16">
+            <h2 className="text-3xl lg:text-4xl font-black text-slate-900 tracking-tight">Why Choose Tricore?</h2>
+            <div className="w-20 h-1.5 bg-blue-600 mx-auto mt-6 rounded-full"></div>
+          </div>
+          
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
+            {/* Item 1 */}
+            <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group">
+              <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-6 border border-blue-100 group-hover:scale-110 transition-transform">
+                <ShieldCheck size={28} />
+              </div>
+              <h3 className="font-bold text-xl text-slate-900 mb-3 leading-tight">Uncompromising Product Quality</h3>
+              <p className="text-slate-500 text-sm leading-relaxed font-medium">Industry-standard equipment rigorously vetted for safety and peak performance.</p>
+            </div>
+            
+            {/* Item 2 */}
+            <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group">
+              <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-6 border border-emerald-100 group-hover:scale-110 transition-transform">
+                <Package size={28} />
+              </div>
+              <h3 className="font-bold text-xl text-slate-900 mb-3 leading-tight">Reliable Supply, Always Available</h3>
+              <p className="text-slate-500 text-sm leading-relaxed font-medium">Consistent inventory levels to ensure you never run out of critical supplies.</p>
+            </div>
+            
+            {/* Item 3 */}
+            <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group">
+              <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mb-6 border border-indigo-100 group-hover:scale-110 transition-transform">
+                <Users size={28} />
+              </div>
+              <h3 className="font-bold text-xl text-slate-900 mb-3 leading-tight">Trusted by Medical Professionals</h3>
+              <p className="text-slate-500 text-sm leading-relaxed font-medium">The preferred logistical partner for healthcare facilities across California.</p>
+            </div>
+            
+            {/* Item 4 */}
+            <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group">
+              <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mb-6 border border-amber-100 group-hover:scale-110 transition-transform">
+                <Truck size={28} />
+              </div>
+              <h3 className="font-bold text-xl text-slate-900 mb-3 leading-tight">Efficient and Timely Delivery</h3>
+              <p className="text-slate-500 text-sm leading-relaxed font-medium">Fast, accurate shipping to keep your clinical operations running smoothly.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* =========================================
+          4. STOREFRONT & CATALOG
+          ========================================= */}
+      <section id="catalog" className="max-w-7xl mx-auto px-6 py-20 w-full flex-grow flex flex-col scroll-mt-24">
         
         {/* Responsive Toolbar: Title + Dropdown + Search */}
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 mb-10 shrink-0">
@@ -355,7 +405,7 @@ export default function Home() {
       </section>
 
       {/* =========================================
-          4. ABOUT SECTION
+          5. ABOUT SECTION
           ========================================= */}
       <section id="about" className="bg-white border-t border-slate-200 py-16 sm:py-24">
         <div className="max-w-7xl mx-auto px-6">
@@ -411,7 +461,7 @@ export default function Home() {
       </section>
 
       {/* =========================================
-          5. ACCREDITATION SECTION
+          6. ACCREDITATION SECTION
           ========================================= */}
       <section id="accreditation" className="bg-slate-50 border-t border-slate-200 py-16 sm:py-20 relative overflow-hidden">
         <div className="absolute top-0 right-0 w-64 h-64 bg-blue-100 rounded-full blur-[80px] opacity-50 -translate-y-1/2 translate-x-1/4"></div>
@@ -435,7 +485,7 @@ export default function Home() {
       </section>
 
       {/* =========================================
-          6. VALUE PROPS
+          7. VALUE PROPS
           ========================================= */}
       <section className="bg-white border-t border-slate-200 py-16">
         <div className="max-w-7xl mx-auto px-6">
@@ -466,9 +516,33 @@ export default function Home() {
       </section>
 
       {/* =========================================
-          7. CLEAN PROFESSIONAL FOOTER
+          8. BOTTOM CTA BANNER (MOVED)
           ========================================= */}
-      <footer className="bg-slate-900 text-slate-300 py-16 border-t border-slate-800">
+      <section className="bg-blue-600 relative overflow-hidden shrink-0 border-t border-blue-700">
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#ffffff1a_1px,transparent_1px),linear-gradient(to_bottom,#ffffff1a_1px,transparent_1px)] bg-[size:24px_24px]"></div>
+        <div className="absolute right-0 top-0 w-[500px] h-[500px] bg-white rounded-full blur-[120px] opacity-10 translate-x-1/3 -translate-y-1/4 pointer-events-none"></div>
+        
+        <div className="max-w-7xl mx-auto px-6 py-16 sm:py-20 relative z-10 flex flex-col lg:flex-row items-center justify-between text-center lg:text-left gap-10">
+          <div className="max-w-2xl">
+            <h2 className="text-3xl sm:text-4xl font-black text-white tracking-tight mb-4">Partner with a supply you can rely on.</h2>
+            <p className="text-blue-100 text-lg sm:text-xl font-medium">Secure your medical supply with confidence. Connect with our team today.</p>
+          </div>
+          <div className="shrink-0">
+            {/* 🚀 MAILTO LINK HERE */}
+            <a 
+              href="mailto:info@tricoremedicalsupply.com" 
+              className="inline-flex px-8 py-4 bg-white text-blue-600 font-extrabold rounded-xl hover:bg-slate-50 transition-all shadow-xl hover:shadow-2xl active:scale-95 items-center justify-center gap-2 text-lg border border-blue-50"
+            >
+              <Mail size={20} strokeWidth={2.5} /> Request a Quote
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* =========================================
+          9. CLEAN PROFESSIONAL FOOTER
+          ========================================= */}
+      <footer className="bg-slate-900 text-slate-300 py-16">
         <div className="max-w-7xl mx-auto px-6">
           
           <div className="grid grid-cols-1 md:grid-cols-4 gap-12 mb-12">
