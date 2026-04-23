@@ -135,7 +135,7 @@ export default function Home() {
             />
           </div>
           
-          {/* Action Buttons */}
+          {/* Action Button */}
           <div>
             {!session ? (
               <Link 
