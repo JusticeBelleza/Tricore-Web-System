@@ -131,7 +131,7 @@ export default function Home() {
             <img 
               src="/images/tricore-logo2.png" 
               alt="Tricore Medical Logo" 
-              className="h-10 sm:h-15 w-auto object-contain" 
+              className="h-10 sm:h-12 w-auto object-contain" 
             />
           </div>
           
@@ -205,7 +205,6 @@ export default function Home() {
           </div>
           
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
-            {/* Item 1 */}
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group">
               <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-6 border border-blue-100 group-hover:scale-110 transition-transform">
                 <ShieldCheck size={28} />
@@ -214,7 +213,6 @@ export default function Home() {
               <p className="text-slate-500 text-sm leading-relaxed font-medium">Industry-standard equipment rigorously vetted for safety and peak performance.</p>
             </div>
             
-            {/* Item 2 */}
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group">
               <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-6 border border-emerald-100 group-hover:scale-110 transition-transform">
                 <Package size={28} />
@@ -223,7 +221,6 @@ export default function Home() {
               <p className="text-slate-500 text-sm leading-relaxed font-medium">Consistent inventory levels to ensure you never run out of critical supplies.</p>
             </div>
             
-            {/* Item 3 */}
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group">
               <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mb-6 border border-indigo-100 group-hover:scale-110 transition-transform">
                 <Users size={28} />
@@ -232,7 +229,6 @@ export default function Home() {
               <p className="text-slate-500 text-sm leading-relaxed font-medium">The preferred logistical partner for healthcare facilities across California.</p>
             </div>
             
-            {/* Item 4 */}
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group">
               <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mb-6 border border-amber-100 group-hover:scale-110 transition-transform">
                 <Truck size={28} />
@@ -249,7 +245,7 @@ export default function Home() {
           ========================================= */}
       <section id="catalog" className="max-w-7xl mx-auto px-6 py-20 w-full flex-grow flex flex-col scroll-mt-24">
         
-        {/* Responsive Toolbar: Title + Dropdown + Search */}
+        {/* Responsive Toolbar */}
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 mb-10 shrink-0">
           <div className="w-full lg:w-auto">
             <h2 className="text-3xl font-black text-slate-900 tracking-tight">Catalog</h2>
@@ -274,7 +270,7 @@ export default function Home() {
                 />
               </button>
 
-              {/* The Dropdown Menu Menu */}
+              {/* The Dropdown Menu */}
               {isDropdownOpen && (
                 <div className="absolute z-50 w-full mt-2 bg-white border border-slate-100 rounded-xl shadow-xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
                   <ul className="max-h-64 overflow-y-auto divide-y divide-slate-50 py-1">
@@ -516,7 +512,7 @@ export default function Home() {
       </section>
 
       {/* =========================================
-          8. BOTTOM CTA BANNER (MOVED)
+          8. BOTTOM CTA BANNER
           ========================================= */}
       <section className="bg-blue-600 relative overflow-hidden shrink-0 border-t border-blue-700">
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#ffffff1a_1px,transparent_1px),linear-gradient(to_bottom,#ffffff1a_1px,transparent_1px)] bg-[size:24px_24px]"></div>
@@ -528,9 +524,9 @@ export default function Home() {
             <p className="text-blue-100 text-lg sm:text-xl font-medium">Secure your medical supply with confidence. Connect with our team today.</p>
           </div>
           <div className="shrink-0">
-            {/* 🚀 MAILTO LINK HERE */}
+            {/* 🚀 STANDARD MAILTO LINK (Forces default desktop app) */}
             <a 
-              href="mailto:info@tricoremedicalsupply.com" 
+              href="mailto:info@tricoremedicalsupply.com?subject=Wholesale%20Quote%20Request" 
               className="inline-flex px-8 py-4 bg-white text-blue-600 font-extrabold rounded-xl hover:bg-slate-50 transition-all shadow-xl hover:shadow-2xl active:scale-95 items-center justify-center gap-2 text-lg border border-blue-50"
             >
               <Mail size={20} strokeWidth={2.5} /> Request a Quote
