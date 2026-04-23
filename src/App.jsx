@@ -5,7 +5,7 @@ import { useAuth } from './lib/AuthContext';
 import { ErrorBoundary } from './components/ErrorBoundary'; 
 
 // 🚀 1. LAZY LOAD THE PAGES
-// These are only downloaded from the server when the user actually navigates to them!
+const Home = React.lazy(() => import('./pages/Home')); // <-- The new Public Storefront
 const Login = React.lazy(() => import('./pages/Login'));
 const Catalog = React.lazy(() => import('./pages/Catalog'));
 const Checkout = React.lazy(() => import('./pages/Checkout'));
@@ -24,7 +24,6 @@ const Products = React.lazy(() => import('./pages/Products'));
 const PurchaseOrders = React.lazy(() => import('./pages/PurchaseOrders'));
 
 // 🚀 2. CREATE A SUSPENSE FALLBACK UI
-// This displays for a fraction of a second while the requested page chunk downloads
 const PageLoader = () => (
   <div className="min-h-[60vh] flex items-center justify-center flex-1">
     <div className="flex flex-col items-center gap-4">
@@ -36,7 +35,6 @@ const PageLoader = () => (
   </div>
 );
 
-// 🚀 ADDED 'export' HERE
 // Component to protect routes - redirects to login if there is no active session
 export const ProtectedRoute = ({ children }) => {
   const { user, profile, loading } = useAuth();
@@ -65,7 +63,6 @@ export const ProtectedRoute = ({ children }) => {
   return children;
 };
 
-// 🚀 ADDED 'export' HERE
 // Component to strictly enforce Role-Based Access Control (RBAC)
 export const RoleProtectedRoute = ({ allowedRoles, children }) => {
   const { profile } = useAuth();
@@ -101,28 +98,41 @@ export default function App() {
         {/* 🚀 3. WRAP YOUR ROUTES IN THE SUSPENSE BOUNDARY */}
         <Suspense fallback={<PageLoader />}>
           <Routes>
+            {/* ==========================================
+                PUBLIC ROUTES (Accessible without logging in)
+                ========================================== */}
+            {/* If they go to your main URL, they see the Storefront! */}
+            <Route path="/" element={<Home />} />
+            {/* If they accidentally type /home, invisibly bounce them to the main URL */}
+            <Route path="/home" element={<Navigate to="/" replace />} />
             <Route path="/login" element={<Login />} />
             
-            <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-              <Route index element={<Navigate to="/dashboard" replace />} />
+            {/* ==========================================
+                PROTECTED ROUTES (Requires Login & Layout)
+                ========================================== */}
+            <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+              {/* (The conflicting index route has been completely removed) */}
               
-              <Route path="dashboard" element={<DashboardRouter />} />
-              <Route path="catalog" element={<Catalog />} />
-              <Route path="checkout" element={<Checkout />} />
-              <Route path="orders" element={<MyOrders />} /> 
+              <Route path="/dashboard" element={<DashboardRouter />} />
+              <Route path="/catalog" element={<Catalog />} />
+              <Route path="/checkout" element={<Checkout />} />
+              <Route path="/orders" element={<MyOrders />} /> 
               <Route path="/profile" element={<Profile />} />
               
-              <Route path="admin/orders" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><AdminOrders /></RoleProtectedRoute>} />
-              <Route path="warehouse" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Warehouse /></RoleProtectedRoute>} />
-              <Route path="dispatch" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><DispatchMonitor /></RoleProtectedRoute>} />
-              <Route path="admin/products" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Products /></RoleProtectedRoute>} />
-              <Route path="fleet" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><FleetManagement /></RoleProtectedRoute>} />
-              <Route path="purchase-orders" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><PurchaseOrders /></RoleProtectedRoute>} />
-              <Route path="admin/reports" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Reports /></RoleProtectedRoute>} />
+              <Route path="/admin/orders" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><AdminOrders /></RoleProtectedRoute>} />
+              <Route path="/warehouse" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Warehouse /></RoleProtectedRoute>} />
+              <Route path="/dispatch" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><DispatchMonitor /></RoleProtectedRoute>} />
+              <Route path="/admin/products" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Products /></RoleProtectedRoute>} />
+              <Route path="/fleet" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><FleetManagement /></RoleProtectedRoute>} />
+              <Route path="/purchase-orders" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><PurchaseOrders /></RoleProtectedRoute>} />
+              <Route path="/admin/reports" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Reports /></RoleProtectedRoute>} />
               
-              <Route path="admin/users" element={<RoleProtectedRoute allowedRoles={['admin']}><AdminUsers /></RoleProtectedRoute>} />
-              <Route path="driver" element={<RoleProtectedRoute allowedRoles={['admin', 'driver']}><DriverRoutes /></RoleProtectedRoute>} />
+              <Route path="/admin/users" element={<RoleProtectedRoute allowedRoles={['admin']}><AdminUsers /></RoleProtectedRoute>} />
+              <Route path="/driver" element={<RoleProtectedRoute allowedRoles={['admin', 'driver']}><DriverRoutes /></RoleProtectedRoute>} />
             </Route>
+
+            {/* Ultimate Catch-all: If someone types a completely random URL, send them to the Home page */}
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>
       </BrowserRouter>
