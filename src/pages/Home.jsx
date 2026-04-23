@@ -131,7 +131,7 @@ export default function Home() {
             <img 
               src="/images/tricore-logo2.png" 
               alt="Tricore Medical Logo" 
-              className="h-10 sm:h-12 w-auto object-contain" 
+              className="h-10 sm:h-15 w-auto object-contain" 
             />
           </div>
           
