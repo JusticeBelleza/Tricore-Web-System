@@ -104,6 +104,19 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
     }
   }, [directions, activeLegIndex]);
 
+  // 🚀 GENERATE THE GOOGLE MAPS DIRECT URL FOR THE WHOLE ROUTE
+  const getGoogleMapsRouteUrl = () => {
+    if (!directions || !directions.routes[0]) return '';
+    const origin = encodeURIComponent(WAREHOUSE_ADDRESS);
+    
+    // Safely extract the optimized sequence directly from Google's response legs
+    const legs = directions.routes[0].legs;
+    const wpAddresses = legs.slice(0, -1).map(leg => encodeURIComponent(leg.end_address));
+    
+    const waypointsParam = wpAddresses.length > 0 ? `&waypoints=${wpAddresses.join('|')}` : '';
+    return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${origin}${waypointsParam}&travelmode=driving`;
+  };
+
   if (!isLoaded) return <div className="w-full h-12 bg-slate-100 rounded-xl animate-pulse mt-4"></div>;
   if (orders.length === 0) return null;
 
@@ -135,12 +148,16 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
         <button onClick={() => setShowMap(false)} className="ml-auto p-2 bg-white/10 hover:bg-white/20 text-white rounded-full active:scale-95 transition-all"><X size={16} /></button>
       </div>
 
-      <div className="w-full h-64 sm:h-80 rounded-2xl overflow-hidden relative shadow-inner border border-slate-300">
+      {/* 🚀 CLICKABLE MAP CONTAINER */}
+      <div 
+        onClick={() => window.open(getGoogleMapsRouteUrl(), '_blank')}
+        className="w-full h-64 sm:h-80 rounded-2xl overflow-hidden relative shadow-inner border border-slate-300 group cursor-pointer"
+      >
         <GoogleMap
-          mapContainerStyle={{ width: '100%', height: '100%' }}
+          mapContainerStyle={{ width: '100%', height: '100%', pointerEvents: 'none' }}
           center={currentLocation || { lat: 38.0336, lng: -121.8817 }} 
           zoom={12}
-          options={{ disableDefaultUI: true, zoomControl: true }}
+          options={{ disableDefaultUI: true, zoomControl: false, gestureHandling: 'none' }}
         >
           {directions && (
             <DirectionsRenderer directions={directions} options={{ polylineOptions: { strokeColor: '#10b981', strokeWeight: 4, strokeOpacity: 0.5 }, suppressMarkers: false }} />
@@ -152,6 +169,13 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
             <Marker position={currentLocation} icon={{ url: 'https://cdn-icons-png.flaticon.com/512/3097/3097180.png', scaledSize: new window.google.maps.Size(38, 38) }} zIndex={999} />
           )}
         </GoogleMap>
+        
+        {/* OVERLAY HINT FOR THE DRIVER */}
+        <div className="absolute inset-0 bg-blue-900/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 backdrop-blur-[1px]">
+          <div className="bg-blue-600 text-white px-5 py-3 rounded-xl font-black shadow-xl flex items-center gap-2">
+              <Map size={18} /> Open in GPS App
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -170,7 +194,6 @@ export default function DriverRoutes() {
   const [receivedBy, setReceivedBy] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   
-  // 🚀 PHASE 2: Granular Partial Quantity State Tracker
   const [deliveredQuantities, setDeliveredQuantities] = useState({});
 
   const [cancellingOrder, setCancellingOrder] = useState(null);
@@ -365,7 +388,6 @@ export default function DriverRoutes() {
     }
   };
 
-  // 🚀 PHASE 2: Advanced Partial Quantity Submission Logic
   const submitDelivery = async () => {
     if (!receivedBy.trim()) { showToast('Please enter the full name of the person receiving the order.', true); return; }
     
@@ -413,7 +435,6 @@ export default function DriverRoutes() {
 
       let newSubtotal = 0;
 
-      // Split rows dynamically if they reject partial amounts!
       for (const item of activeItems) {
         const delQty = deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : item.quantity_variants;
         const origQty = item.quantity_variants;
@@ -421,11 +442,9 @@ export default function DriverRoutes() {
         const rejQty = origQty - delQty;
 
         if (rejQty === origQty) {
-          // Fully rejected this specific row
           const { error: err } = await supabase.from('order_items').update({ status: 'rejected' }).eq('id', item.id);
           if (err) throw err;
         } else if (rejQty > 0) {
-          // Splitting the row into Accepted vs Rejected
           newSubtotal += (delQty * unitPrice);
 
           const proportionalBaseUnitsDel = Math.round((item.total_base_units / origQty) * delQty);
@@ -448,7 +467,6 @@ export default function DriverRoutes() {
           }]);
           if (err2) throw err2;
         } else {
-          // Fully accepted this specific row
           newSubtotal += (delQty * unitPrice);
         }
       }
@@ -456,7 +474,6 @@ export default function DriverRoutes() {
       let finalOrderStatus = 'delivered';
       let cancellationReason = null;
       
-      // Proportional Tax Adjustments for absolute financial accuracy
       const origSub = Number(activeOrder.subtotal) || 0;
       const taxRate = origSub > 0 ? (Number(activeOrder.tax_amount || 0) / origSub) : 0;
       const newTaxAmount = newSubtotal * taxRate;
@@ -536,7 +553,6 @@ export default function DriverRoutes() {
   const closeCancelModal = () => { setCancellingOrder(null); setCancelReason(''); };
   const closeAttemptModal = () => { setAttemptingOrder(null); setAttemptReason(''); };
 
-  // Automatically recalculate the visual total dynamically inside the modal
   const getDynamicTotal = () => {
     if (!activeOrder) return 0;
     let newSubtotal = 0;
@@ -666,13 +682,23 @@ export default function DriverRoutes() {
                 </div>
 
                 <div className="space-y-2 bg-slate-50 p-3.5 rounded-2xl border border-slate-100">
-                  <div className="flex items-start gap-2.5 text-sm font-medium text-slate-700">
-                    <MapPin size={16} className="text-blue-600 mt-0.5 shrink-0"/>
+                  
+                  {/* 🚀 CLICKABLE INDIVIDUAL ADDRESS */}
+                  <a 
+                    href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(shipAddress + ', ' + shipCityState)}&travelmode=driving`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-start gap-2.5 text-sm font-medium text-slate-700 hover:opacity-70 active:scale-95 transition-all group cursor-pointer"
+                  >
+                    <div className="bg-blue-100 p-1.5 rounded-lg shrink-0 group-hover:bg-blue-600 transition-colors">
+                      <MapPin size={16} className="text-blue-600 group-hover:text-white transition-colors mt-0.5 shrink-0"/>
+                    </div>
                     <div className="leading-snug">
-                      <p className="font-bold text-slate-900 text-sm">{shipAddress}</p>
+                      <p className="font-bold text-slate-900 text-sm group-hover:text-blue-600 transition-colors">{shipAddress}</p>
                       <p className="text-slate-500 text-xs mt-0.5">{shipCityState}</p>
                     </div>
-                  </div>
+                  </a>
+
                   {shipPhone && (
                     <div className="flex items-center gap-2.5 text-sm font-medium pt-2.5 border-t border-slate-200/60 mt-1">
                       <Phone size={16} className="text-emerald-500 shrink-0"/>
@@ -709,6 +735,7 @@ export default function DriverRoutes() {
         </div>
       )}
 
+      {/* MODALS RETAINED EXACTLY AS THEY WERE */}
       {attemptingOrder && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/70 backdrop-blur-sm animate-in fade-in duration-200 p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 sm:p-8 animate-in zoom-in-95 duration-200 border border-slate-100 relative">
@@ -775,7 +802,6 @@ export default function DriverRoutes() {
                 </div>
               )}
 
-              {/* 🚀 PHASE 2: Advanced Stepper Controls for Granular Rejections */}
               <div className="space-y-3">
                 <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
                   <div className="w-5 h-5 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-[10px]">1</div>
@@ -848,7 +874,17 @@ export default function DriverRoutes() {
 
               <div className="space-y-3">
                 <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
-                  <div className="w-5 h-5 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-[10px]">2</div>
+                  <div className="w-5 h-5 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-[10px]">3</div>
+                  Recipient Name
+                </label>
+                <input type="text" placeholder="Enter full name..." value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-900 shadow-sm placeholder:font-medium placeholder:text-slate-400" />
+              </div>
+
+              <div className="h-px w-full bg-slate-100"></div>
+
+              <div className="space-y-3">
+                <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
+                  <div className="w-5 h-5 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-[10px]">4</div>
                   Take Photo (Optional)
                 </label>
                 {photoPreview ? (
@@ -869,20 +905,10 @@ export default function DriverRoutes() {
 
               <div className="h-px w-full bg-slate-100"></div>
 
-              <div className="space-y-3">
-                <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
-                  <div className="w-5 h-5 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-[10px]">3</div>
-                  Recipient Name
-                </label>
-                <input type="text" placeholder="Enter full name..." value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-900 shadow-sm placeholder:font-medium placeholder:text-slate-400" />
-              </div>
-
-              <div className="h-px w-full bg-slate-100"></div>
-
               <div className="space-y-3 pb-4">
                 <div className="flex justify-between items-end">
                   <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
-                    <div className="w-5 h-5 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center text-[10px]">4</div>
+                    <div className="w-5 h-5 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center text-[10px]">5</div>
                     Customer Signature
                   </label>
                   <button onClick={clearSignature} className="text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-slate-100 px-3 py-1.5 rounded-lg active:scale-95">Clear</button>

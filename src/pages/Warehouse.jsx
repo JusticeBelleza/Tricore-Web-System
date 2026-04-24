@@ -382,7 +382,6 @@ export default function Warehouse() {
                 
                 const isReturn = activeTab === 'returns' && (order.status === 'attempted' || order.status === 'delivered_partial');
                 
-                // 🚀 BULLETPROOF FILTER: ONLY show rejected items if it's a partial return!
                 let activeItems = [];
                 if (activeTab === 'returns' && order.status === 'delivered_partial') {
                   activeItems = order.order_items?.filter(item => item.status?.toLowerCase() === 'rejected') || [];
@@ -479,14 +478,16 @@ export default function Warehouse() {
 
                                       return (
                                         <div key={item.id} onClick={() => order.status === 'processing' && togglePickItem(item.id)} className={`flex items-center justify-between p-4 sm:px-5 sm:py-4 rounded-2xl border transition-all ${order.status === 'processing' ? 'cursor-pointer active:scale-[0.99]' : ''} ${isPicked || isDone ? (isReturn && isItemRejected ? 'bg-red-50/50 border-red-200 shadow-sm' : 'bg-slate-100 border-slate-200 shadow-sm') : 'bg-white border-slate-200 hover:border-slate-300 shadow-sm'}`}>
-                                          <div className="flex items-center gap-4 sm:gap-5">
-                                            {!isReturn && <div className={`transition-colors ${isPicked || isDone ? 'text-emerald-500' : 'text-slate-300'}`}>{isPicked || isDone ? <CheckSquare size={26} strokeWidth={2} /> : <Square size={26} strokeWidth={2} />}</div>}
-                                            {isReturn && <div className={`${isItemRejected ? 'text-red-400' : 'text-emerald-500'}`}>{isItemRejected ? <Package size={24} strokeWidth={1.5} /> : <CheckCircle2 size={24} strokeWidth={1.5} />}</div>}
-                                            <div>
-                                              <p className={`font-bold leading-snug text-sm sm:text-base transition-all ${isItemRejected ? 'line-through decoration-red-500 text-slate-400' : 'text-slate-900'} ${(!isItemRejected && (isPicked || isOrderDone)) ? 'text-slate-500' : ''}`}>
+                                          {/* 🚀 MODIFIED TEXT WRAP CONTAINER */}
+                                          <div className="flex items-center gap-4 sm:gap-5 flex-1 min-w-0 pr-4">
+                                            {!isReturn && <div className={`shrink-0 transition-colors ${isPicked || isDone ? 'text-emerald-500' : 'text-slate-300'}`}>{isPicked || isDone ? <CheckSquare size={26} strokeWidth={2} /> : <Square size={26} strokeWidth={2} />}</div>}
+                                            {isReturn && <div className={`shrink-0 ${isItemRejected ? 'text-red-400' : 'text-emerald-500'}`}>{isItemRejected ? <Package size={24} strokeWidth={1.5} /> : <CheckCircle2 size={24} strokeWidth={1.5} />}</div>}
+                                            
+                                            <div className="flex-1 min-w-0">
+                                              <p className={`whitespace-normal font-bold leading-snug text-xs sm:text-sm transition-all ${isItemRejected ? 'line-through decoration-red-500 text-slate-400' : 'text-slate-900'} ${(!isItemRejected && (isPicked || isOrderDone)) ? 'text-slate-500' : ''}`}>
                                                 {item.product_variants?.products?.name || item.product_variants?.name || 'Item'}
                                               </p>
-                                              <p className={`text-xs font-mono mt-1 ${isItemRejected ? 'text-slate-300' : 'text-slate-500'}`}>SKU: {item.product_variants?.sku}</p>
+                                              <p className={`text-[10px] sm:text-xs font-mono mt-1 ${isItemRejected ? 'text-slate-300' : 'text-slate-500'}`}>SKU: {item.product_variants?.sku}</p>
                                             </div>
                                           </div>
                                           <div className={`text-center bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm shrink-0 ${isItemRejected ? 'opacity-60' : ''}`}>
