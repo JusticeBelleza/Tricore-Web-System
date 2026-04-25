@@ -9,7 +9,6 @@ import {
   Menu, X, ArrowUp
 } from 'lucide-react';
 
-// 🚀 NEW: REUSABLE MOBILE AUTO-SLIDER COMPONENT
 const MobileCarousel = ({ items, renderItem, desktopGridClass, autoPlayInterval = 3500 }) => {
   const scrollRef = useRef(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -22,7 +21,6 @@ const MobileCarousel = ({ items, renderItem, desktopGridClass, autoPlayInterval 
     let minDiff = Infinity;
 
     for (let i = 0; i < children.length; i++) {
-      // Account for the px-6 (24px) padding on the scroll container
       const childOffset = children[i].offsetLeft - 24;
       const diff = Math.abs(childOffset - scrollPosition);
       if (diff < minDiff) {
@@ -36,7 +34,6 @@ const MobileCarousel = ({ items, renderItem, desktopGridClass, autoPlayInterval 
   useEffect(() => {
     const interval = setInterval(() => {
       if (!scrollRef.current || !scrollRef.current.children.length) return;
-      // Stop auto-play if we are on desktop (not overflowing)
       if (scrollRef.current.scrollWidth <= scrollRef.current.clientWidth + 10) return;
 
       let nextIndex = activeIndex + 1;
@@ -68,7 +65,6 @@ const MobileCarousel = ({ items, renderItem, desktopGridClass, autoPlayInterval 
         ))}
       </div>
       
-      {/* 🚀 DOTS INDICATOR (Only visible on Mobile) */}
       <div className="flex sm:hidden justify-center items-center gap-2 mt-6">
         {items.map((_, idx) => (
           <div
@@ -107,8 +103,50 @@ export default function Home() {
   const [activeSection, setActiveSection] = useState('home');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   
-  // BACK TO TOP STATE
+  // BACK TO TOP & MODAL STATE
   const [showBackToTop, setShowBackToTop] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState(null); 
+  const [clickedCardId, setClickedCardId] = useState(null); 
+  
+  // MODAL ANIMATION STATE
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  // 🚀 ANTI-JUMP SCROLL LOCK LOGIC
+  useEffect(() => {
+    if (selectedProduct) {
+      // Calculate exact scrollbar width
+      const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+      document.body.style.overflow = 'hidden';
+      // Pad the body with the scrollbar width so the layout doesn't shift
+      document.body.style.paddingRight = `${scrollbarWidth}px`;
+    } else {
+      document.body.style.overflow = '';
+      document.body.style.paddingRight = '';
+    }
+    
+    return () => {
+      document.body.style.overflow = '';
+      document.body.style.paddingRight = '';
+    };
+  }, [selectedProduct]);
+
+  // ANIMATED MODAL OPEN HANDLER
+  const handleProductClick = (product) => {
+    setClickedCardId(product.id);
+    setTimeout(() => {
+      setSelectedProduct(product);
+      setClickedCardId(null);
+      setTimeout(() => setIsModalOpen(true), 10); 
+    }, 200); 
+  };
+
+  // ANIMATED MODAL CLOSE HANDLER
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setTimeout(() => {
+      setSelectedProduct(null);
+    }, 300); 
+  };
 
   // Handle clicking outside the custom dropdown to close it
   useEffect(() => {
@@ -121,13 +159,12 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // DYNAMIC PAGE SIZE
-  const getInitialPageSize = () => window.innerWidth < 640 ? 5 : 12;
+  const getInitialPageSize = () => window.innerWidth < 1024 ? 4 : 8;
   const [pageSize, setPageSize] = useState(getInitialPageSize());
 
   useEffect(() => {
     const handleResize = () => {
-      const newSize = window.innerWidth < 640 ? 5 : 12;
+      const newSize = window.innerWidth < 1024 ? 4 : 8;
       setPageSize(prevSize => {
         if (prevSize !== newSize) {
           setPage(0);
@@ -142,7 +179,6 @@ export default function Home() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Debounce the search input
   useEffect(() => {
     const handler = setTimeout(() => {
       setDebouncedSearch(searchQuery);
@@ -150,12 +186,10 @@ export default function Home() {
     return () => clearTimeout(handler);
   }, [searchQuery]);
 
-  // Reset to page 0 whenever the search or category changes
   useEffect(() => {
     setPage(0);
   }, [debouncedSearch, activeCategory]);
 
-  // Fetch unique categories
   useEffect(() => {
     const fetchCategories = async () => {
       const { data } = await supabase.from('products').select('category');
@@ -167,7 +201,6 @@ export default function Home() {
     fetchCategories();
   }, []);
 
-  // Fetch Products (SERVER-SIDE PAGINATION)
   useEffect(() => {
     const fetchProducts = async () => {
       setLoading(true);
@@ -200,7 +233,6 @@ export default function Home() {
     fetchProducts();
   }, [debouncedSearch, activeCategory, page, pageSize]);
 
-  // INTERSECTION OBSERVER & SCROLL LISTENER
   useEffect(() => {
     const observerOptions = { root: null, rootMargin: '-100px 0px -60% 0px', threshold: 0 };
     const observerCallback = (entries) => {
@@ -230,7 +262,6 @@ export default function Home() {
     };
   }, [products]);
 
-  // SMOOTH SCROLL HANDLER
   const scrollToSection = (e, id) => {
     e.preventDefault();
     const element = document.getElementById(id);
@@ -247,7 +278,22 @@ export default function Home() {
 
   const totalPages = Math.ceil(totalCount / pageSize);
 
-  // NAVIGATION LINKS
+  const getPageNumbers = () => {
+    const pages = [];
+    if (totalPages <= 5) {
+      for (let i = 0; i < totalPages; i++) pages.push(i);
+    } else {
+      if (page <= 2) {
+        pages.push(0, 1, 2, '...', totalPages - 1);
+      } else if (page >= totalPages - 3) {
+        pages.push(0, '...', totalPages - 3, totalPages - 2, totalPages - 1);
+      } else {
+        pages.push(0, '...', page - 1, page, page + 1, '...', totalPages - 1);
+      }
+    }
+    return pages;
+  };
+
   const navLinks = [
     { id: 'home', label: 'Home' },
     { id: 'catalog', label: 'Catalog' },
@@ -255,7 +301,6 @@ export default function Home() {
     { id: 'about', label: 'About Us' }
   ];
 
-  // 🚀 DATA FOR SLIDERS
   const whyChooseItems = [
     { icon: <ShieldCheck size={24} className="sm:w-7 sm:h-7" />, colorClass: "bg-blue-50 text-blue-600 border-blue-100", title: "Uncompromising Product Quality", text: "Industry-standard equipment rigorously vetted for safety and peak performance." },
     { icon: <Package size={24} className="sm:w-7 sm:h-7" />, colorClass: "bg-emerald-50 text-emerald-600 border-emerald-100", title: "Reliable Supply, Always Available", text: "Consistent inventory levels to ensure you never run out of critical supplies." },
@@ -264,9 +309,9 @@ export default function Home() {
   ];
 
   const brandItems = [
-    { img: "/images/drylock-logo.png", name: "Drylock Technologies", text: "Drylock Technologies is a global innovator in the hygiene industry, dedicated to producing high-quality, sustainable absorbent products. With a focus on cutting-edge." },
-    { img: "/images/dynarex-logo.png", name: "Dynarex", text: "Dynarex is a leading supplier of medical supplies and equipment worldwide. Known for its wide range of top-quality products, Dynarex is dedicated to enhancing patient care." },
-    { img: "/images/secure-logo.png", name: "Secure Personal Care", text: "Secure Personal Care offers a wide range of high-quality medical and personal care products designed to enhance comfort and improve daily living for individuals of all ages." }
+    { img: "/images/drylock-logo.png", name: "Drylock Technologies", text: "Drylock Technologies is a global innovator in the hygiene industry, dedicated to producing high-quality, sustainable absorbent products." },
+    { img: "/images/dynarex-logo.png", name: "Dynarex", text: "Dynarex is a leading supplier of medical supplies and equipment worldwide. Known for its wide range of top-quality products." },
+    { img: "/images/secure-logo.png", name: "Secure Personal Care", text: "Secure Personal Care offers a wide range of high-quality medical and personal care products designed to enhance comfort." }
   ];
 
   const valuePropItems = [
@@ -276,7 +321,7 @@ export default function Home() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col relative">
+    <div className="min-h-screen bg-slate-50 flex flex-col relative transition-all duration-300">
       
       {/* =========================================
           1. STICKY NAVIGATION BAR
@@ -420,7 +465,6 @@ export default function Home() {
             <div className="w-20 h-1.5 bg-blue-600 mx-auto mt-6 rounded-full"></div>
           </div>
           
-          {/* 🚀 AUTO-SLIDER COMPONENT */}
           <MobileCarousel 
             items={whyChooseItems}
             desktopGridClass="sm:grid-cols-2 lg:grid-cols-4"
@@ -501,9 +545,9 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="flex-grow">
+        <div className="flex-grow min-h-[600px] lg:min-h-[750px] relative">
           {loading ? (
-            <div className="flex justify-center items-center py-32">
+            <div className="absolute inset-0 flex justify-center items-center">
               <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
             </div>
           ) : products.length === 0 ? (
@@ -513,9 +557,17 @@ export default function Home() {
               <p className="text-slate-500">Adjust your search or category filters to try again.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
               {products.map(product => (
-                <div key={product.id} className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm hover:shadow-xl transition-all flex flex-col group relative overflow-hidden">
+                <div 
+                  key={product.id} 
+                  onClick={() => handleProductClick(product)} 
+                  className={`bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm transition-all duration-200 flex flex-col group relative overflow-hidden cursor-pointer ${
+                    clickedCardId === product.id 
+                      ? 'scale-95 opacity-80 shadow-inner' 
+                      : 'hover:shadow-xl hover:-translate-y-1 active:scale-[0.96]' 
+                  }`}
+                >
                   <div className="w-full h-40 sm:h-48 bg-slate-50 rounded-xl mb-4 sm:mb-5 flex items-center justify-center overflow-hidden border border-slate-100">
                     {product.image_url ? (
                       <img src={product.image_url} alt={product.name} className="w-full h-full object-cover mix-blend-multiply group-hover:scale-105 transition-transform duration-500" />
@@ -539,13 +591,17 @@ export default function Home() {
                             ${Number(product.retail_base_price || product.price || 0).toFixed(2)}
                           </span>
                         </div>
-                        <button className="px-3 sm:px-4 py-2 sm:py-2.5 bg-blue-600 text-white text-[13px] sm:text-sm font-bold rounded-xl hover:bg-blue-700 transition-all shadow-md active:scale-95 flex items-center gap-2">
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); }} 
+                          className="px-3 sm:px-4 py-2 sm:py-2.5 bg-blue-600 text-white text-[13px] sm:text-sm font-bold rounded-xl hover:bg-blue-700 transition-all shadow-md active:scale-95 flex items-center gap-2"
+                        >
                           <ShoppingCart size={16} /> <span className="hidden sm:inline">Add</span>
                         </button>
                       </div>
                     ) : (
                       <div className="mt-2 text-center">
                         <Link 
+                          onClick={(e) => e.stopPropagation()} 
                           to="/login" 
                           className="w-full flex items-center justify-center gap-1.5 text-[11px] font-bold text-slate-600 bg-slate-100 border border-slate-200 px-4 py-2.5 rounded-xl uppercase tracking-wider hover:bg-slate-200 hover:text-slate-900 active:scale-95 transition-all shadow-sm"
                         >
@@ -561,16 +617,44 @@ export default function Home() {
         </div>
 
         {!loading && totalCount > 0 && (
-          <div className="mt-8 sm:mt-12 flex flex-col sm:flex-row justify-between items-center gap-4 border-t border-slate-200 pt-6 shrink-0">
-            <p className="text-xs sm:text-sm text-slate-500 font-medium text-center sm:text-left">
+          <div className="mt-8 sm:mt-12 flex flex-col md:flex-row justify-between items-center gap-4 border-t border-slate-200 pt-6 shrink-0">
+            <p className="text-xs sm:text-sm text-slate-500 font-medium text-center md:text-left mb-2 md:mb-0">
               Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> items
             </p>
-            <div className="flex gap-2 w-full sm:w-auto justify-center">
-              <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:scale-95 disabled:opacity-50 disabled:active:scale-100 shadow-sm transition-all flex items-center justify-center gap-1 font-bold text-sm">
-                <ChevronLeft size={16} /> Prev
+            
+            <div className="flex items-center gap-1 sm:gap-2 w-full md:w-auto justify-center">
+              <button 
+                onClick={() => setPage(p => Math.max(0, p - 1))} 
+                disabled={page === 0} 
+                className="p-2 sm:px-4 sm:py-2.5 rounded-xl border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:scale-95 disabled:opacity-50 disabled:active:scale-100 shadow-sm transition-all flex items-center justify-center"
+              >
+                <ChevronLeft size={18} /> <span className="hidden sm:inline ml-1 font-bold text-sm">Prev</span>
               </button>
-              <button onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1} className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:scale-95 disabled:opacity-50 disabled:active:scale-100 shadow-sm transition-all flex items-center justify-center gap-1 font-bold text-sm">
-                Next <ChevronRight size={16} />
+
+              {getPageNumbers().map((p, index) => (
+                p === '...' ? (
+                  <span key={`dots-${index}`} className="px-1 sm:px-2 text-slate-400 font-bold">...</span>
+                ) : (
+                  <button
+                    key={p}
+                    onClick={() => setPage(p)}
+                    className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl font-bold text-sm transition-all flex items-center justify-center ${
+                      page === p 
+                        ? 'bg-blue-600 text-white shadow-md' 
+                        : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 shadow-sm'
+                    }`}
+                  >
+                    {p + 1}
+                  </button>
+                )
+              ))}
+
+              <button 
+                onClick={() => setPage(p => p + 1)} 
+                disabled={page >= totalPages - 1} 
+                className="p-2 sm:px-4 sm:py-2.5 rounded-xl border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:scale-95 disabled:opacity-50 disabled:active:scale-100 shadow-sm transition-all flex items-center justify-center"
+              >
+                <span className="hidden sm:inline mr-1 font-bold text-sm">Next</span> <ChevronRight size={18} />
               </button>
             </div>
           </div>
@@ -590,7 +674,6 @@ export default function Home() {
             </p>
           </div>
 
-          {/* 🚀 AUTO-SLIDER COMPONENT */}
           <MobileCarousel 
             items={brandItems}
             desktopGridClass="sm:grid-cols-3"
@@ -645,7 +728,6 @@ export default function Home() {
       <section className="bg-slate-50 border-t border-slate-200 py-16 overflow-hidden">
         <div className="max-w-7xl mx-auto px-6">
           
-          {/* 🚀 AUTO-SLIDER COMPONENT */}
           <MobileCarousel 
             items={valuePropItems}
             desktopGridClass="sm:grid-cols-3 text-center"
@@ -747,6 +829,100 @@ export default function Home() {
       >
         <ArrowUp size={24} className="group-hover:animate-bounce" />
       </button>
+
+      {/* 🚀 PRODUCT DETAILS MODAL (Animated "Bottom Sheet" on Mobile / Modal on Desktop) */}
+      {selectedProduct && (
+        <div 
+          className={`fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-6 bg-slate-900/60 backdrop-blur-sm transition-opacity duration-300 ease-in-out ${
+            isModalOpen ? 'opacity-100' : 'opacity-0'
+          }`}
+          onClick={handleCloseModal}
+        >
+          <div 
+            className={`bg-white w-full sm:max-w-4xl max-h-[90vh] rounded-t-[2rem] sm:rounded-[2rem] shadow-2xl flex flex-col md:flex-row overflow-hidden transition-all duration-300 transform ease-out ${
+              isModalOpen 
+                ? 'translate-y-0 sm:scale-100 opacity-100' 
+                : 'translate-y-full sm:translate-y-8 sm:scale-95 sm:opacity-0'
+            }`}
+            onClick={(e) => e.stopPropagation()} // Prevent clicking inside modal from closing it
+          >
+            {/* Image Section */}
+            <div className="w-full md:w-1/2 h-64 md:h-auto bg-slate-50 relative p-8 flex items-center justify-center border-b md:border-b-0 md:border-r border-slate-100">
+              <button 
+                onClick={handleCloseModal} 
+                className="absolute top-4 left-4 p-2 bg-white/80 backdrop-blur text-slate-600 hover:text-slate-900 rounded-full shadow-sm md:hidden active:scale-95 transition-all"
+              >
+                <X size={20}/>
+              </button>
+              {selectedProduct.image_url ? (
+                <img src={selectedProduct.image_url} alt={selectedProduct.name} className="max-w-full max-h-full object-contain mix-blend-multiply drop-shadow-md" />
+              ) : (
+                <Package size={80} className="text-slate-200" />
+              )}
+            </div>
+
+            {/* Details Section */}
+            <div className="w-full md:w-1/2 p-6 sm:p-8 flex flex-col overflow-y-auto">
+              <div className="flex justify-between items-start mb-6">
+                <div className="pr-4">
+                  <span className="inline-flex text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-100 px-2 py-1 rounded-md uppercase tracking-widest mb-3">
+                    {selectedProduct.category || 'General'}
+                  </span>
+                  <h2 className="text-2xl sm:text-3xl font-black text-slate-900 leading-tight mb-2 tracking-tight">
+                    {selectedProduct.name}
+                  </h2>
+                  {selectedProduct.base_sku && (
+                    <p className="text-sm font-mono text-slate-500">SKU: {selectedProduct.base_sku}</p>
+                  )}
+                </div>
+                <button 
+                  onClick={handleCloseModal} 
+                  className="hidden md:flex p-2.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-full transition-colors active:scale-95"
+                >
+                  <X size={22}/>
+                </button>
+              </div>
+
+              <div className="prose prose-slate prose-sm mb-8 flex-grow">
+                <h4 className="text-xs font-black text-slate-900 uppercase tracking-widest mb-3 flex items-center gap-2">
+                  <span className="w-1 h-4 bg-blue-600 rounded-full"></span> Description
+                </h4>
+                <p className="text-slate-600 font-medium leading-relaxed">
+                  {selectedProduct.description || "No detailed description available for this product at this time."}
+                </p>
+              </div>
+
+              <div className="pt-6 border-t border-slate-100 mt-auto flex flex-col sm:flex-row gap-4 items-center justify-between shrink-0">
+                {session ? (
+                  <>
+                    <div className="flex flex-col w-full sm:w-auto text-center sm:text-left">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-0.5">Your Price</span>
+                      <span className="text-3xl font-black text-slate-900 tracking-tight">
+                        ${Number(selectedProduct.retail_base_price || selectedProduct.price || 0).toFixed(2)}
+                      </span>
+                    </div>
+                    <button className="w-full sm:w-auto px-8 py-3.5 bg-blue-600 text-white text-sm font-bold rounded-xl hover:bg-blue-700 transition-all shadow-lg shadow-blue-600/30 active:scale-[0.98] flex items-center justify-center gap-2">
+                      <ShoppingCart size={18} /> Add to Cart
+                    </button>
+                  </>
+                ) : (
+                  <div className="w-full text-center bg-slate-50 p-5 rounded-2xl border border-slate-200 relative overflow-hidden">
+                    <Lock size={24} className="mx-auto text-slate-300 mb-2" />
+                    <p className="text-sm font-bold text-slate-900 mb-1">Pricing is Hidden</p>
+                    <p className="text-xs text-slate-500 mb-4 font-medium max-w-[200px] mx-auto">Please log in to view wholesale pricing and purchase.</p>
+                    <Link 
+                      to="/login" 
+                      className="inline-flex w-full px-6 py-3 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-800 transition-all active:scale-95 justify-center shadow-md"
+                    >
+                      Log In / Register
+                    </Link>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
