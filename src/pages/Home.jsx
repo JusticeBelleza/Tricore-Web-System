@@ -135,7 +135,6 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
 
         <div className="mt-auto pt-4 flex items-center justify-between border-t border-slate-100">
           <div>
-            {/* 🚀 HIDE PRICE ON CARDS IF NOT LOGGED IN */}
             {session ? (
               <>
                 <span className="block text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Starting At</span>
@@ -161,19 +160,19 @@ export default function Home() {
   const { profile, session } = useAuth();
   const navigate = useNavigate();
   
-  // --- STATE MANAGEMENT ---
   const [activeCategory, setActiveCategory] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
+  
+  // Pagination State
   const [page, setPage] = useState(0);
 
   const [activeSection, setActiveSection] = useState('home');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
   
-  // --- MODAL & CART STATE ---
   const [cart, setCart] = useState([]);
   const [cartLoaded, setCartLoaded] = useState(false);
   const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
@@ -186,7 +185,6 @@ export default function Home() {
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const [quantity, setQuantity] = useState(1);
 
-  // Sync Cart
   useEffect(() => {
     if (profile?.id) {
       const savedCart = localStorage.getItem(cartKey);
@@ -202,7 +200,6 @@ export default function Home() {
     }
   }, [cart, cartLoaded, profile?.id, cartKey]);
 
-  // Handle outside clicks
   useEffect(() => {
     function handleClickOutside(event) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) setIsDropdownOpen(false);
@@ -264,28 +261,28 @@ export default function Home() {
 
   const pricingRules = b2bData?.rules || [];
 
-  // 🚀 REACT QUERY 3: Fetch Catalog Products
+  // 🚀 REACT QUERY 3: Fetch ALL MATCHING Catalog Products (No Range Slicing Yet)
   const { data: catalogData, isPending: loading } = useQuery({
-    queryKey: ['products', activeCategory, debouncedSearch, page, pageSize],
+    // Notice page and pageSize are removed from the queryKey so it only refetches when search/category changes
+    queryKey: ['products', activeCategory, debouncedSearch],
     queryFn: async () => {
-      let query = supabase.from('products').select('*, product_variants (*), inventory (*)', { count: 'exact' });
+      let query = supabase.from('products').select('*, product_variants (*), inventory (*)');
       if (activeCategory !== 'All') query = query.eq('category', activeCategory);
       if (debouncedSearch) query = query.or(`name.ilike.%${debouncedSearch}%,base_sku.ilike.%${debouncedSearch}%`);
-      const from = page * pageSize;
-      const to = from + pageSize - 1;
-      query = query.range(from, to).order('name', { ascending: true });
-      const { data, count, error } = await query;
+      
+      query = query.order('name', { ascending: true });
+      
+      const { data, error } = await query;
       if (error) throw error;
+      
       const fetchedVariants = (data || []).flatMap(p => p.product_variants || []);
-      return { products: data || [], variants: fetchedVariants, totalCount: count || 0 };
+      return { products: data || [], variants: fetchedVariants };
     },
-    placeholderData: keepPreviousData,
     staleTime: 1000 * 60 * 5,
   });
 
   const products = catalogData?.products || [];
   const variants = catalogData?.variants || [];
-  const totalCount = catalogData?.totalCount || 0;
 
 
   // --- PRICING CALCULATOR ---
@@ -303,8 +300,8 @@ export default function Home() {
     return { finalPrice: finalPrice, hasRule: finalPrice < variantRetail };
   };
 
-  // --- GROUP PRODUCTS INTO FAMILIES ---
-  const groupedProducts = useMemo(() => {
+  // 🚀 GROUP ALL PRODUCTS INTO FAMILIES FIRST
+  const allGroupedFamilies = useMemo(() => {
     const groups = {};
     products.forEach(p => {
       const familyName = p.name.split(' - ')[0].trim();
@@ -332,6 +329,15 @@ export default function Home() {
     });
     return Object.entries(groups);
   }, [products]);
+
+  // 🚀 PAGINATE THE FAMILIES LOCALLY (Ensures exactly 4/8 cards per page!)
+  const totalCount = allGroupedFamilies.length;
+  const totalPages = Math.ceil(totalCount / pageSize);
+
+  const displayedFamilies = useMemo(() => {
+    const startIndex = page * pageSize;
+    return allGroupedFamilies.slice(startIndex, startIndex + pageSize);
+  }, [allGroupedFamilies, page, pageSize]);
 
 
   // Anti-Jump Scroll Lock
@@ -437,7 +443,6 @@ export default function Home() {
 
   const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
 
-  const totalPages = Math.ceil(totalCount / pageSize);
   const getPageNumbers = () => {
     const pages = [];
     if (totalPages <= 5) {
@@ -576,7 +581,6 @@ export default function Home() {
               </a>
             );
           })}
-          {/* Mobile Cart Link in Dropdown */}
           {session && (
             <button onClick={() => { setIsMobileMenuOpen(false); navigate('/checkout'); }} className="px-5 py-3.5 mt-2 rounded-xl font-bold text-sm transition-all flex items-center justify-between bg-slate-900 text-white">
               <span className="flex items-center gap-2"><ShoppingCart size={16}/> Checkout (${cart.reduce((a, b) => a + b.line_total, 0).toFixed(2)})</span>
@@ -610,7 +614,7 @@ export default function Home() {
             <div className="w-20 h-1.5 bg-blue-600 mx-auto mt-6 rounded-full"></div>
           </div>
           <MobileCarousel items={whyChooseItems} desktopGridClass="sm:grid-cols-2 lg:grid-cols-4" autoPlayInterval={3500} renderItem={(item) => (
-            <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border border-slate-200 sm:hover:shadow-xl sm:hover:-translate-y-1 transition-all duration-300 group w-full text-left">
+            <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border border-slate-200 hover:shadow-xl hover:-translate-y-1 active:scale-95 transition-all duration-300 group w-full text-left cursor-default">
               <div className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center mb-5 sm:mb-6 border group-hover:scale-110 transition-transform ${item.colorClass}`}>{item.icon}</div>
               <h3 className="font-bold text-lg sm:text-xl text-slate-900 mb-2 sm:mb-3 leading-tight">{item.title}</h3>
               <p className="text-slate-500 text-sm leading-relaxed font-medium">{item.text}</p>
@@ -619,7 +623,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* 4. CATALOG (NOW WITH FAMILY GROUPING & HIDDEN PRICING) */}
+      {/* 4. CATALOG (NOW WITH ACCURATE FAMILY PAGINATION) */}
       <section id="catalog" className="max-w-7xl mx-auto px-6 py-16 sm:py-20 w-full flex-grow flex flex-col scroll-mt-24 border-b border-slate-200">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 shrink-0">
           <div className="w-full md:w-auto">
@@ -647,11 +651,11 @@ export default function Home() {
           </div>
         </div>
 
-        {/* PRODUCT GRID USING PRODUCT FAMILY CARDS */}
+        {/* PRODUCT GRID USING PAGINATED FAMILIES */}
         <div className="flex-grow min-h-[600px] lg:min-h-[750px] relative">
           {loading ? (
             <div className="absolute inset-0 flex justify-center items-center"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>
-          ) : groupedProducts.length === 0 ? (
+          ) : displayedFamilies.length === 0 ? (
             <div className="text-center py-24 bg-white rounded-3xl border border-slate-200 shadow-sm mx-2">
               <Package size={48} className="mx-auto text-slate-300 mb-4" strokeWidth={1.5} />
               <h3 className="text-xl font-bold text-slate-900 mb-2">No products found</h3>
@@ -659,7 +663,7 @@ export default function Home() {
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-              {groupedProducts.map(([familyName, familyProducts]) => (
+              {displayedFamilies.map(([familyName, familyProducts]) => (
                 <ProductFamilyCard 
                   key={familyName} 
                   familyName={familyName} 
@@ -667,7 +671,7 @@ export default function Home() {
                   globalVariants={variants} 
                   getVariantPrice={getVariantPrice} 
                   onClick={() => openProductModal(familyName, familyProducts)} 
-                  session={session} // 🚀 PASSING SESSION DOWN TO HIDE PRICES
+                  session={session} 
                 />
               ))}
             </div>
@@ -825,8 +829,6 @@ export default function Home() {
                 </div>
                 <div className="h-px w-full bg-slate-100"></div>
                 <div className="space-y-4 sm:space-y-6 pb-4 sm:pb-2">
-                  
-                  {/* 🚀 HIDDEN PRICING LOGIC FOR MODAL */}
                   {session ? (
                     <>
                       <div className="flex justify-between items-end">
