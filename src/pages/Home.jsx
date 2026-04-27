@@ -114,38 +114,35 @@ export default function Home() {
   // 🚀 ANTI-JUMP SCROLL LOCK LOGIC
   useEffect(() => {
     if (selectedProduct) {
-      // Calculate exact scrollbar width
       const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
       document.body.style.overflow = 'hidden';
-      // Pad the body with the scrollbar width so the layout doesn't shift
       document.body.style.paddingRight = `${scrollbarWidth}px`;
     } else {
       document.body.style.overflow = '';
       document.body.style.paddingRight = '';
     }
-    
     return () => {
       document.body.style.overflow = '';
       document.body.style.paddingRight = '';
     };
   }, [selectedProduct]);
 
-  // ANIMATED MODAL OPEN HANDLER
+  // 🚀 ANIMATED MODAL OPEN HANDLER
   const handleProductClick = (product) => {
-    setClickedCardId(product.id);
+    setClickedCardId(product.id); // 1. Trigger the card shrink animation
     setTimeout(() => {
-      setSelectedProduct(product);
-      setClickedCardId(null);
-      setTimeout(() => setIsModalOpen(true), 10); 
-    }, 200); 
+      setSelectedProduct(product); // 2. Mount the modal to the DOM (hidden)
+      setClickedCardId(null);      // 3. Reset the card size
+      setTimeout(() => setIsModalOpen(true), 10); // 4. Trigger the CSS slide-up animation
+    }, 150); // Feel the click for 150ms before opening
   };
 
-  // ANIMATED MODAL CLOSE HANDLER
+  // 🚀 ANIMATED MODAL CLOSE HANDLER
   const handleCloseModal = () => {
-    setIsModalOpen(false);
+    setIsModalOpen(false); // 1. Trigger the CSS slide-down animation
     setTimeout(() => {
-      setSelectedProduct(null);
-    }, 300); 
+      setSelectedProduct(null); // 2. Unmount from DOM after animation completes
+    }, 300); // Matches the duration-300 class in the modal wrapper
   };
 
   // Handle clicking outside the custom dropdown to close it
@@ -174,7 +171,6 @@ export default function Home() {
       });
       if (window.innerWidth >= 1024) setIsMobileMenuOpen(false);
     };
-    
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -321,7 +317,7 @@ export default function Home() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col relative transition-all duration-300">
+    <div className={`min-h-screen bg-slate-50 flex flex-col relative transition-all duration-300 ${selectedProduct ? 'overflow-hidden' : ''}`}>
       
       {/* =========================================
           1. STICKY NAVIGATION BAR
@@ -470,7 +466,7 @@ export default function Home() {
             desktopGridClass="sm:grid-cols-2 lg:grid-cols-4"
             autoPlayInterval={3500}
             renderItem={(item) => (
-              <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border border-slate-200 sm:hover:shadow-xl sm:hover:-translate-y-1 transition-all duration-300 group w-full text-left">
+              <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border border-slate-200 hover:shadow-xl hover:-translate-y-1 active:scale-95 transition-all duration-300 group w-full text-left cursor-default">
                 <div className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center mb-5 sm:mb-6 border group-hover:scale-110 transition-transform ${item.colorClass}`}>
                   {item.icon}
                 </div>
@@ -562,6 +558,7 @@ export default function Home() {
                 <div 
                   key={product.id} 
                   onClick={() => handleProductClick(product)} 
+                  // 🚀 CARD CLICK ANIMATION CSS
                   className={`bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm transition-all duration-200 flex flex-col group relative overflow-hidden cursor-pointer ${
                     clickedCardId === product.id 
                       ? 'scale-95 opacity-80 shadow-inner' 
@@ -569,8 +566,8 @@ export default function Home() {
                   }`}
                 >
                   <div className="w-full h-40 sm:h-48 bg-slate-50 rounded-xl mb-4 sm:mb-5 flex items-center justify-center overflow-hidden border border-slate-100">
-                    {product.image_url ? (
-                      <img src={product.image_url} alt={product.name} className="w-full h-full object-cover mix-blend-multiply group-hover:scale-105 transition-transform duration-500" />
+                    {product.image_urls?.[0] ? (
+                      <img src={product.image_urls[0]} alt={product.name} className="w-full h-full object-cover mix-blend-multiply group-hover:scale-105 transition-transform duration-500" />
                     ) : (
                       <Package size={48} className="text-slate-200" strokeWidth={1.5} />
                     )}
@@ -679,7 +676,7 @@ export default function Home() {
             desktopGridClass="sm:grid-cols-3"
             autoPlayInterval={4000}
             renderItem={(item) => (
-              <div className="flex flex-col items-center text-center p-6 sm:p-8 rounded-3xl hover:bg-slate-50 transition-colors border border-slate-200 sm:border-transparent sm:hover:border-slate-100 shadow-sm sm:shadow-none group w-full h-full">
+              <div className="flex flex-col items-center text-center p-6 sm:p-8 rounded-3xl hover:bg-slate-50 transition-colors border border-slate-200 sm:border-transparent sm:hover:border-slate-100 shadow-sm sm:shadow-none group w-full h-full cursor-default">
                 <div className="h-16 sm:h-20 md:h-24 w-full flex items-center justify-center mb-6">
                   <img src={item.img} alt={item.name} className="max-h-full max-w-[160px] sm:max-w-[200px] object-contain group-hover:scale-105 transition-transform duration-500" />
                 </div>
@@ -733,7 +730,7 @@ export default function Home() {
             desktopGridClass="sm:grid-cols-3 text-center"
             autoPlayInterval={4500}
             renderItem={(item) => (
-              <div className="flex flex-col items-center text-center bg-white sm:bg-transparent p-6 sm:p-0 rounded-3xl border border-slate-200 sm:border-none shadow-sm sm:shadow-none w-full h-full">
+              <div className="flex flex-col items-center text-center bg-white sm:bg-transparent p-6 sm:p-0 rounded-3xl border border-slate-200 sm:border-none shadow-sm sm:shadow-none w-full h-full cursor-default">
                 <div className="w-16 h-16 rounded-2xl bg-blue-50 flex items-center justify-center mb-5 border border-blue-100 text-blue-600">
                   {item.icon}
                 </div>
@@ -766,7 +763,7 @@ export default function Home() {
       </section>
 
       {/* =========================================
-          9. FOOTER (WITH VISIBLE ACCREDITATION)
+          9. FOOTER
           ========================================= */}
       <footer className="bg-slate-900 text-slate-300 py-12 sm:py-16">
         <div className="max-w-7xl mx-auto px-6">
@@ -830,7 +827,7 @@ export default function Home() {
         <ArrowUp size={24} className="group-hover:animate-bounce" />
       </button>
 
-      {/* 🚀 PRODUCT DETAILS MODAL (Animated "Bottom Sheet" on Mobile / Modal on Desktop) */}
+      {/* 🚀 PRODUCT DETAILS MODAL (Animated Open & Close) */}
       {selectedProduct && (
         <div 
           className={`fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-6 bg-slate-900/60 backdrop-blur-sm transition-opacity duration-300 ease-in-out ${
@@ -844,7 +841,7 @@ export default function Home() {
                 ? 'translate-y-0 sm:scale-100 opacity-100' 
                 : 'translate-y-full sm:translate-y-8 sm:scale-95 sm:opacity-0'
             }`}
-            onClick={(e) => e.stopPropagation()} // Prevent clicking inside modal from closing it
+            onClick={(e) => e.stopPropagation()} 
           >
             {/* Image Section */}
             <div className="w-full md:w-1/2 h-64 md:h-auto bg-slate-50 relative p-8 flex items-center justify-center border-b md:border-b-0 md:border-r border-slate-100">
@@ -854,8 +851,8 @@ export default function Home() {
               >
                 <X size={20}/>
               </button>
-              {selectedProduct.image_url ? (
-                <img src={selectedProduct.image_url} alt={selectedProduct.name} className="max-w-full max-h-full object-contain mix-blend-multiply drop-shadow-md" />
+              {selectedProduct.image_urls?.[0] ? (
+                <img src={selectedProduct.image_urls[0]} alt={selectedProduct.name} className="max-w-full max-h-full object-contain mix-blend-multiply drop-shadow-md" />
               ) : (
                 <Package size={80} className="text-slate-200" />
               )}

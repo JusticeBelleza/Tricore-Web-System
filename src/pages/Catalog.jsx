@@ -2,6 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
+import { useQuery, keepPreviousData } from '@tanstack/react-query'; // 🚀 IMPORT REACT QUERY
 import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, Building2 } from 'lucide-react';
 
 function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVariantPrice, onClick }) {
@@ -89,15 +90,7 @@ export default function Catalog() {
   const { profile } = useAuth();
   const navigate = useNavigate();
   
-  const [products, setProducts] = useState([]);
-  const [variants, setVariants] = useState([]);
-  const [categories, setCategories] = useState([]);
-  const [pricingRules, setPricingRules] = useState([]);
-  const [financials, setFinancials] = useState({ limit: 0, outstanding: 0, available: 0 });
-  const [loading, setLoading] = useState(true);
-  
   const [page, setPage] = useState(0);
-  const [totalCount, setTotalCount] = useState(0);
   const pageSize = 12; 
   const [searchTerm, setSearchTerm] = useState('');
   
@@ -112,6 +105,7 @@ export default function Catalog() {
 
   const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
 
+  // Close custom dropdown on outside click
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (categoryDropdownRef.current && !categoryDropdownRef.current.contains(event.target)) {
@@ -122,13 +116,16 @@ export default function Catalog() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Debounce Search
   useEffect(() => {
     const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
+  // Reset page when category changes
   useEffect(() => { setPage(0); }, [selectedCategory]);
 
+  // Cart Local Storage Sync
   useEffect(() => {
     if (profile?.id) {
       const savedCart = localStorage.getItem(cartKey);
@@ -144,46 +141,54 @@ export default function Catalog() {
     }
   }, [cart, cartLoaded, profile?.id, cartKey]);
 
-  const [viewingFamily, setViewingFamily] = useState(null); 
-  const [isClosing, setIsClosing] = useState(false); 
-  const [toast, setToast] = useState({ show: false, message: '' });
-  const [isAddingToCart, setIsAddingToCart] = useState(false);
 
-  const [selectedProductId, setSelectedProductId] = useState('');
-  const [selectedVariantId, setSelectedVariantId] = useState('');
-  const [quantity, setQuantity] = useState(1);
-
-  useEffect(() => {
-    const fetchCategories = async () => {
+  // ==========================================
+  // 🚀 REACT QUERY 1: FETCH CATEGORIES
+  // ==========================================
+  const { data: categories = [] } = useQuery({
+    queryKey: ['catalog-categories'],
+    queryFn: async () => {
       const { data } = await supabase.from('products').select('category').neq('category', null);
-      if (data) setCategories(Array.from(new Set(data.map(d => d.category).filter(Boolean))).sort());
-    };
-    fetchCategories();
-  }, []);
+      if (data) return Array.from(new Set(data.map(d => d.category).filter(Boolean))).sort();
+      return [];
+    },
+    staleTime: 1000 * 60 * 60, // Cache for 1 Hour
+  });
 
-  useEffect(() => {
-    fetchCatalogData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.id, profile?.role, profile?.company_id, debouncedSearch, selectedCategory, page]);
+  // ==========================================
+  // 🚀 REACT QUERY 2: FETCH B2B FINANCIALS & RULES
+  // ==========================================
+  const { data: b2bData } = useQuery({
+    queryKey: ['b2b-financials', profile?.company_id],
+    enabled: !!(profile?.company_id && profile?.role?.toLowerCase() === 'b2b'), // Only runs if user is B2B
+    queryFn: async () => {
+      const [rulesRes, unpaidRes] = await Promise.all([
+        supabase.from('pricing_rules').select('*').eq('company_id', profile.company_id),
+        supabase.from('orders').select('total_amount').eq('company_id', profile.company_id).eq('payment_status', 'unpaid')
+      ]);
+      if (rulesRes.error) throw rulesRes.error;
+      
+      const limit = Number(profile?.companies?.credit_limit || 0);
+      const outstanding = unpaidRes.data?.reduce((sum, order) => sum + Number(order.total_amount), 0) || 0;
+      
+      return {
+        rules: rulesRes.data || [],
+        financials: { limit, outstanding, available: limit - outstanding }
+      };
+    },
+    staleTime: 1000 * 60 * 5, // Cache for 5 mins
+  });
 
-  const fetchCatalogData = async () => {
-    setLoading(true);
-    try {
-      let rulesData = [];
-      let calcFinancials = { limit: 0, outstanding: 0, available: 0 };
+  const pricingRules = b2bData?.rules || [];
+  const financials = b2bData?.financials || { limit: 0, outstanding: 0, available: 0 };
 
-      if (profile?.company_id && profile?.role?.toLowerCase() === 'b2b') {
-        const [rulesRes, unpaidRes] = await Promise.all([
-          supabase.from('pricing_rules').select('*').eq('company_id', profile.company_id),
-          supabase.from('orders').select('total_amount').eq('company_id', profile.company_id).eq('payment_status', 'unpaid')
-        ]);
-        if (rulesRes.error) throw rulesRes.error;
-        rulesData = rulesRes.data;
-        const limit = Number(profile?.companies?.credit_limit || 0);
-        const outstanding = unpaidRes.data?.reduce((sum, order) => sum + Number(order.total_amount), 0) || 0;
-        calcFinancials = { limit, outstanding, available: limit - outstanding };
-      }
 
+  // ==========================================
+  // 🚀 REACT QUERY 3: FETCH CATALOG PRODUCTS
+  // ==========================================
+  const { data: catalogData, isPending: loading } = useQuery({
+    queryKey: ['catalog-products', debouncedSearch, selectedCategory, page, pageSize],
+    queryFn: async () => {
       let query = supabase.from('products').select(`*, product_variants (*), inventory (*)`, { count: 'exact' });
 
       if (debouncedSearch) {
@@ -201,22 +206,21 @@ export default function Catalog() {
       const { data, count, error } = await query;
       if (error) throw error;
 
-      setProducts(data || []);
-      setTotalCount(count || 0);
-
+      // Extract all variants flatly
       const fetchedVariants = (data || []).flatMap(p => p.product_variants || []);
-      setVariants(fetchedVariants);
+      
+      return { products: data || [], variants: fetchedVariants, totalCount: count || 0 };
+    },
+    placeholderData: keepPreviousData, // 🚀 Prevents white screen flashes while paginating
+    staleTime: 1000 * 60 * 5, // Cache for 5 mins
+  });
 
-      setPricingRules(rulesData || []);
-      setFinancials(calcFinancials);
+  const products = catalogData?.products || [];
+  const variants = catalogData?.variants || [];
+  const totalCount = catalogData?.totalCount || 0;
 
-    } catch (error) {
-      console.error('Error fetching catalog:', error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
 
+  // --- PRICING CALCULATOR ---
   const getVariantPrice = (product, variant) => {
     if (!product) return { finalPrice: 0, hasRule: false };
     
@@ -246,6 +250,7 @@ export default function Catalog() {
     };
   };
 
+  // --- GROUP PRODUCTS INTO FAMILIES ---
   const groupedProducts = useMemo(() => {
     const groups = {};
     products.forEach(p => {
@@ -274,6 +279,16 @@ export default function Catalog() {
     });
     return Object.entries(groups);
   }, [products]);
+
+
+  // --- MODAL LOGIC ---
+  const [viewingFamily, setViewingFamily] = useState(null); 
+  const [isClosing, setIsClosing] = useState(false); 
+  const [toast, setToast] = useState({ show: false, message: '' });
+  const [isAddingToCart, setIsAddingToCart] = useState(false);
+  const [selectedProductId, setSelectedProductId] = useState('');
+  const [selectedVariantId, setSelectedVariantId] = useState('');
+  const [quantity, setQuantity] = useState(1);
 
   const openProductModal = (familyName, familyProducts) => {
     const defaultProduct = familyProducts[0];
@@ -314,7 +329,7 @@ export default function Catalog() {
       if (existing) {
         return prev.map(item => 
           item.variant_id === selectedVariantId 
-            ? { ...item, quantity: item.quantity + quantity, line_total: (item.quantity + quantity) * item.unit_price }
+            ? { ...item, quantity: item.quantity + quantity, line_total: (item.quantity + quantity) * unitPrice }
             : item
         );
       }
@@ -332,10 +347,11 @@ export default function Catalog() {
     }, 600); 
   };
 
+  // Active state derived from selected IDs
   const activeProduct = viewingFamily ? viewingFamily.familyProducts.find(p => p.id === selectedProductId) : null;
   const activeVariants = activeProduct ? variants.filter(v => v.product_id === activeProduct.id) : [];
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
-  const { finalPrice: displayPrice, hasRule: modalHasRule } = getVariantPrice(activeProduct, activeVariant);
+  const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
 
   let modalStockAmount = 0;
   if (Array.isArray(activeProduct?.inventory)) {
@@ -347,6 +363,25 @@ export default function Catalog() {
   const modalContinueSelling = activeProduct?.continue_selling || false;
   const modalIsOutOfStock = modalStockAmount <= 0;
   const modalPreventPurchase = modalIsOutOfStock && !modalContinueSelling;
+
+  // 🚀 NUMBERED PAGINATION CALCULATOR
+  const totalPages = Math.ceil(totalCount / pageSize);
+  const getPageNumbers = () => {
+    const pages = [];
+    if (totalPages <= 5) {
+      for (let i = 0; i < totalPages; i++) pages.push(i);
+    } else {
+      if (page <= 2) {
+        pages.push(0, 1, 2, '...', totalPages - 1);
+      } else if (page >= totalPages - 3) {
+        pages.push(0, '...', totalPages - 3, totalPages - 2, totalPages - 1);
+      } else {
+        pages.push(0, '...', page - 1, page, page + 1, '...', totalPages - 1);
+      }
+    }
+    return pages;
+  };
+
 
   return (
     <div className="space-y-4 sm:space-y-6 pb-20 relative max-w-7xl mx-auto px-4 sm:px-6">
@@ -470,62 +505,84 @@ export default function Catalog() {
       </div>
 
       {/* Product Grid / List Wrapper */}
-      {loading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-6">
-          {[1,2,3,4,5,6,7,8].map(n => (
-            <div key={n} className="bg-white rounded-2xl border border-slate-100 shadow-sm h-32 sm:h-80 animate-pulse flex flex-row sm:flex-col">
-              <div className="w-32 sm:w-full sm:aspect-[4/3] bg-slate-100 shrink-0"></div>
-              <div className="p-4 sm:p-5 flex-1 space-y-3"><div className="w-1/3 h-3 bg-slate-100 rounded"></div><div className="w-3/4 h-5 bg-slate-100 rounded"></div><div className="w-1/2 h-3 bg-slate-100 rounded"></div></div>
-            </div>
-          ))}
-        </div>
-      ) : groupedProducts.length === 0 ? (
-        <div className="p-10 sm:p-16 text-center bg-white rounded-2xl sm:rounded-3xl border border-slate-100 shadow-sm">
-          <PackageOpen size={36} strokeWidth={1.5} className="mx-auto text-slate-300 mb-4" />
-          <h3 className="text-base sm:text-lg font-bold text-slate-900 mb-2 tracking-tight">No products found</h3>
-          <p className="text-slate-500 text-xs sm:text-sm">Try adjusting your search or category filter.</p>
-        </div>
-      ) : (
-        <div className="space-y-4 sm:space-y-6">
+      <div className="min-h-[500px] relative">
+        {loading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-6">
-            {groupedProducts.map(([familyName, familyProducts]) => (
-              <ProductFamilyCard key={familyName} familyName={familyName} familyProducts={familyProducts} globalVariants={variants} getVariantPrice={getVariantPrice} onClick={() => openProductModal(familyName, familyProducts)} />
+            {[1,2,3,4,5,6,7,8].map(n => (
+              <div key={n} className="bg-white rounded-2xl border border-slate-100 shadow-sm h-32 sm:h-80 animate-pulse flex flex-row sm:flex-col">
+                <div className="w-32 sm:w-full sm:aspect-[4/3] bg-slate-100 shrink-0"></div>
+                <div className="p-4 sm:p-5 flex-1 space-y-3"><div className="w-1/3 h-3 bg-slate-100 rounded"></div><div className="w-3/4 h-5 bg-slate-100 rounded"></div><div className="w-1/2 h-3 bg-slate-100 rounded"></div></div>
+              </div>
             ))}
           </div>
-          
-          {/* PAGINATION CONTROLS */}
-          {totalCount > pageSize && (
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 sm:px-6 py-4 bg-white border border-slate-200 shadow-sm rounded-xl sm:rounded-2xl mt-4 sm:mt-6">
-              <span className="text-xs sm:text-sm font-medium text-slate-500">
-                Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span>
-              </span>
-              <div className="flex gap-2">
-                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={16} /></button>
-                <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalCount} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={16} /></button>
-              </div>
+        ) : groupedProducts.length === 0 ? (
+          <div className="p-10 sm:p-16 text-center bg-white rounded-2xl sm:rounded-3xl border border-slate-100 shadow-sm">
+            <PackageOpen size={36} strokeWidth={1.5} className="mx-auto text-slate-300 mb-4" />
+            <h3 className="text-base sm:text-lg font-bold text-slate-900 mb-2 tracking-tight">No products found</h3>
+            <p className="text-slate-500 text-xs sm:text-sm">Try adjusting your search or category filter.</p>
+          </div>
+        ) : (
+          <div className="space-y-4 sm:space-y-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-6">
+              {groupedProducts.map(([familyName, familyProducts]) => (
+                <ProductFamilyCard key={familyName} familyName={familyName} familyProducts={familyProducts} globalVariants={variants} getVariantPrice={getVariantPrice} onClick={() => openProductModal(familyName, familyProducts)} />
+              ))}
             </div>
-          )}
-        </div>
-      )}
+            
+            {/* 🚀 UPGRADED NUMBERED PAGINATION CONTROLS */}
+            {totalCount > pageSize && (
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 sm:px-6 py-4 bg-white border border-slate-200 shadow-sm rounded-xl sm:rounded-2xl mt-4 sm:mt-6">
+                <span className="text-xs sm:text-sm font-medium text-slate-500">
+                  Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span>
+                </span>
+                
+                <div className="flex items-center gap-1 sm:gap-2 w-full sm:w-auto justify-center">
+                  <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 sm:px-4 sm:py-2.5 rounded-xl border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:scale-95 disabled:opacity-50 disabled:active:scale-100 shadow-sm transition-all flex items-center justify-center">
+                    <ChevronLeft size={16} /> <span className="hidden sm:inline ml-1 font-bold text-sm">Prev</span>
+                  </button>
+
+                  {getPageNumbers().map((p, index) => (
+                    p === '...' ? (
+                      <span key={`dots-${index}`} className="px-1 sm:px-2 text-slate-400 font-bold">...</span>
+                    ) : (
+                      <button
+                        key={p}
+                        onClick={() => setPage(p)}
+                        className={`w-8 h-8 sm:w-10 sm:h-10 rounded-xl font-bold text-sm transition-all flex items-center justify-center ${
+                          page === p ? 'bg-blue-600 text-white shadow-md' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 shadow-sm'
+                        }`}
+                      >
+                        {p + 1}
+                      </button>
+                    )
+                  ))}
+
+                  <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalCount} className="p-2 sm:px-4 sm:py-2.5 rounded-xl border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 active:scale-95 disabled:opacity-50 disabled:active:scale-100 shadow-sm transition-all flex items-center justify-center">
+                    <span className="hidden sm:inline mr-1 font-bold text-sm">Next</span> <ChevronRight size={16} />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* PRODUCT MODAL: Perfect iOS-style Slide Up for Mobile */}
       {viewingFamily && activeProduct && (
-        <div className={`fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm sm:p-4 pb-0 sm:pb-4 ${isClosing ? 'modal-overlay-close-anim' : 'modal-overlay-anim'}`}>
+        <div className={`fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm sm:p-4 pb-0 sm:pb-4 ${isClosing ? 'modal-overlay-close-anim' : 'modal-overlay-anim'}`} onClick={handleCloseModal}>
           
           {/* Main Modal Container */}
-          <div className={`bg-white w-full max-w-4xl h-[90dvh] sm:h-auto sm:max-h-[85dvh] flex flex-col sm:flex-row rounded-t-[2rem] sm:rounded-3xl shadow-2xl overflow-hidden relative border-t sm:border border-slate-100 ${isClosing ? 'modal-content-close-anim' : 'modal-content-anim'}`}>
+          <div className={`bg-white w-full max-w-4xl h-[90dvh] sm:h-auto sm:max-h-[85dvh] flex flex-col sm:flex-row rounded-t-[2rem] sm:rounded-3xl shadow-2xl overflow-hidden relative border-t sm:border border-slate-100 ${isClosing ? 'modal-content-close-anim' : 'modal-content-anim'}`} onClick={e => e.stopPropagation()}>
             
             {/* Close Button */}
-            <button onClick={handleCloseModal} className="absolute top-3 right-3 sm:top-4 sm:right-4 z-[60] w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center bg-white/90 backdrop-blur border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-full shadow-md transition-all">
+            <button onClick={handleCloseModal} className="absolute top-3 right-3 sm:top-4 sm:right-4 z-[60] w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center bg-white/90 backdrop-blur border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-full shadow-md transition-all active:scale-95">
               <X size={18} />
             </button>
             
             {/* Left/Top: Image Side */}
             <div className="w-full sm:w-1/2 bg-slate-50/50 flex flex-col justify-center items-center p-6 sm:p-8 border-b sm:border-b-0 sm:border-r border-slate-100 h-[35dvh] sm:h-auto sm:min-h-[400px] shrink-0 relative">
-              {/* Note: The Contract/B2B pricing badge was also removed from the large modal image area as requested */}
-
               {activeProduct.image_urls?.[0] ? (
-                <img src={activeProduct.image_urls[0]} alt="" className={`w-full h-full object-contain mix-blend-multiply ${modalPreventPurchase ? 'grayscale opacity-75' : ''}`} />
+                <img src={activeProduct.image_urls[0]} alt="" className={`max-w-full max-h-full object-contain mix-blend-multiply ${modalPreventPurchase ? 'grayscale opacity-75' : ''}`} />
               ) : (
                 <div className="text-slate-300 flex flex-col items-center gap-2 sm:gap-3">
                   <PackageOpen size={40} strokeWidth={1.5} className="sm:w-16 sm:h-16" />
@@ -597,9 +654,9 @@ export default function Catalog() {
                     </div>
                     
                     <div className={`flex items-center p-0.5 sm:p-1 rounded-xl border shadow-sm ${modalPreventPurchase ? 'bg-slate-50 border-slate-100 opacity-50' : 'bg-white border-slate-200'}`}>
-                      <button type="button" disabled={modalPreventPurchase} onClick={() => setQuantity(Math.max(1, quantity - 1))} className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center text-slate-500 rounded-lg hover:bg-slate-50 hover:text-slate-900 transition-colors"><Minus size={14} strokeWidth={2.5} /></button>
+                      <button type="button" disabled={modalPreventPurchase} onClick={() => setQuantity(Math.max(1, quantity - 1))} className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center text-slate-500 rounded-lg hover:bg-slate-50 hover:text-slate-900 transition-colors active:scale-95"><Minus size={14} strokeWidth={2.5} /></button>
                       <input type="number" disabled={modalPreventPurchase} value={quantity} onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))} className="w-10 sm:w-12 h-8 sm:h-10 bg-transparent text-center text-sm sm:text-base font-bold text-slate-900 outline-none focus:ring-0" />
-                      <button type="button" disabled={modalPreventPurchase} onClick={() => setQuantity(quantity + 1)} className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center text-slate-500 rounded-lg hover:bg-slate-50 hover:text-slate-900 transition-colors"><Plus size={14} strokeWidth={2.5} /></button>
+                      <button type="button" disabled={modalPreventPurchase} onClick={() => setQuantity(quantity + 1)} className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center text-slate-500 rounded-lg hover:bg-slate-50 hover:text-slate-900 transition-colors active:scale-95"><Plus size={14} strokeWidth={2.5} /></button>
                     </div>
                   </div>
 
@@ -608,7 +665,7 @@ export default function Catalog() {
                     disabled={!selectedVariantId || isAddingToCart || modalPreventPurchase} 
                     className={`w-full flex items-center justify-center gap-2 py-3.5 sm:py-4 text-sm font-bold rounded-xl transition-all shadow-md 
                       ${modalPreventPurchase ? 'bg-slate-200 text-slate-400 shadow-none cursor-not-allowed' : 
-                        isAddingToCart ? 'bg-emerald-500 text-white scale-[0.98] shadow-emerald-500/30' : 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95'}`}
+                        isAddingToCart ? 'bg-emerald-500 text-white scale-[0.98] shadow-emerald-500/30' : 'bg-slate-900 text-white hover:bg-slate-800 active:scale-[0.98]'}`}
                   >
                     {modalPreventPurchase ? (
                       <><AlertTriangle size={16} /> Out of Stock</>
@@ -630,7 +687,7 @@ export default function Catalog() {
 
       {/* --- TOAST NOTIFICATION --- */}
       {toast.show && (
-        <div className="fixed bottom-20 sm:bottom-8 right-4 sm:right-8 z-[100] flex items-center gap-2 sm:gap-3 bg-slate-900 text-white px-4 py-3 sm:px-5 sm:py-3.5 rounded-xl sm:rounded-2xl shadow-2xl toast-slide-anim">
+        <div className="fixed bottom-20 sm:bottom-8 right-4 sm:right-8 z-[110] flex items-center gap-2 sm:gap-3 bg-slate-900 text-white px-4 py-3 sm:px-5 sm:py-3.5 rounded-xl sm:rounded-2xl shadow-2xl toast-slide-anim">
           <div className="bg-emerald-500/20 text-emerald-400 p-1 sm:p-1.5 rounded-full"><CheckCircle2 size={16} strokeWidth={2.5} className="sm:w-5 sm:h-5" /></div>
           <p className="text-xs sm:text-sm font-medium pr-1 sm:pr-2">{toast.message}</p>
         </div>
