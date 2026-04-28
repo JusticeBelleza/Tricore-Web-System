@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react-swc' // 🚀 Switched to the faster SWC compiler
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import path from "path" // 🚀 ADDED FOR SHADCN UI
 
 export default defineConfig({
   plugins: [
@@ -44,6 +45,12 @@ export default defineConfig({
       }
     })
   ],
+  // 🚀 ADDED FOR SHADCN UI PATH ALIASES
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
   // 🚀 VITEST CONFIGURATION ADDED HERE
   test: {
     environment: 'jsdom',
