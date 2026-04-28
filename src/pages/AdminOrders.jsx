@@ -11,7 +11,7 @@ import {
 
 // 🚀 SHADCN UI IMPORTS
 import { toast } from "sonner";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -877,23 +877,24 @@ export default function AdminOrders() {
             </div>
           )}
 
-          <DialogFooter className="flex gap-3 pt-5 sm:justify-center w-full">
+          {/* ❌ REMOVED DIALOGFOOTER ABSTRACTION - USING DIRECT DIV INSTEAD */}
+          <div className="flex w-full flex-row justify-center gap-3 pt-6">
             <Button 
               variant="outline" 
-              className="w-full py-6"
+              className="w-[140px] py-6"
               onClick={() => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); setCancelReason(''); }}
             >
               Cancel
             </Button>
             <Button 
               variant={confirmAction.title?.includes('Reject') ? 'destructive' : 'default'}
-              className="w-full py-6"
+              className="w-[140px] py-6"
               disabled={confirmAction.title?.includes('Reject') && !cancelReason.trim()}
               onClick={() => { confirmAction.onConfirm(cancelReason); setCancelReason(''); }} 
             >
               Confirm
             </Button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -957,10 +958,11 @@ export default function AdminOrders() {
                 <p className="text-xs text-slate-400 mt-3 font-medium">The order subtotal and total amount will recalculate automatically.</p>
               </div>
 
-              <DialogFooter className="flex gap-3 pt-5 sm:justify-center w-full">
-                <Button variant="outline" className="w-full py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Cancel</Button>
-                <Button className="w-full py-6 bg-emerald-600 hover:bg-emerald-700" disabled={!selectedSubstitute || !itemAction.newQty || itemAction.newQty <= 0} onClick={() => addItemMutation.mutate({ orderId: itemAction.order.id, variantId: selectedSubstitute.id, qty: parseInt(itemAction.newQty, 10) })}>Add to Order</Button>
-              </DialogFooter>
+              {/* ❌ REMOVED DIALOGFOOTER ABSTRACTION - USING DIRECT DIV INSTEAD */}
+              <div className="flex w-full flex-row justify-center gap-3 pt-6">
+                <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Cancel</Button>
+                <Button className="w-[140px] py-6 bg-emerald-600 hover:bg-emerald-700" disabled={!selectedSubstitute || !itemAction.newQty || itemAction.newQty <= 0} onClick={() => addItemMutation.mutate({ orderId: itemAction.order.id, variantId: selectedSubstitute.id, qty: parseInt(itemAction.newQty, 10) })}>Add to Order</Button>
+              </div>
             </>
           )}
 
@@ -975,10 +977,12 @@ export default function AdminOrders() {
                 <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Cancellation Reason</label>
                 <textarea value={itemAction.reason} onChange={(e) => setItemAction({...itemAction, reason: e.target.value})} placeholder="Reason for canceling this item..." className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500 outline-none resize-none h-20"/>
               </div>
-              <DialogFooter className="flex gap-3 pt-5 sm:justify-center w-full">
-                <Button variant="outline" className="w-full py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Go Back</Button>
-                <Button variant="destructive" className="w-full py-6" disabled={!itemAction.reason.trim()} onClick={() => cancelItemMutation.mutate({ itemId: itemAction.item.id, reason: itemAction.reason })}>Confirm Cancel</Button>
-              </DialogFooter>
+              
+              {/* ❌ REMOVED DIALOGFOOTER ABSTRACTION - USING DIRECT DIV INSTEAD */}
+              <div className="flex w-full flex-row justify-center gap-3 pt-6">
+                <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Go Back</Button>
+                <Button variant="destructive" className="w-[140px] py-6" disabled={!itemAction.reason.trim()} onClick={() => cancelItemMutation.mutate({ itemId: itemAction.item.id, reason: itemAction.reason })}>Confirm Cancel</Button>
+              </div>
             </>
           )}
 
@@ -994,10 +998,12 @@ export default function AdminOrders() {
                 <Input type="number" min="1" value={itemAction.newQty} onChange={(e) => setItemAction({...itemAction, newQty: e.target.value})} />
                 <p className="text-xs text-slate-400 mt-2">The order subtotal and total amount will recalculate automatically.</p>
               </div>
-              <DialogFooter className="flex gap-3 pt-5 sm:justify-center w-full">
-                <Button variant="outline" className="w-full py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Cancel</Button>
-                <Button className="w-full py-6 bg-blue-600 hover:bg-blue-700" disabled={!itemAction.newQty || itemAction.newQty <= 0} onClick={() => editItemMutation.mutate({ itemId: itemAction.item.id, newQty: parseInt(itemAction.newQty, 10) })}>Update Quantity</Button>
-              </DialogFooter>
+              
+              {/* ❌ REMOVED DIALOGFOOTER ABSTRACTION - USING DIRECT DIV INSTEAD */}
+              <div className="flex w-full flex-row justify-center gap-3 pt-6">
+                <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Cancel</Button>
+                <Button className="w-[140px] py-6 bg-blue-600 hover:bg-blue-700" disabled={!itemAction.newQty || itemAction.newQty <= 0} onClick={() => editItemMutation.mutate({ itemId: itemAction.item.id, newQty: parseInt(itemAction.newQty, 10) })}>Update Quantity</Button>
+              </div>
             </>
           )}
 
@@ -1040,10 +1046,12 @@ export default function AdminOrders() {
                 )}
                 <p className="text-xs text-slate-400 mt-3 font-medium">The order subtotal and total amount will recalculate automatically based on the new item's price.</p>
               </div>
-              <DialogFooter className="flex gap-3 pt-5 sm:justify-center w-full">
-                <Button variant="outline" className="w-full py-6" onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }}>Cancel</Button>
-                <Button className="w-full py-6 bg-purple-600 hover:bg-purple-700" disabled={!selectedSubstitute} onClick={executeItemSubstitute}>Confirm Swap</Button>
-              </DialogFooter>
+              
+              {/* ❌ REMOVED DIALOGFOOTER ABSTRACTION - USING DIRECT DIV INSTEAD */}
+              <div className="flex w-full flex-row justify-center gap-3 pt-6">
+                <Button variant="outline" className="w-[140px] py-6" onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }}>Cancel</Button>
+                <Button className="w-[140px] py-6 bg-purple-600 hover:bg-purple-700" disabled={!selectedSubstitute} onClick={executeItemSubstitute}>Confirm Swap</Button>
+              </div>
             </>
           )}
 

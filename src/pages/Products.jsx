@@ -24,6 +24,10 @@ export default function Products() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [activeTab, setActiveTab] = useState('all');
+  
+  // Custom Dropdown State
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownRef = useRef(null);
 
   // Media Library
   const [showMediaLibrary, setShowMediaLibrary] = useState(false);
@@ -58,6 +62,15 @@ export default function Products() {
     unorderedList: false, orderedList: false,
     alignLeft: false, alignCenter: false, alignRight: false
   });
+
+  // Click outside listener for the custom dropdown
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) setIsDropdownOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   useEffect(() => {
     const handler = setTimeout(() => {
@@ -160,7 +173,6 @@ export default function Products() {
 
   // --- 🚀 IMPORT/EXPORT Logic ---
 
-  // Helper to safely parse CSV lines honoring quotes
   const parseCSVLine = (text) => {
     let ret = [], inQuote = false, value = '';
     for (let i = 0; i < text.length; i++) {
@@ -544,7 +556,7 @@ export default function Products() {
       </div>
 
       {/* Filters Row */}
-      <div className="flex flex-col sm:flex-row gap-3 bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
+      <div className="flex flex-col sm:flex-row gap-3 bg-white p-3 rounded-2xl border border-slate-200 shadow-sm z-30">
         <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full sm:w-auto overflow-x-auto shrink-0">
           <button onClick={() => setActiveTab('all')} className={activeTab === 'all' ? tabActiveClass : tabInactiveClass}><Layers size={16}/> All</button>
           <button onClick={() => setActiveTab('low_stock')} className={activeTab === 'low_stock' ? tabActiveClass : tabInactiveClass}><AlertTriangle size={16}/> Low Stock</button>
@@ -552,12 +564,48 @@ export default function Products() {
         </div>
         <div className="relative flex-1">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input type="text" placeholder="Search by Name or SKU..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-100 outline-none text-sm font-medium transition-all" />
+          <input type="text" placeholder="Search by Name or SKU..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-100 outline-none text-sm font-medium transition-all min-h-[44px]" />
         </div>
-        <select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)} className="w-full sm:w-56 px-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-100 outline-none text-sm transition-all cursor-pointer font-bold text-slate-700">
-          <option value="">All Categories</option>
-          {categories.map(c => (<option key={c} value={c}>{c}</option>))}
-        </select>
+        
+        {/* 🚀 FIXED UI DROPDOWN (Matches Home.jsx) */}
+        <div className="relative w-full sm:w-64 shrink-0" ref={dropdownRef}>
+          <button 
+            type="button" 
+            onClick={() => setIsDropdownOpen(!isDropdownOpen)} 
+            className="w-full flex justify-between items-center bg-slate-50 border border-transparent hover:border-slate-300 text-slate-700 font-bold py-2.5 pl-4 pr-3 rounded-xl focus:bg-white focus:ring-2 focus:ring-slate-100 outline-none text-sm transition-all text-left z-10 relative min-h-[44px]"
+          >
+            <span className="pr-2 whitespace-normal break-words leading-tight">
+              {selectedCategory === '' ? 'All Categories' : selectedCategory}
+            </span>
+            <ChevronDown className={`text-slate-400 shrink-0 transition-transform duration-300 ${isDropdownOpen ? 'rotate-180' : ''}`} size={16} />
+          </button>
+          
+          <div className={`absolute z-50 w-full mt-2 bg-white border border-slate-100 rounded-xl shadow-xl overflow-hidden transition-all duration-200 origin-top ${isDropdownOpen ? 'opacity-100 translate-y-0 scale-100 visible pointer-events-auto' : 'opacity-0 -translate-y-2 scale-95 invisible pointer-events-none'}`}>
+            <ul className="max-h-64 overflow-y-auto divide-y divide-slate-50 py-1">
+              <li>
+                <button 
+                  type="button" 
+                  onClick={() => { setSelectedCategory(''); setIsDropdownOpen(false); }} 
+                  className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors whitespace-normal break-words ${selectedCategory === '' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
+                >
+                  All Categories
+                </button>
+              </li>
+              {categories.map((category, idx) => (
+                <li key={idx}>
+                  <button 
+                    type="button" 
+                    onClick={() => { setSelectedCategory(category); setIsDropdownOpen(false); }} 
+                    className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors whitespace-normal break-words ${selectedCategory === category ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
+                  >
+                    {category}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
       </div>
 
       {/* Main Table */}
@@ -567,7 +615,7 @@ export default function Products() {
           {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0 ml-auto"></div></div>))}
         </div>
       ) : (
-        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm mt-6 flex flex-col">
+        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm mt-6 flex flex-col z-10 relative">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm whitespace-nowrap">
               <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500">

@@ -4,6 +4,12 @@ import { supabase } from '../lib/supabase';
 import { Mail, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight, ShieldCheck, X, Key, CheckCircle2 } from 'lucide-react';
 import { Turnstile } from '@marsidev/react-turnstile';
 
+// 🚀 SHADCN UI IMPORTS
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
+
 export default function Login() {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
@@ -11,7 +17,6 @@ export default function Login() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   
   // Turnstile Tokens & Refs
@@ -24,13 +29,11 @@ export default function Login() {
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
   const [resetLoading, setResetLoading] = useState(false);
-  const [resetMessage, setResetMessage] = useState({ type: '', text: '' }); 
 
   const navigate = useNavigate();
 
   // 🚀 GOOGLE OAUTH SIGN-IN
   const handleGoogleSignIn = async () => {
-    setError('');
     setLoading(true);
     try {
       const { error } = await supabase.auth.signInWithOAuth({
@@ -41,7 +44,7 @@ export default function Login() {
       });
       if (error) throw error;
     } catch (err) {
-      setError(err.message);
+      toast.error(err.message);
       setLoading(false);
     }
   };
@@ -49,7 +52,6 @@ export default function Login() {
   // STANDARD EMAIL/PASSWORD SUBMIT
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError('');
     setLoading(true);
 
     try {
@@ -65,6 +67,7 @@ export default function Login() {
         });
         
         if (signInError) throw signInError;
+        toast.success("Successfully logged in!");
         navigate('/dashboard');
         
       } else {
@@ -82,7 +85,7 @@ export default function Login() {
         
         if (signUpError) throw signUpError;
         
-        alert('Registration successful! You can now log in.');
+        toast.success('Registration successful! You can now log in.');
         setIsLogin(true);
         setPassword('');
         setConfirmPassword('');
@@ -90,7 +93,7 @@ export default function Login() {
         if (turnstileRef.current) turnstileRef.current.reset();
       }
     } catch (err) {
-      setError(err.message);
+      toast.error(err.message);
       if (turnstileRef.current) {
         turnstileRef.current.reset();
         setCaptchaToken(null);
@@ -103,7 +106,6 @@ export default function Login() {
   const handleResetPassword = async (e) => {
     e.preventDefault();
     setResetLoading(true);
-    setResetMessage({ type: '', text: '' });
 
     try {
       if (!resetCaptchaToken) {
@@ -117,9 +119,11 @@ export default function Login() {
 
       if (error) throw error;
       
-      setResetMessage({ type: 'success', text: 'Password reset link sent! Please check your inbox.' });
+      toast.success('Password reset link sent! Please check your inbox.');
+      setShowForgotModal(false);
+      setResetEmail('');
     } catch (err) {
-      setResetMessage({ type: 'error', text: err.message });
+      toast.error(err.message);
       if (resetTurnstileRef.current) {
         resetTurnstileRef.current.reset();
         setResetCaptchaToken(null);
@@ -143,7 +147,7 @@ export default function Login() {
   const strengthLabels = ['Too Weak', 'Weak', 'Fair', 'Good', 'Strong'];
   const strengthColors = ['bg-slate-200', 'bg-red-500', 'bg-amber-500', 'bg-blue-500', 'bg-emerald-500'];
 
-  const inputClass = "block w-full pl-11 pr-10 pt-6 pb-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none text-sm font-bold text-slate-900 transition-all shadow-sm peer";
+  const inputClass = "block w-full pl-11 pr-10 pt-6 pb-2 bg-slate-50 border border-slate-200 rounded-xl focus-visible:bg-white focus-visible:border-blue-500 focus-visible:ring-4 focus-visible:ring-blue-500/10 outline-none text-sm font-bold text-slate-900 transition-all shadow-sm peer h-[52px]";
   const floatingLabelClass = "absolute text-sm text-slate-400 duration-300 transform -translate-y-2.5 scale-[0.8] top-3.5 z-10 origin-[0] left-11 peer-placeholder-shown:scale-100 peer-placeholder-shown:translate-y-1 peer-focus:scale-[0.8] peer-focus:-translate-y-2.5 peer-focus:text-blue-600 peer-focus:font-bold pointer-events-none";
 
   return (
@@ -154,7 +158,7 @@ export default function Login() {
         <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1519389950473-47ba0277781c?q=80&w=2000&auto=format&fit=crop')] opacity-5 mix-blend-overlay object-cover"></div>
       </div>
 
-      <div className="w-full max-w-[420px] bg-white p-8 sm:p-10 rounded-[2rem] shadow-2xl shadow-slate-200/50 border border-slate-100 relative z-10 animate-in fade-in slide-in-from-bottom-8 duration-500">
+      <Card className="w-full max-w-[420px] p-8 sm:p-10 rounded-[2rem] shadow-2xl shadow-slate-200/50 border border-slate-100 relative z-10 animate-in fade-in slide-in-from-bottom-8 duration-500 border-none">
         
         <div className="text-center mb-6 flex flex-col items-center">
           <div className="w-16 h-16 bg-white rounded-2xl shadow-sm border border-slate-100 flex items-center justify-center mb-4 overflow-hidden p-2">
@@ -168,35 +172,28 @@ export default function Login() {
           </p>
         </div>
 
-        {error && (
-          <div className="mb-5 p-3.5 bg-red-50 border border-red-100 text-red-700 rounded-xl text-sm font-bold flex items-start gap-3 animate-in fade-in zoom-in-95 duration-200">
-            <AlertCircle size={18} className="shrink-0 mt-0.5 text-red-500" />
-            <span className="leading-snug">{error}</span>
-          </div>
-        )}
-
         <form onSubmit={handleSubmit} className="space-y-4">
           
           {!isLogin && (
             <div className="relative animate-in fade-in slide-in-from-top-2 duration-300">
               <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
-              <input type="text" id="fullName" required className={inputClass} placeholder=" " value={fullName} onChange={(e) => setFullName(e.target.value)} />
+              <Input type="text" id="fullName" required className={inputClass} placeholder=" " value={fullName} onChange={(e) => setFullName(e.target.value)} />
               <label htmlFor="fullName" className={floatingLabelClass}>Full Name</label>
             </div>
           )}
           
           <div className="relative">
             <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
-            <input type="email" id="email" required className={inputClass} placeholder=" " value={email} onChange={(e) => setEmail(e.target.value)} />
+            <Input type="email" id="email" required className={inputClass} placeholder=" " value={email} onChange={(e) => setEmail(e.target.value)} />
             <label htmlFor="email" className={floatingLabelClass}>Email Address</label>
           </div>
 
           <div>
             <div className="relative">
               <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
-              <input type={showPassword ? "text" : "password"} id="password" required className={inputClass} placeholder=" " value={password} onChange={(e) => setPassword(e.target.value)} />
+              <Input type={showPassword ? "text" : "password"} id="password" required className={inputClass} placeholder=" " value={password} onChange={(e) => setPassword(e.target.value)} />
               <label htmlFor="password" className={floatingLabelClass}>Password</label>
-              <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors z-10">
+              <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors z-10 bg-transparent border-none">
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
@@ -220,7 +217,7 @@ export default function Login() {
             <div className="animate-in fade-in slide-in-from-top-2 duration-300">
               <div className="relative">
                 <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
-                <input type={showPassword ? "text" : "password"} id="confirmPassword" required className={`${inputClass} ${confirmPassword && password !== confirmPassword ? 'border-red-300 focus:border-red-500 focus:ring-red-500/10' : ''}`} placeholder=" " value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+                <Input type={showPassword ? "text" : "password"} id="confirmPassword" required className={`${inputClass} ${confirmPassword && password !== confirmPassword ? 'border-red-300 focus-visible:border-red-500 focus-visible:ring-red-500/10' : ''}`} placeholder=" " value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
                 <label htmlFor="confirmPassword" className={`${floatingLabelClass} ${confirmPassword && password !== confirmPassword ? 'text-red-500 peer-focus:text-red-500' : ''}`}>Confirm Password</label>
               </div>
               {confirmPassword && password !== confirmPassword && (
@@ -234,11 +231,8 @@ export default function Login() {
             <Turnstile 
               ref={turnstileRef}
               siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY || ''} 
-              onSuccess={(token) => {
-                setCaptchaToken(token);
-                setError('');
-              }}
-              onError={() => setError("Security verification failed. Please refresh the page.")}
+              onSuccess={(token) => { setCaptchaToken(token); }}
+              onError={() => toast.error("Security verification failed. Please refresh the page.")}
               onExpire={() => setCaptchaToken(null)}
               options={{ theme: 'light', appearance: 'always' }}
             />
@@ -250,23 +244,23 @@ export default function Login() {
                 <input type="checkbox" id="remember" className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer" />
                 <label htmlFor="remember" className="text-xs font-bold text-slate-600 cursor-pointer select-none">Remember me</label>
               </div>
-              <button type="button" onClick={() => setShowForgotModal(true)} className="text-[11px] font-bold text-blue-600 hover:text-blue-700 transition-colors uppercase tracking-wider">
+              <button type="button" onClick={() => setShowForgotModal(true)} className="text-[11px] font-bold text-blue-600 hover:text-blue-700 transition-colors uppercase tracking-wider bg-transparent border-none">
                 Forgot password?
               </button>
             </div>
           )}
 
-          <button
+          <Button
             type="submit"
             disabled={loading || !email || !password || !captchaToken || (!isLogin && (!fullName || password !== confirmPassword))}
-            className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-black hover:bg-slate-800 active:scale-[0.98] transition-all shadow-lg shadow-slate-900/20 disabled:opacity-70 mt-2 flex items-center justify-center gap-2 group"
+            className="w-full bg-slate-900 text-white py-6 rounded-xl font-black hover:bg-slate-800 active:scale-[0.98] transition-all shadow-lg shadow-slate-900/20 disabled:opacity-70 mt-2 flex items-center justify-center gap-2 group text-base"
           >
             {loading ? (
               <span className="animate-pulse flex items-center gap-2"><ShieldCheck size={18} /> Processing...</span>
             ) : (
               <>{isLogin ? 'Sign In' : 'Create Account'} <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform" /></>
             )}
-          </button>
+          </Button>
 
           {/* 🚀 GOOGLE BUTTON SEPARATOR & BUTTON */}
           <div className="mt-6 pt-5 border-t border-slate-100 animate-in fade-in duration-500 relative">
@@ -274,11 +268,12 @@ export default function Login() {
               <span className="bg-white px-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Or continue with</span>
             </div>
             
-            <button
+            <Button
               type="button"
+              variant="outline"
               onClick={handleGoogleSignIn}
               disabled={loading}
-              className="w-full bg-white border border-slate-200 text-slate-700 py-3 rounded-xl font-bold hover:bg-slate-50 hover:border-slate-300 active:scale-[0.98] transition-all flex items-center justify-center gap-3 shadow-sm mt-2"
+              className="w-full bg-white border-slate-200 text-slate-700 py-6 rounded-xl font-bold hover:bg-slate-50 hover:border-slate-300 active:scale-[0.98] transition-all flex items-center justify-center gap-3 shadow-sm mt-2 text-base"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24">
                 <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
@@ -287,7 +282,7 @@ export default function Login() {
                 <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
               </svg>
               Google
-            </button>
+            </Button>
           </div>
 
         </form>
@@ -298,33 +293,31 @@ export default function Login() {
             <button 
               onClick={() => {
                 setIsLogin(!isLogin);
-                setError('');
                 setPassword('');
                 setConfirmPassword('');
                 setCaptchaToken(null); 
                 if (turnstileRef.current) turnstileRef.current.reset();
               }}
-              className="text-blue-600 font-bold hover:text-blue-700 hover:underline underline-offset-4 transition-all"
+              className="text-blue-600 font-bold hover:text-blue-700 hover:underline underline-offset-4 transition-all bg-transparent border-none"
             >
               {isLogin ? "Sign up" : "Sign in"}
             </button>
           </p>
         </div>
-      </div>
+      </Card>
 
       {/* FORGOT PASSWORD MODAL */}
       {showForgotModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="bg-white w-full max-w-sm rounded-[2rem] shadow-2xl p-8 relative animate-in zoom-in-95 duration-200 border border-slate-100">
+          <Card className="w-full max-w-sm rounded-[2rem] shadow-2xl p-8 relative animate-in zoom-in-95 duration-200 border-slate-100 border-none">
             
             <button 
               onClick={() => {
                 setShowForgotModal(false);
-                setResetMessage({ type: '', text: '' });
                 setResetEmail('');
                 setResetCaptchaToken(null);
               }} 
-              className="absolute top-5 right-5 text-slate-400 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 p-2 rounded-full transition-all"
+              className="absolute top-5 right-5 text-slate-400 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 p-2 rounded-full transition-all bg-transparent border-none"
             >
               <X size={20} />
             </button>
@@ -339,21 +332,10 @@ export default function Login() {
               </p>
             </div>
 
-            {resetMessage.text && (
-              <div className={`mb-5 p-3.5 rounded-xl text-sm font-bold flex items-start gap-3 animate-in fade-in zoom-in-95 duration-200 ${resetMessage.type === 'error' ? 'bg-red-50 border border-red-100 text-red-700' : 'bg-emerald-50 border border-emerald-100 text-emerald-800'}`}>
-                {resetMessage.type === 'error' ? (
-                  <AlertCircle size={18} className="shrink-0 mt-0.5 text-red-500" />
-                ) : (
-                  <CheckCircle2 size={18} className="shrink-0 mt-0.5 text-emerald-500" />
-                )}
-                <span className="leading-snug">{resetMessage.text}</span>
-              </div>
-            )}
-
             <form onSubmit={handleResetPassword} className="space-y-4">
               <div className="relative">
                 <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
-                <input type="email" id="resetEmail" required className={inputClass} placeholder=" " value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} />
+                <Input type="email" id="resetEmail" required className={inputClass} placeholder=" " value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} />
                 <label htmlFor="resetEmail" className={floatingLabelClass}>Email Address</label>
               </div>
 
@@ -368,16 +350,16 @@ export default function Login() {
                 />
               </div>
 
-              <button
+              <Button
                 type="submit"
                 disabled={resetLoading || !resetEmail || !resetCaptchaToken}
-                className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-black hover:bg-slate-800 active:scale-[0.98] transition-all shadow-md disabled:opacity-70 flex items-center justify-center gap-2"
+                className="w-full bg-slate-900 text-white py-6 rounded-xl font-black hover:bg-slate-800 active:scale-[0.98] transition-all shadow-md disabled:opacity-70 flex items-center justify-center gap-2 text-base"
               >
                 {resetLoading ? 'Sending...' : 'Send Reset Link'}
-              </button>
+              </Button>
             </form>
 
-          </div>
+          </Card>
         </div>
       )}
     </div>
