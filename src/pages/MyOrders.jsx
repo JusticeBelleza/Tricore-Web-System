@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { 
   Package, Receipt, ChevronDown, Calendar, Hash, MapPin, Mail,
   CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2,
@@ -13,32 +14,38 @@ import autoTable from 'jspdf-autotable';
 export default function MyOrders() {
   const { profile } = useAuth();
   const navigate = useNavigate();
-  const [orders, setOrders] = useState([]);
-  const [drivers, setDrivers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+
   const [expandedOrderId, setExpandedOrderId] = useState(null);
-
   const [page, setPage] = useState(0);
-  const [totalCount, setTotalCount] = useState(0);
   const pageSize = 10;
-  
   const [activeTab, setActiveTab] = useState('all'); 
-  const [tabCounts, setTabCounts] = useState({ all: 0, delivered: 0, due: 0, paid: 0, cancelled: 0, returned: 0 });
 
+  // Reset page and expanded rows on tab change
   useEffect(() => {
     setPage(0);
     setExpandedOrderId(null);
   }, [activeTab]);
 
-  useEffect(() => {
-    if (profile?.company_id || profile?.id) {
-      fetchMyOrders();
-      fetchTabCounts();
-    }
-  }, [profile?.company_id, profile?.id, page, activeTab]);
+  // ==========================================
+  // 🚀 REACT QUERY: DATA FETCHING
+  // ==========================================
 
-  const fetchTabCounts = async () => {
-    try {
+  // 1. Fetch Drivers (Cached heavily)
+  const { data: drivers = [] } = useQuery({
+    queryKey: ['drivers'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('user_profiles').select('full_name, contact_number').eq('role', 'driver');
+      if (error) throw error;
+      return data || [];
+    },
+    staleTime: Infinity, // Drivers don't change often, keep in cache
+  });
+
+  // 2. Fetch Tab Counts
+  const { data: tabCounts = { all: 0, delivered: 0, due: 0, paid: 0, cancelled: 0, returned: 0 } } = useQuery({
+    queryKey: ['my_orders_tabs', profile?.id, profile?.company_id],
+    queryFn: async () => {
       const thresholdDate = new Date();
       thresholdDate.setDate(thresholdDate.getDate() - 25);
 
@@ -58,22 +65,23 @@ export default function MyOrders() {
         baseQuery().in('status', ['restocked', 'attempted'])
       ]);
 
-      setTabCounts({
+      return {
         all: allReq.count || 0,
         delivered: deliveredReq.count || 0,
         due: dueReq.count || 0,
         paid: paidReq.count || 0,
         cancelled: cancelledReq.count || 0,
         returned: returnedReq.count || 0
-      });
-    } catch (error) {
-      console.error('Error counting tabs:', error);
-    }
-  };
+      };
+    },
+    enabled: !!(profile?.id || profile?.company_id),
+    staleTime: 60000,
+  });
 
-  const fetchMyOrders = async () => {
-    setLoading(true);
-    try {
+  // 3. Fetch Paginated Orders
+  const { data: ordersData, isLoading } = useQuery({
+    queryKey: ['my_orders', activeTab, page, profile?.id, profile?.company_id],
+    queryFn: async () => {
       let query = supabase
         .from('orders')
         .select(`
@@ -114,23 +122,42 @@ export default function MyOrders() {
       const to = from + pageSize - 1;
       query = query.range(from, to);
 
-      const [ordersRes, driversRes] = await Promise.all([
-        query,
-        supabase.from('user_profiles').select('full_name, contact_number').eq('role', 'driver')
-      ]);
+      const { data, count, error } = await query;
+      if (error) throw error;
+      
+      return { orders: data || [], count: count || 0 };
+    },
+    placeholderData: keepPreviousData, // Keeps old data visible while fetching new page
+    enabled: !!(profile?.id || profile?.company_id),
+  });
 
-      if (ordersRes.error) throw ordersRes.error;
+  const orders = ordersData?.orders || [];
+  const totalCount = ordersData?.count || 0;
+
+  // ==========================================
+  // 🚀 THROTTLED REAL-TIME SUBSCRIPTION
+  // ==========================================
+  useEffect(() => {
+    if (!profile?.id && !profile?.company_id) return;
+    
+    let debounceTimer;
+    
+    const sub = supabase.channel('my_orders_channel')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+        // Debounce to prevent rapid UI flashing if warehouse bulk updates
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ['my_orders'] });
+          queryClient.invalidateQueries({ queryKey: ['my_orders_tabs'] });
+        }, 500);
+      }).subscribe();
       
-      setOrders(ordersRes.data || []);
-      setTotalCount(ordersRes.count || 0);
-      setDrivers(driversRes.data || []);
-      
-    } catch (error) {
-      console.error('Error fetching orders:', error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+    return () => { 
+      clearTimeout(debounceTimer);
+      supabase.removeChannel(sub); 
+    };
+  }, [profile?.id, profile?.company_id, queryClient]);
+
 
   const toggleOrderDetails = (orderId) => {
     setExpandedOrderId(expandedOrderId === orderId ? null : orderId);
@@ -190,9 +217,6 @@ export default function MyOrders() {
     const orderNum = order.id.substring(0, 8).toUpperCase();
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-    // 🚀 DYNAMIC CALCULATIONS FOR PDF
-    // The DB already holds the exact final Net Subtotal, Final Tax, and Final Total. 
-    // We just need to sum all items to display the original gross subtotal!
     const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
     const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
     
@@ -249,7 +273,6 @@ export default function MyOrders() {
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    // 🚀 FILTER OUT REJECTED ITEMS FROM THE ACTUAL INVOICE LIST
     const activeItems = order.order_items?.filter(item => item.status !== 'cancelled' && item.status !== 'rejected') || [];
     const tableRows = activeItems.map(item => [
       `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.products?.base_sku || item.product_variants?.sku || 'N/A'}`,
@@ -350,7 +373,7 @@ export default function MyOrders() {
         </div>
       </div>
 
-      {loading ? (
+      {isLoading ? (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="w-full h-12 bg-slate-50/80 border-b border-slate-200"></div>
           {[1,2,3].map(n => (
@@ -429,8 +452,6 @@ export default function MyOrders() {
                     isOverdue = order.payment_status === 'unpaid' && !['cancelled', 'restocked', 'attempted'].includes(order.status) && new Date() > dueDate;
                   }
 
-                  // 🚀 DYNAMIC CALCULATIONS FOR ROW AND SUMMARY
-                  // The DB already holds the exact final Net Subtotal, Final Tax, and Final Total. 
                   const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
                   const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
                   const finalTax = Number(order.tax_amount || 0);
