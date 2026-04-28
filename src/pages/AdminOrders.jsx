@@ -9,6 +9,12 @@ import {
   ChevronLeft, ChevronRight, AlertTriangle, Receipt, Edit3, RefreshCw, Plus
 } from 'lucide-react';
 
+// 🚀 SHADCN UI IMPORTS
+import { toast } from "sonner";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+
 export default function AdminOrders() {
   const { profile } = useAuth(); 
   const isWarehouse = profile?.role === 'warehouse';
@@ -31,16 +37,7 @@ export default function AdminOrders() {
   const [substituteSearch, setSubstituteSearch] = useState('');
   const [selectedSubstitute, setSelectedSubstitute] = useState(null);
 
-  const [notification, setNotification] = useState({ show: false, message: '', isError: false });
-  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false); // 🚀 Phase 4 Optimization state
-
-  // Notifications timeout
-  useEffect(() => {
-    if (notification.show) {
-      const timer = setTimeout(() => setNotification({ ...notification, show: false }), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [notification.show]);
+  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
 
   // Search Debounce
   useEffect(() => {
@@ -168,10 +165,10 @@ export default function AdminOrders() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
-      setNotification({ show: true, isError: false, message: 'Item cancelled and inventory restocked.' });
+      toast.success('Item cancelled and inventory restocked.');
       setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
     },
-    onError: (error) => setNotification({ show: true, isError: true, message: `Cancel failed: ${error.message}` })
+    onError: (error) => toast.error(`Cancel failed: ${error.message}`)
   });
 
   const editItemMutation = useMutation({
@@ -181,10 +178,10 @@ export default function AdminOrders() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
-      setNotification({ show: true, isError: false, message: 'Item quantity and totals updated!' });
+      toast.success('Item quantity and totals updated!');
       setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
     },
-    onError: (error) => setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` })
+    onError: (error) => toast.error(`Update failed: ${error.message}`)
   });
 
   const addItemMutation = useMutation({
@@ -194,12 +191,12 @@ export default function AdminOrders() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
-      setNotification({ show: true, isError: false, message: 'Product added successfully!' });
+      toast.success('Product added successfully!');
       setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
       setSelectedSubstitute(null);
       setSubstituteSearch('');
     },
-    onError: (error) => setNotification({ show: true, isError: true, message: `Add failed: ${error.message}` })
+    onError: (error) => toast.error(`Add failed: ${error.message}`)
   });
 
   const toggleOrderDetails = (orderId) => setExpandedOrderId(expandedOrderId === orderId ? null : orderId);
@@ -220,15 +217,15 @@ export default function AdminOrders() {
       if (error) throw error; 
 
       if (data && data.length === 0) {
-        setNotification({ show: true, isError: true, message: 'Action Blocked: Another user already updated this order.' });
+        toast.error('Action Blocked: Another user already updated this order.');
         queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
         return;
       }
 
-      setNotification({ show: true, isError: false, message: newStatus === 'processing' ? 'Order sent to warehouse.' : 'Order rejected & items restocked.' });
+      toast.success(newStatus === 'processing' ? 'Order sent to warehouse.' : 'Order rejected & items restocked.');
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
       queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
-    } catch (error) { setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` }); }
+    } catch (error) { toast.error(`Update failed: ${error.message}`); }
   };
 
   const handleStatusChangeClick = (orderId, newStatus) => {
@@ -261,29 +258,29 @@ export default function AdminOrders() {
       const newTaxAmount = newSubtotal * taxRate;
       const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
 
-      const { data, error: itemError } = await supabase.from('order_items')
-        .update({ product_variant_id: selectedSubstitute.id, unit_price: newUnitPrice, line_total: newLineTotal, total_base_units: qty }).eq('id', item.id).select(); 
+      const { error: itemError } = await supabase.from('order_items')
+        .update({ product_variant_id: selectedSubstitute.id, unit_price: newUnitPrice, line_total: newLineTotal, total_base_units: qty }).eq('id', item.id); 
       if (itemError) throw itemError;
       
       const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
       if (orderError) throw orderError;
 
-      setNotification({ show: true, isError: false, message: 'Product successfully substituted!' });
+      toast.success('Product successfully substituted!');
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
       setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
       setSelectedSubstitute(null);
       setSubstituteSearch('');
-    } catch (error) { setNotification({ show: true, isError: true, message: error.message }); }
+    } catch (error) { toast.error(error.message); }
   };
 
   const executeMarkAsPaid = async (orderId) => {
     try {
       const { error } = await supabase.from('orders').update({ payment_status: 'paid', updated_at: new Date().toISOString() }).eq('id', orderId);
       if (error) throw error;
-      setNotification({ show: true, isError: false, message: 'Order successfully marked as Paid!' });
+      toast.success('Order successfully marked as Paid!');
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
       queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
-    } catch (error) { setNotification({ show: true, isError: true, message: `Failed to update: ${error.message}` }); }
+    } catch (error) { toast.error(`Failed to update: ${error.message}`); }
   };
 
   const handleMarkAsPaid = (orderId) => {
@@ -308,12 +305,10 @@ export default function AdminOrders() {
     });
   };
 
-  // 🚀 Phase 4: Dynamic Imports for PDF Generation
   const generatePDF = async (order, docType = 'invoice') => {
-    setIsGeneratingPDF(true); // Disable buttons while downloading libraries
+    setIsGeneratingPDF(true); 
     
     try {
-      // DYNAMIC IMPORTS: Only fetch these massive libraries when the button is clicked!
       const { default: jsPDF } = await import('jspdf');
       const { default: autoTable } = await import('jspdf-autotable');
 
@@ -436,9 +431,9 @@ export default function AdminOrders() {
       
     } catch (error) {
       console.error("PDF Generation failed:", error);
-      setNotification({ show: true, isError: true, message: 'Failed to generate PDF. Please try again.' });
+      toast.error('Failed to generate PDF. Please try again.');
     } finally {
-      setIsGeneratingPDF(false); // Re-enable buttons
+      setIsGeneratingPDF(false);
     }
   };
 
@@ -496,7 +491,16 @@ export default function AdminOrders() {
             <button onClick={() => setActiveTab('restocked')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'restocked' ? 'bg-slate-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200/50'}`}>Restocked ({tabCounts.restocked})</button>
           </div>
         </div>
-        <div className="relative w-full xl:w-64 shrink-0"><Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" /></div>
+        <div className="relative w-full xl:w-64 shrink-0">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+          <Input 
+            type="text" 
+            placeholder="Search..." 
+            value={searchTerm} 
+            onChange={(e) => setSearchTerm(e.target.value)} 
+            className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border-transparent rounded-xl focus-visible:bg-white focus-visible:border-slate-300 focus-visible:ring-2 focus-visible:ring-slate-900" 
+          />
+        </div>
       </div>
 
       {isLoading ? (
@@ -635,38 +639,38 @@ export default function AdminOrders() {
                                 <div className="flex flex-wrap gap-2">
                                   {order.status === 'pending' && (
                                     <>
-                                      <button onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(order.id, 'cancelled'); }} className="px-5 py-2 bg-white border border-red-200 text-red-600 text-sm font-bold rounded-xl shadow-sm hover:bg-red-50 active:scale-95 transition-all">Reject</button>
-                                      <button onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(order.id, 'processing'); }} className="px-5 py-2 bg-slate-900 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-slate-800 active:scale-95 transition-all flex items-center gap-2"><CheckCircle2 size={16} /> Approve to Warehouse</button>
+                                      <Button variant="outline" className="text-red-600 border-red-200 hover:bg-red-50" onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(order.id, 'cancelled'); }}>Reject</Button>
+                                      <Button className="bg-slate-900 text-white hover:bg-slate-800" onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(order.id, 'processing'); }}><CheckCircle2 size={16} className="mr-2"/> Approve to Warehouse</Button>
                                     </>
                                   )}
                                   
                                   {['delivered', 'delivered_partial'].includes(order.status) && (
                                     <>
                                       {!isWarehouse && (
-                                        <button 
+                                        <Button 
+                                          variant="outline"
                                           onClick={() => generatePDF(order, order.payment_status === 'paid' ? 'receipt' : 'invoice')} 
                                           disabled={isGeneratingPDF}
-                                          className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
-                                          {isGeneratingPDF ? <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></div> : <FileDown size={16} className="text-slate-400" />} 
+                                          {isGeneratingPDF ? <div className="w-4 h-4 mr-2 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></div> : <FileDown size={16} className="text-slate-400 mr-2" />} 
                                           {isGeneratingPDF ? 'Generating...' : (order.payment_status === 'paid' ? 'Download Receipt' : 'Download Invoice')}
-                                        </button>
+                                        </Button>
                                       )}
                                       {order.payment_status === 'unpaid' && !isWarehouse && (
-                                        <button onClick={() => handleMarkAsPaid(order.id)} className="px-5 py-2 bg-emerald-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-emerald-700 active:scale-95 transition-all flex items-center gap-2"><CheckCircle2 size={16} /> Mark as Paid</button>
+                                        <Button className="bg-emerald-600 hover:bg-emerald-700" onClick={() => handleMarkAsPaid(order.id)}><CheckCircle2 size={16} className="mr-2"/> Mark as Paid</Button>
                                       )}
                                     </>
                                   )}
 
                                   {order.status === 'cancelled' && order.payment_status === 'paid' && !isWarehouse && (
-                                      <button 
+                                      <Button 
+                                        variant="outline"
                                         onClick={() => generatePDF(order, 'receipt')} 
                                         disabled={isGeneratingPDF}
-                                        className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                                       >
-                                        {isGeneratingPDF ? <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></div> : <FileDown size={16} className="text-slate-400" />} 
+                                        {isGeneratingPDF ? <div className="w-4 h-4 mr-2 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></div> : <FileDown size={16} className="text-slate-400 mr-2" />} 
                                         {isGeneratingPDF ? 'Generating...' : 'Download Receipt'}
-                                      </button>
+                                      </Button>
                                   )}
                                 </div>
                               </div>
@@ -843,210 +847,208 @@ export default function AdminOrders() {
         </div>
       )}
 
-      {/* MODALS */}
-      {confirmAction.show && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm ${confirmAction.title.includes('Reject') ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-900 border-slate-200'}`}>{confirmAction.title.includes('Reject') ? <XCircle size={32} /> : <CheckCircle2 size={32} />}</div>
-            <h4 className="text-xl font-bold text-slate-900 tracking-tight">{confirmAction.title}</h4>
-            <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">{confirmAction.message}</p>
-            
-            {confirmAction.title.includes('Reject') && (
+      {/* SHADCN DIALOGS (Modals) */}
+      
+      {/* 1. Status Update / Confirmation Dialog */}
+      <Dialog 
+        open={confirmAction.show} 
+        onOpenChange={(isOpen) => !isOpen && setConfirmAction({ show: false, title: '', message: '', onConfirm: null })}
+      >
+        <DialogContent className="sm:max-w-md text-center p-8">
+          <DialogHeader>
+            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm ${confirmAction.title?.includes('Reject') ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-900 border-slate-200'}`}>
+              {confirmAction.title?.includes('Reject') ? <XCircle size={32} /> : <CheckCircle2 size={32} />}
+            </div>
+            <DialogTitle className="text-xl font-bold tracking-tight text-center">{confirmAction.title}</DialogTitle>
+            <DialogDescription className="text-center mt-2 font-medium">
+              {confirmAction.message}
+            </DialogDescription>
+          </DialogHeader>
+
+          {confirmAction.title?.includes('Reject') && (
+            <div className="mt-4 text-left">
+              <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Cancellation Reason</label>
+              <textarea 
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="e.g., 0 Inventory, Out of Stock..."
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500 outline-none resize-none h-20"
+              />
+            </div>
+          )}
+
+          <DialogFooter className="flex gap-3 pt-5 sm:justify-center w-full">
+            <Button 
+              variant="outline" 
+              className="w-full py-6"
+              onClick={() => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); setCancelReason(''); }}
+            >
+              Cancel
+            </Button>
+            <Button 
+              variant={confirmAction.title?.includes('Reject') ? 'destructive' : 'default'}
+              className="w-full py-6"
+              disabled={confirmAction.title?.includes('Reject') && !cancelReason.trim()}
+              onClick={() => { confirmAction.onConfirm(cancelReason); setCancelReason(''); }} 
+            >
+              Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 2. Item Action Dialog (Add, Edit, Substitute, Cancel) */}
+      <Dialog 
+        open={itemAction.show} 
+        onOpenChange={(isOpen) => {
+          if (!isOpen) {
+            setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+            setSelectedSubstitute(null);
+            setSubstituteSearch('');
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md text-center p-8">
+          
+          {itemAction.type === 'add' && (
+            <>
+              <DialogHeader>
+                <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-emerald-50 text-emerald-600 border-emerald-100"><Plus size={32} /></div>
+                <DialogTitle className="text-xl font-bold tracking-tight text-center">Add Product</DialogTitle>
+                <DialogDescription className="text-center font-medium">Search and add a new product to this order.</DialogDescription>
+              </DialogHeader>
+              
+              <div className="mt-4 text-left">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Search Product</label>
+                {!selectedSubstitute ? (
+                  <div className="relative">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <Input type="text" value={substituteSearch} onChange={(e) => setSubstituteSearch(e.target.value)} placeholder="Search by name or SKU..." className="pl-9" />
+                    
+                    {substituteSearch.trim() !== '' && (
+                      <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto divide-y divide-slate-100 text-left">
+                        {availableVariants.filter(v => {
+                          const searchLower = substituteSearch.toLowerCase();
+                          return (v.name?.toLowerCase().includes(searchLower)) || (v.sku?.toLowerCase().includes(searchLower)) || (v.products?.name?.toLowerCase().includes(searchLower)) || (v.products?.base_sku?.toLowerCase().includes(searchLower));
+                        }).map(variant => (
+                          <button key={variant.id} onClick={() => setSelectedSubstitute(variant)} className="w-full text-left px-4 py-2.5 hover:bg-emerald-50 transition-colors flex flex-col gap-0.5">
+                            <span className="text-sm font-bold text-slate-900">{variant.products?.name} - {variant.name}</span>
+                            <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">SKU: <span className="text-slate-700 font-mono">{variant.sku || variant.products?.base_sku || 'N/A'}</span> | Price: ${Number(variant.price).toFixed(2)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between shadow-sm">
+                      <div>
+                        <p className="font-bold text-emerald-900 text-sm leading-tight">{selectedSubstitute.products?.name} - {selectedSubstitute.name}</p>
+                        <p className="text-[11px] font-bold text-emerald-600 uppercase tracking-widest mt-1">SKU: {selectedSubstitute.sku || selectedSubstitute.products?.base_sku || 'N/A'} | ${Number(selectedSubstitute.price).toFixed(2)}</p>
+                      </div>
+                      <button onClick={() => { setSelectedSubstitute(null); setSubstituteSearch(''); }} className="p-1.5 bg-white rounded-lg text-emerald-400 hover:text-emerald-600 hover:bg-emerald-100 transition-colors shrink-0 shadow-sm"><X size={16} /></button>
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Quantity</label>
+                      <Input type="number" min="1" value={itemAction.newQty} onChange={(e) => setItemAction({...itemAction, newQty: e.target.value})} />
+                    </div>
+                  </div>
+                )}
+                <p className="text-xs text-slate-400 mt-3 font-medium">The order subtotal and total amount will recalculate automatically.</p>
+              </div>
+
+              <DialogFooter className="flex gap-3 pt-5 sm:justify-center w-full">
+                <Button variant="outline" className="w-full py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Cancel</Button>
+                <Button className="w-full py-6 bg-emerald-600 hover:bg-emerald-700" disabled={!selectedSubstitute || !itemAction.newQty || itemAction.newQty <= 0} onClick={() => addItemMutation.mutate({ orderId: itemAction.order.id, variantId: selectedSubstitute.id, qty: parseInt(itemAction.newQty, 10) })}>Add to Order</Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {itemAction.type === 'cancel' && (
+            <>
+              <DialogHeader>
+                <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-red-50 text-red-600 border-red-100"><XCircle size={32} /></div>
+                <DialogTitle className="text-xl font-bold tracking-tight text-center">Cancel Item</DialogTitle>
+                <DialogDescription className="text-center font-medium">Remove <span className="font-bold text-slate-700">{itemAction.item?.product_variants?.name}</span> from the order?</DialogDescription>
+              </DialogHeader>
               <div className="mt-4 text-left">
                 <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Cancellation Reason</label>
-                <textarea 
-                  value={cancelReason}
-                  onChange={(e) => setCancelReason(e.target.value)}
-                  placeholder="e.g., 0 Inventory, Out of Stock..."
-                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500 outline-none resize-none h-20"
-                />
+                <textarea value={itemAction.reason} onChange={(e) => setItemAction({...itemAction, reason: e.target.value})} placeholder="Reason for canceling this item..." className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500 outline-none resize-none h-20"/>
               </div>
-            )}
+              <DialogFooter className="flex gap-3 pt-5 sm:justify-center w-full">
+                <Button variant="outline" className="w-full py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Go Back</Button>
+                <Button variant="destructive" className="w-full py-6" disabled={!itemAction.reason.trim()} onClick={() => cancelItemMutation.mutate({ itemId: itemAction.item.id, reason: itemAction.reason })}>Confirm Cancel</Button>
+              </DialogFooter>
+            </>
+          )}
 
-            <div className="flex gap-3 pt-5">
-              <button onClick={() => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); setCancelReason(''); }} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button>
-              <button 
-                onClick={() => { confirmAction.onConfirm(cancelReason); setCancelReason(''); }} 
-                disabled={confirmAction.title.includes('Reject') && !cancelReason.trim()}
-                className={`w-full py-3 text-sm text-white font-bold rounded-xl shadow-md active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed ${confirmAction.title.includes('Reject') ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-900 hover:bg-slate-800'}`}
-              >
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {itemAction.show && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100">
-            
-            {itemAction.type === 'add' && (
-              <>
-                <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-emerald-50 text-emerald-600 border-emerald-100"><Plus size={32} /></div>
-                <h4 className="text-xl font-bold text-slate-900 tracking-tight">Add Product</h4>
-                <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">Search and add a new product to this order.</p>
-                
-                <div className="mt-4 text-left">
-                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Search Product</label>
-                  
-                  {!selectedSubstitute ? (
-                    <div className="relative">
-                      <div className="relative">
-                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                        <input type="text" value={substituteSearch} onChange={(e) => setSubstituteSearch(e.target.value)} placeholder="Search by name or SKU..." className="w-full pl-9 pr-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
-                      </div>
-                      
-                      {substituteSearch.trim() !== '' && (
-                        <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto divide-y divide-slate-100 text-left">
-                          {availableVariants.filter(v => {
-                            const searchLower = substituteSearch.toLowerCase();
-                            return (v.name && v.name.toLowerCase().includes(searchLower)) ||
-                                   (v.sku && v.sku.toLowerCase().includes(searchLower)) ||
-                                   (v.products?.name && v.products.name.toLowerCase().includes(searchLower)) ||
-                                   (v.products?.base_sku && v.products.base_sku.toLowerCase().includes(searchLower));
-                          }).map(variant => (
-                            <button key={variant.id} onClick={() => setSelectedSubstitute(variant)} className="w-full text-left px-4 py-2.5 hover:bg-emerald-50 transition-colors flex flex-col gap-0.5">
-                              <span className="text-sm font-bold text-slate-900">{variant.products?.name} - {variant.name}</span>
-                              <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">SKU: <span className="text-slate-700 font-mono">{variant.sku || variant.products?.base_sku || 'N/A'}</span> | Price: ${Number(variant.price).toFixed(2)}</span>
-                            </button>
-                          ))}
-                          {availableVariants.filter(v => {
-                            const searchLower = substituteSearch.toLowerCase();
-                            return (v.name && v.name.toLowerCase().includes(searchLower)) || (v.sku && v.sku.toLowerCase().includes(searchLower)) || (v.products?.name && v.products.name.toLowerCase().includes(searchLower)) || (v.products?.base_sku && v.products.base_sku.toLowerCase().includes(searchLower));
-                          }).length === 0 && (
-                            <div className="px-4 py-3 text-sm text-slate-500 text-center italic">No products found.</div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between shadow-sm">
-                        <div>
-                          <p className="font-bold text-emerald-900 text-sm leading-tight">{selectedSubstitute.products?.name} - {selectedSubstitute.name}</p>
-                          <p className="text-[11px] font-bold text-emerald-600 uppercase tracking-widest mt-1">SKU: {selectedSubstitute.sku || selectedSubstitute.products?.base_sku || 'N/A'} | ${Number(selectedSubstitute.price).toFixed(2)}</p>
-                        </div>
-                        <button onClick={() => { setSelectedSubstitute(null); setSubstituteSearch(''); }} className="p-1.5 bg-white rounded-lg text-emerald-400 hover:text-emerald-600 hover:bg-emerald-100 transition-colors shrink-0 shadow-sm"><X size={16} /></button>
-                      </div>
-                      
-                      <div>
-                        <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Quantity</label>
-                        <input type="number" min="1" value={itemAction.newQty} onChange={(e) => setItemAction({...itemAction, newQty: e.target.value})} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
-                      </div>
-                    </div>
-                  )}
-                  <p className="text-xs text-slate-400 mt-3 font-medium">The order subtotal and total amount will recalculate automatically.</p>
-                </div>
-
-                <div className="flex gap-3 pt-5">
-                  <button onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all">Cancel</button>
-                  <button onClick={() => addItemMutation.mutate({ orderId: itemAction.order.id, variantId: selectedSubstitute.id, qty: parseInt(itemAction.newQty, 10) })} disabled={!selectedSubstitute || !itemAction.newQty || itemAction.newQty <= 0} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 active:scale-95 transition-all">Add to Order</button>
-                </div>
-              </>
-            )}
-
-            {itemAction.type === 'cancel' && (
-              <>
-                <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-red-50 text-red-600 border-red-100"><XCircle size={32} /></div>
-                <h4 className="text-xl font-bold text-slate-900 tracking-tight">Cancel Item</h4>
-                <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">Remove <span className="font-bold text-slate-700">{itemAction.item?.product_variants?.name}</span> from the order?</p>
-                <div className="mt-4 text-left">
-                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Cancellation Reason</label>
-                  <textarea value={itemAction.reason} onChange={(e) => setItemAction({...itemAction, reason: e.target.value})} placeholder="Reason for canceling this item..." className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500 outline-none resize-none h-20"/>
-                </div>
-                <div className="flex gap-3 pt-5">
-                  <button onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-all">Go Back</button>
-                  <button onClick={() => cancelItemMutation.mutate({ itemId: itemAction.item.id, reason: itemAction.reason })} disabled={!itemAction.reason.trim()} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-red-600 hover:bg-red-700 disabled:opacity-50 transition-all">Confirm Cancel</button>
-                </div>
-              </>
-            )}
-
-            {itemAction.type === 'edit' && (
-              <>
+          {itemAction.type === 'edit' && (
+            <>
+              <DialogHeader>
                 <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-blue-50 text-blue-600 border-blue-100"><Edit3 size={32} /></div>
-                <h4 className="text-xl font-bold text-slate-900 tracking-tight">Edit Quantity</h4>
-                <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">Update the quantity for <span className="font-bold text-slate-700">{itemAction.item?.product_variants?.name}</span>.</p>
-                <div className="mt-4 text-left">
-                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">New Quantity</label>
-                  <input type="number" min="1" value={itemAction.newQty} onChange={(e) => setItemAction({...itemAction, newQty: e.target.value})} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-                  <p className="text-xs text-slate-400 mt-2">The order subtotal and total amount will recalculate automatically.</p>
-                </div>
-                <div className="flex gap-3 pt-5">
-                  <button onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-all">Cancel</button>
-                  <button onClick={() => editItemMutation.mutate({ itemId: itemAction.item.id, newQty: parseInt(itemAction.newQty, 10) })} disabled={!itemAction.newQty || itemAction.newQty <= 0} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition-all">Update Quantity</button>
-                </div>
-              </>
-            )}
+                <DialogTitle className="text-xl font-bold tracking-tight text-center">Edit Quantity</DialogTitle>
+                <DialogDescription className="text-center font-medium">Update the quantity for <span className="font-bold text-slate-700">{itemAction.item?.product_variants?.name}</span>.</DialogDescription>
+              </DialogHeader>
+              <div className="mt-4 text-left">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">New Quantity</label>
+                <Input type="number" min="1" value={itemAction.newQty} onChange={(e) => setItemAction({...itemAction, newQty: e.target.value})} />
+                <p className="text-xs text-slate-400 mt-2">The order subtotal and total amount will recalculate automatically.</p>
+              </div>
+              <DialogFooter className="flex gap-3 pt-5 sm:justify-center w-full">
+                <Button variant="outline" className="w-full py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Cancel</Button>
+                <Button className="w-full py-6 bg-blue-600 hover:bg-blue-700" disabled={!itemAction.newQty || itemAction.newQty <= 0} onClick={() => editItemMutation.mutate({ itemId: itemAction.item.id, newQty: parseInt(itemAction.newQty, 10) })}>Update Quantity</Button>
+              </DialogFooter>
+            </>
+          )}
 
-            {itemAction.type === 'substitute' && (
-              <>
+          {itemAction.type === 'substitute' && (
+            <>
+              <DialogHeader>
                 <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border shadow-sm bg-purple-50 text-purple-600 border-purple-100"><RefreshCw size={32} /></div>
-                <h4 className="text-xl font-bold text-slate-900 tracking-tight">Substitute Product</h4>
-                <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">Replace <span className="font-bold text-slate-700">{itemAction.item?.product_variants?.name}</span> with a different item.</p>
-                
-                <div className="mt-4 text-left">
-                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Search Replacement</label>
-                  
-                  {!selectedSubstitute ? (
-                    <div className="relative">
-                      <div className="relative">
-                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                        <input type="text" value={substituteSearch} onChange={(e) => setSubstituteSearch(e.target.value)} placeholder="Search by name or SKU..." className="w-full pl-9 pr-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 outline-none" />
+                <DialogTitle className="text-xl font-bold tracking-tight text-center">Substitute Product</DialogTitle>
+                <DialogDescription className="text-center font-medium">Replace <span className="font-bold text-slate-700">{itemAction.item?.product_variants?.name}</span> with a different item.</DialogDescription>
+              </DialogHeader>
+              <div className="mt-4 text-left">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Search Replacement</label>
+                {!selectedSubstitute ? (
+                  <div className="relative">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <Input type="text" value={substituteSearch} onChange={(e) => setSubstituteSearch(e.target.value)} placeholder="Search by name or SKU..." className="pl-9" />
+                    
+                    {substituteSearch.trim() !== '' && (
+                      <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto divide-y divide-slate-100 text-left">
+                        {availableVariants.filter(v => {
+                          const searchLower = substituteSearch.toLowerCase();
+                          return (v.name?.toLowerCase().includes(searchLower)) || (v.sku?.toLowerCase().includes(searchLower)) || (v.products?.name?.toLowerCase().includes(searchLower)) || (v.products?.base_sku?.toLowerCase().includes(searchLower));
+                        }).map(variant => (
+                          <button key={variant.id} onClick={() => setSelectedSubstitute(variant)} className="w-full text-left px-4 py-2.5 hover:bg-purple-50 transition-colors flex flex-col gap-0.5">
+                            <span className="text-sm font-bold text-slate-900">{variant.products?.name} - {variant.name}</span>
+                            <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">SKU: <span className="text-slate-700 font-mono">{variant.sku || variant.products?.base_sku || 'N/A'}</span> | Price: ${Number(variant.price).toFixed(2)}</span>
+                          </button>
+                        ))}
                       </div>
-                      
-                      {substituteSearch.trim() !== '' && (
-                        <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto divide-y divide-slate-100 text-left">
-                          {availableVariants.filter(v => {
-                            const searchLower = substituteSearch.toLowerCase();
-                            return (v.name && v.name.toLowerCase().includes(searchLower)) ||
-                                   (v.sku && v.sku.toLowerCase().includes(searchLower)) ||
-                                   (v.products?.name && v.products.name.toLowerCase().includes(searchLower)) ||
-                                   (v.products?.base_sku && v.products.base_sku.toLowerCase().includes(searchLower));
-                          }).map(variant => (
-                            <button key={variant.id} onClick={() => setSelectedSubstitute(variant)} className="w-full text-left px-4 py-2.5 hover:bg-purple-50 transition-colors flex flex-col gap-0.5">
-                              <span className="text-sm font-bold text-slate-900">{variant.products?.name} - {variant.name}</span>
-                              <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">SKU: <span className="text-slate-700 font-mono">{variant.sku || variant.products?.base_sku || 'N/A'}</span> | Price: ${Number(variant.price).toFixed(2)}</span>
-                            </button>
-                          ))}
-                          {availableVariants.filter(v => {
-                            const searchLower = substituteSearch.toLowerCase();
-                            return (v.name && v.name.toLowerCase().includes(searchLower)) || (v.sku && v.sku.toLowerCase().includes(searchLower)) || (v.products?.name && v.products.name.toLowerCase().includes(searchLower)) || (v.products?.base_sku && v.products.base_sku.toLowerCase().includes(searchLower));
-                          }).length === 0 && (
-                            <div className="px-4 py-3 text-sm text-slate-500 text-center italic">No products found.</div>
-                          )}
-                        </div>
-                      )}
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl flex items-center justify-between shadow-sm">
+                    <div>
+                      <p className="font-bold text-purple-900 text-sm leading-tight">{selectedSubstitute.products?.name} - {selectedSubstitute.name}</p>
+                      <p className="text-[11px] font-bold text-purple-600 uppercase tracking-widest mt-1">SKU: {selectedSubstitute.sku || selectedSubstitute.products?.base_sku || 'N/A'} | ${Number(selectedSubstitute.price).toFixed(2)}</p>
                     </div>
-                  ) : (
-                    <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl flex items-center justify-between shadow-sm">
-                      <div>
-                        <p className="font-bold text-purple-900 text-sm leading-tight">{selectedSubstitute.products?.name} - {selectedSubstitute.name}</p>
-                        <p className="text-[11px] font-bold text-purple-600 uppercase tracking-widest mt-1">SKU: {selectedSubstitute.sku || selectedSubstitute.products?.base_sku || 'N/A'} | ${Number(selectedSubstitute.price).toFixed(2)}</p>
-                      </div>
-                      <button onClick={() => { setSelectedSubstitute(null); setSubstituteSearch(''); }} className="p-1.5 bg-white rounded-lg text-purple-400 hover:text-purple-600 hover:bg-purple-100 transition-colors shrink-0 shadow-sm"><X size={16} /></button>
-                    </div>
-                  )}
-                  <p className="text-xs text-slate-400 mt-3 font-medium">The order subtotal and total amount will recalculate automatically based on the new item's price.</p>
-                </div>
+                    <button onClick={() => { setSelectedSubstitute(null); setSubstituteSearch(''); }} className="p-1.5 bg-white rounded-lg text-purple-400 hover:text-purple-600 hover:bg-purple-100 transition-colors shrink-0 shadow-sm"><X size={16} /></button>
+                  </div>
+                )}
+                <p className="text-xs text-slate-400 mt-3 font-medium">The order subtotal and total amount will recalculate automatically based on the new item's price.</p>
+              </div>
+              <DialogFooter className="flex gap-3 pt-5 sm:justify-center w-full">
+                <Button variant="outline" className="w-full py-6" onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }}>Cancel</Button>
+                <Button className="w-full py-6 bg-purple-600 hover:bg-purple-700" disabled={!selectedSubstitute} onClick={executeItemSubstitute}>Confirm Swap</Button>
+              </DialogFooter>
+            </>
+          )}
 
-                <div className="flex gap-3 pt-5">
-                  <button onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all">Cancel</button>
-                  <button onClick={executeItemSubstitute} disabled={!selectedSubstitute} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-purple-600 hover:bg-purple-700 disabled:opacity-50 active:scale-95 transition-all">Confirm Swap</button>
-                </div>
-              </>
-            )}
-
-          </div>
-        </div>
-      )}
-
-      {notification.show && (
-        <div className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-[120] flex items-center gap-3 bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-300">
-          <div className={`p-1.5 rounded-full ${notification.isError ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>{notification.isError ? <XCircle size={18} strokeWidth={2.5} /> : <CheckCircle2 size={18} strokeWidth={2.5} />}</div>
-          <p className="text-sm font-medium pr-2">{notification.message}</p>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
