@@ -1,33 +1,25 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'; 
 import { 
   Search, Package, CheckCircle2, XCircle, Clock, 
   Truck, X, AlertCircle, PackageCheck, User, Car, Hash, Building, MapPin,
   ChevronDown, DollarSign, CreditCard, FileText, Calendar, ShieldAlert, Phone, FileDown, Mail,
   ChevronLeft, ChevronRight, AlertTriangle, Receipt, Edit3, RefreshCw, Plus
 } from 'lucide-react';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 
 export default function AdminOrders() {
   const { profile } = useAuth(); 
   const isWarehouse = profile?.role === 'warehouse';
+  const queryClient = useQueryClient();
 
-  const [orders, setOrders] = useState([]);
-  const [drivers, setDrivers] = useState([]); 
-  const [loading, setLoading] = useState(true);
-  
   const [page, setPage] = useState(0);
-  const [totalCount, setTotalCount] = useState(0);
   const pageSize = 10;
   
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('all'); 
-  
-  const [tabCounts, setTabCounts] = useState({ pending: 0, processing: 0, shipped: 0, completed: 0, due: 0, paid: 0, cancelled: 0, attempted: 0, restocked: 0 });
-  const [newPendingCount, setNewPendingCount] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   
   const [confirmAction, setConfirmAction] = useState({ show: false, title: '', message: '', onConfirm: null });
@@ -40,7 +32,9 @@ export default function AdminOrders() {
   const [selectedSubstitute, setSelectedSubstitute] = useState(null);
 
   const [notification, setNotification] = useState({ show: false, message: '', isError: false });
+  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false); // 🚀 Phase 4 Optimization state
 
+  // Notifications timeout
   useEffect(() => {
     if (notification.show) {
       const timer = setTimeout(() => setNotification({ ...notification, show: false }), 3000);
@@ -48,21 +42,25 @@ export default function AdminOrders() {
     }
   }, [notification.show]);
 
+  // Search Debounce
   useEffect(() => {
     const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
+  // Reset page on tab change
   useEffect(() => { setPage(0); }, [activeTab]);
 
+  // Clear "New" pending badge when viewing Pending tab
   useEffect(() => {
     if (activeTab === 'pending') {
       localStorage.setItem('lastViewedPending', new Date().toISOString());
-      setNewPendingCount(0);
+      queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
       window.dispatchEvent(new Event('pendingViewed')); 
     }
-  }, [activeTab, orders]);
+  }, [activeTab, queryClient]);
 
+  // Fetch variants for the Add/Substitute modal
   useEffect(() => {
     if (itemAction.show && (itemAction.type === 'substitute' || itemAction.type === 'add') && availableVariants.length === 0) {
       const fetchVariants = async () => {
@@ -76,55 +74,35 @@ export default function AdminOrders() {
     }
   }, [itemAction.show, itemAction.type]);
 
-  useEffect(() => {
-    if (profile?.id) {
-      fetchOrdersAndDrivers();
-      fetchTabCounts(); 
-      const sub = supabase.channel('admin_orders_channel').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => { fetchOrdersAndDrivers(); fetchTabCounts(); }).subscribe();
-      
-      const localUpdateHandler = () => { fetchOrdersAndDrivers(); fetchTabCounts(); };
-      window.addEventListener('orderStatusChanged', localUpdateHandler);
-      return () => {
-        supabase.removeChannel(sub);
-        window.removeEventListener('orderStatusChanged', localUpdateHandler);
-      };
-    }
-  }, [profile?.id, activeTab, debouncedSearch, page]); 
+  // ==========================================
+  // REACT QUERY: DATA FETCHING
+  // ==========================================
 
-  const fetchTabCounts = async () => {
-    try {
-      const thresholdDate = new Date();
-      thresholdDate.setDate(thresholdDate.getDate() - 25);
+  const { data: tabCounts = { pending: 0, newPending: 0, processing: 0, shipped: 0, completed: 0, due: 0, paid: 0, cancelled: 0, attempted: 0, restocked: 0 } } = useQuery({
+    queryKey: ['admin_tab_counts'],
+    queryFn: async () => {
       const lastViewedPending = localStorage.getItem('lastViewedPending') || new Date(0).toISOString();
+      const { data, error } = await supabase.rpc('get_order_tab_counts', { p_last_viewed_pending: lastViewedPending });
+      if (error) throw error;
+      return data;
+    },
+    refetchInterval: 60000,
+    enabled: !!profile?.id
+  });
 
-      const [pendingReq, newPendingReq, processingReq, shippedReq, completedReq, dueReq, paidReq, cancelledReq, attemptedReq, restockedReq] = await Promise.all([
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').gt('created_at', lastViewedPending),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'shipped'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['delivered', 'delivered_partial']).eq('payment_status', 'unpaid'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['delivered', 'delivered_partial']).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('payment_status', 'paid'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'cancelled'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'attempted'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('is_restocked', true).not('processing_at', 'is', null)
-      ]);
-      
-      setTabCounts({ 
-        pending: pendingReq.count || 0, processing: processingReq.count || 0, shipped: shippedReq.count || 0, 
-        completed: completedReq.count || 0, due: dueReq.count || 0, paid: paidReq.count || 0, cancelled: cancelledReq.count || 0,
-        attempted: attemptedReq.count || 0, restocked: restockedReq.count || 0 
-      });
-      setNewPendingCount(newPendingReq.count || 0);
-    } catch (error) { console.error('Error fetching tab counts:', error); }
-  };
+  const { data: drivers = [] } = useQuery({
+    queryKey: ['admin_drivers'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('user_profiles').select('id, full_name, contact_number').eq('role', 'driver').order('full_name', { ascending: true });
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!profile?.id
+  });
 
-  const fetchOrdersAndDrivers = async () => {
-    setLoading(true);
-    try {
-      const driversRes = await supabase.from('user_profiles').select('id, full_name, contact_number').eq('role', 'driver').order('full_name', { ascending: true });
-      setDrivers(driversRes.data || []);
-
+  const { data: ordersData, isLoading } = useQuery({
+    queryKey: ['admin_orders', activeTab, debouncedSearch, page],
+    queryFn: async () => {
       let query = supabase.from('orders').select(`
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
@@ -142,32 +120,87 @@ export default function AdminOrders() {
       else if (activeTab === 'attempted') query = query.eq('status', 'attempted'); 
       else if (activeTab === 'restocked') query = query.eq('is_restocked', true).not('processing_at', 'is', null); 
       else if (activeTab === 'due') {
-        const thresholdDate = new Date();
-        thresholdDate.setDate(thresholdDate.getDate() - 25);
+        const thresholdDate = new Date(); thresholdDate.setDate(thresholdDate.getDate() - 25);
         query = query.in('status', ['delivered', 'delivered_partial']).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
       }
 
       if (debouncedSearch) {
-        const cleanSearch = debouncedSearch.trim();
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanSearch);
-        
-        if (isUUID) {
-          query = query.or(`id.eq.${cleanSearch},shipping_name.ilike.%${cleanSearch}%,companies.name.ilike.%${cleanSearch}%`);
-        } else {
-          query = query.or(`shipping_name.ilike.%${cleanSearch}%,companies.name.ilike.%${cleanSearch}%`);
-        }
+        const clean = debouncedSearch.trim();
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clean);
+        if (isUUID) query = query.or(`id.eq.${clean},shipping_name.ilike.%${clean}%,companies.name.ilike.%${clean}%`);
+        else query = query.or(`shipping_name.ilike.%${clean}%,companies.name.ilike.%${clean}%`);
       }
 
-      const sortColumn = (activeTab === 'completed' || activeTab === 'cancelled' || activeTab === 'paid' || activeTab === 'attempted' || activeTab === 'restocked') ? 'updated_at' : 'created_at';
-      query = query.order(sortColumn, { ascending: false });
-      query = query.range(page * pageSize, (page * pageSize) + pageSize - 1);
+      const sortColumn = (['completed', 'cancelled', 'paid', 'attempted', 'restocked'].includes(activeTab)) ? 'updated_at' : 'created_at';
+      query = query.order(sortColumn, { ascending: false }).range(page * pageSize, (page * pageSize) + pageSize - 1);
 
       const { data, count, error } = await query;
       if (error) throw error;
-      setOrders(data || []);
-      setTotalCount(count || 0);
-    } catch (error) { console.error('Error fetching data:', error.message); } finally { setLoading(false); }
-  };
+      return { orders: data || [], count: count || 0 };
+    },
+    placeholderData: keepPreviousData,
+    enabled: !!profile?.id
+  });
+
+  const orders = ordersData?.orders || [];
+  const totalCount = ordersData?.count || 0;
+  const newPendingCount = tabCounts.newPending || 0;
+
+  useEffect(() => {
+    if (!profile?.id) return;
+    const sub = supabase.channel('admin_orders_channel')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+        queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
+        queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
+      }).subscribe();
+      
+    return () => { supabase.removeChannel(sub); };
+  }, [profile?.id, queryClient]);
+
+  // ==========================================
+  // REACT QUERY: MUTATIONS (RPCs)
+  // ==========================================
+
+  const cancelItemMutation = useMutation({
+    mutationFn: async ({ itemId, reason }) => {
+      const { error } = await supabase.rpc('cancel_order_item', { p_item_id: itemId, p_reason: reason });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
+      setNotification({ show: true, isError: false, message: 'Item cancelled and inventory restocked.' });
+      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+    },
+    onError: (error) => setNotification({ show: true, isError: true, message: `Cancel failed: ${error.message}` })
+  });
+
+  const editItemMutation = useMutation({
+    mutationFn: async ({ itemId, newQty }) => {
+      const { error } = await supabase.rpc('edit_order_item', { p_item_id: itemId, p_new_qty: newQty });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
+      setNotification({ show: true, isError: false, message: 'Item quantity and totals updated!' });
+      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+    },
+    onError: (error) => setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` })
+  });
+
+  const addItemMutation = useMutation({
+    mutationFn: async ({ orderId, variantId, qty }) => {
+      const { error } = await supabase.rpc('add_order_item', { p_order_id: orderId, p_variant_id: variantId, p_qty: qty });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
+      setNotification({ show: true, isError: false, message: 'Product added successfully!' });
+      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+      setSelectedSubstitute(null);
+      setSubstituteSearch('');
+    },
+    onError: (error) => setNotification({ show: true, isError: true, message: `Add failed: ${error.message}` })
+  });
 
   const toggleOrderDetails = (orderId) => setExpandedOrderId(expandedOrderId === orderId ? null : orderId);
 
@@ -178,28 +211,9 @@ export default function AdminOrders() {
 
       const updatePayload = { status: newStatus, updated_at: new Date().toISOString() };
       if (newStatus === 'processing') updatePayload.processing_at = new Date().toISOString();
-      
       if (newStatus === 'cancelled') {
         updatePayload.cancelled_at = new Date().toISOString();
         updatePayload.cancellation_reason = reason; 
-        
-        if (currentOrder.status === 'pending') {
-          updatePayload.is_restocked = true;
-          
-          for (const item of currentOrder.order_items) {
-            const productId = item.product_variants?.product_id;
-            if (item.status !== 'cancelled' && productId) {
-              const { data: invData } = await supabase.from('inventory').select('base_units_on_hand').eq('product_id', productId).single();
-              if (invData && invData.base_units_on_hand !== undefined) {
-                const qtyToReturn = Number(item.total_base_units || item.quantity_variants || 0);
-                const newStock = Number(invData.base_units_on_hand) + qtyToReturn;
-                await supabase.from('inventory').update({ base_units_on_hand: newStock }).eq('product_id', productId);
-              }
-            }
-          }
-        } else {
-          updatePayload.is_restocked = false;
-        }
       }
 
       const { data, error } = await supabase.from('orders').update(updatePayload).eq('id', orderId).eq('status', currentOrder.status).select();
@@ -207,18 +221,18 @@ export default function AdminOrders() {
 
       if (data && data.length === 0) {
         setNotification({ show: true, isError: true, message: 'Action Blocked: Another user already updated this order.' });
-        fetchOrdersAndDrivers(); 
+        queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
         return;
       }
 
       setNotification({ show: true, isError: false, message: newStatus === 'processing' ? 'Order sent to warehouse.' : 'Order rejected & items restocked.' });
-      window.dispatchEvent(new Event('orderStatusChanged'));
+      queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
     } catch (error) { setNotification({ show: true, isError: true, message: `Update failed: ${error.message}` }); }
   };
 
   const handleStatusChangeClick = (orderId, newStatus) => {
     const currentOrder = orders.find(o => o.id === orderId);
-    
     setConfirmAction({
       show: true, title: newStatus === 'processing' ? 'Accept Order?' : 'Reject Order?',
       message: newStatus === 'processing' 
@@ -226,209 +240,6 @@ export default function AdminOrders() {
         : (currentOrder?.status === 'pending' ? 'Cancel order? Items will auto-restock since they were never picked.' : 'Cancel order? The warehouse will need to physically unpack and restock these items.'),
       onConfirm: (reason) => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); executeOrderStatusUpdate(orderId, newStatus, reason); }
     });
-  };
-
-  const executeItemCancel = async () => {
-    const { order, item, reason } = itemAction;
-    setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
-
-    try {
-      const productId = item.product_variants?.product_id;
-      if (productId) {
-        const { data: invData } = await supabase.from('inventory').select('base_units_on_hand').eq('product_id', productId).single();
-        if (invData && invData.base_units_on_hand !== undefined) {
-          const qtyToReturn = Number(item.total_base_units || item.quantity_variants || 0);
-          const newStock = Number(invData.base_units_on_hand) + qtyToReturn;
-          await supabase.from('inventory').update({ base_units_on_hand: newStock }).eq('product_id', productId);
-        }
-      }
-
-      let newSubtotal = 0;
-      order.order_items.forEach(oi => {
-        if (oi.id !== item.id && oi.status !== 'cancelled' && oi.status !== 'rejected') {
-          newSubtotal += Number(oi.line_total || 0);
-        }
-      });
-
-      const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
-      const newTaxAmount = newSubtotal * taxRate;
-      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
-
-      const { data, error: itemError } = await supabase.from('order_items')
-        .update({ status: 'cancelled', cancellation_reason: reason })
-        .eq('id', item.id)
-        .select(); 
-        
-      if (itemError) throw itemError;
-      if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
-
-      const { error: deductError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
-      if (deductError) throw deductError;
-
-      setOrders(prevOrders => prevOrders.map(o => {
-        if (o.id === order.id) {
-          const updatedItems = o.order_items.map(oi => oi.id === item.id ? { ...oi, status: 'cancelled', cancellation_reason: reason } : oi);
-          return { ...o, subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, order_items: updatedItems };
-        }
-        return o;
-      }));
-
-      setNotification({ show: true, isError: false, message: 'Item cancelled and inventory restocked.' });
-    } catch (error) { setNotification({ show: true, isError: true, message: `Cancel failed: ${error.message}` }); }
-  };
-
-  const executeItemAdd = async () => {
-    const { order, newQty } = itemAction;
-    try {
-      if (!selectedSubstitute) throw new Error("Please select a product to add.");
-      const parsedQty = parseInt(newQty, 10);
-      if (isNaN(parsedQty) || parsedQty <= 0) throw new Error("Please enter a valid quantity.");
-
-      const newUnitPrice = Number(selectedSubstitute.price || 0);
-
-      const existingItem = order.order_items.find(
-        oi => oi.product_variants?.id === selectedSubstitute.id && oi.status !== 'cancelled' && oi.status !== 'rejected'
-      );
-
-      if (existingItem) {
-        const updatedQty = Number(existingItem.quantity_variants) + parsedQty;
-        const updatedLineTotal = updatedQty * newUnitPrice;
-
-        let newSubtotal = 0;
-        order.order_items.forEach(oi => {
-          if (oi.id === existingItem.id) {
-            newSubtotal += updatedLineTotal; 
-          } else if (oi.status !== 'cancelled' && oi.status !== 'rejected') {
-            newSubtotal += Number(oi.line_total || 0); 
-          }
-        });
-
-        const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
-        const newTaxAmount = newSubtotal * taxRate;
-        const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
-
-        const { data: updateData, error: itemError } = await supabase.from('order_items').update({ 
-          quantity_variants: updatedQty, 
-          line_total: updatedLineTotal,
-          total_base_units: updatedQty 
-        }).eq('id', existingItem.id).select(); 
-        
-        if (itemError) throw itemError;
-        if (!updateData || updateData.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
-
-        const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
-        if (orderError) throw orderError;
-
-        setOrders(prevOrders => prevOrders.map(o => {
-          if (o.id === order.id) {
-            const updatedItems = o.order_items.map(oi => oi.id === existingItem.id ? { ...oi, quantity_variants: updatedQty, line_total: updatedLineTotal } : oi);
-            return { ...o, subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, order_items: updatedItems };
-          }
-          return o;
-        }));
-
-        setNotification({ show: true, isError: false, message: 'Quantity updated for existing product!' });
-
-      } else {
-        const newLineTotal = parsedQty * newUnitPrice;
-        let newSubtotal = newLineTotal; 
-        order.order_items.forEach(oi => {
-          if (oi.status !== 'cancelled' && oi.status !== 'rejected') {
-            newSubtotal += Number(oi.line_total || 0);
-          }
-        });
-
-        const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
-        const newTaxAmount = newSubtotal * taxRate;
-        const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
-
-        const { data: newItemData, error: itemError } = await supabase
-          .from('order_items')
-          .insert([{
-            order_id: order.id,
-            product_variant_id: selectedSubstitute.id, 
-            quantity_variants: parsedQty,
-            unit_price: newUnitPrice,
-            line_total: newLineTotal,
-            status: 'active',
-            total_base_units: parsedQty 
-          }])
-          .select()
-          .single();
-
-        if (itemError) throw itemError;
-
-        const { error: orderError } = await supabase
-          .from('orders')
-          .update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() })
-          .eq('id', order.id);
-
-        if (orderError) throw orderError;
-
-        const optimisticItem = { ...newItemData, product_variants: selectedSubstitute };
-        setOrders(prevOrders => prevOrders.map(o => {
-          if (o.id === order.id) {
-            return { ...o, subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, order_items: [...o.order_items, optimisticItem] };
-          }
-          return o;
-        }));
-
-        setNotification({ show: true, isError: false, message: 'Product added successfully!' });
-      }
-
-      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
-      setSelectedSubstitute(null);
-      setSubstituteSearch('');
-      
-    } catch (error) { setNotification({ show: true, isError: true, message: error.message }); }
-  };
-
-  const executeItemEdit = async () => {
-    const { order, item, newQty } = itemAction;
-    try {
-      const parsedQty = parseInt(newQty, 10);
-      if (isNaN(parsedQty) || parsedQty <= 0) throw new Error("Please enter a valid quantity greater than 0.");
-
-      const unitPrice = Number(item.unit_price || 0);
-      const newLineTotal = parsedQty * unitPrice;
-
-      let newSubtotal = 0;
-      order.order_items.forEach(oi => {
-        if (oi.id === item.id) {
-          newSubtotal += newLineTotal; 
-        } else if (oi.status !== 'cancelled' && oi.status !== 'rejected') {
-          newSubtotal += Number(oi.line_total || 0); 
-        }
-      });
-
-      const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
-      const newTaxAmount = newSubtotal * taxRate;
-      const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
-
-      const { data, error: itemError } = await supabase.from('order_items')
-        .update({ 
-          quantity_variants: parsedQty, 
-          line_total: newLineTotal,
-          total_base_units: parsedQty
-        }).eq('id', item.id).select(); 
-      
-      if (itemError) throw itemError;
-      if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
-
-      const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
-      if (orderError) throw orderError;
-
-      setOrders(prevOrders => prevOrders.map(o => {
-        if (o.id === order.id) {
-          const updatedItems = o.order_items.map(oi => oi.id === item.id ? { ...oi, quantity_variants: parsedQty, line_total: newLineTotal } : oi);
-          return { ...o, subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, order_items: updatedItems };
-        }
-        return o;
-      }));
-
-      setNotification({ show: true, isError: false, message: 'Item quantity and totals updated!' });
-      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
-    } catch (error) { setNotification({ show: true, isError: true, message: error.message }); }
   };
 
   const executeItemSubstitute = async () => {
@@ -442,43 +253,23 @@ export default function AdminOrders() {
 
       let newSubtotal = 0;
       order.order_items.forEach(oi => {
-        if (oi.id === item.id) {
-          newSubtotal += newLineTotal;
-        } else if (oi.status !== 'cancelled' && oi.status !== 'rejected') {
-          newSubtotal += Number(oi.line_total || 0);
-        }
+        if (oi.id === item.id) newSubtotal += newLineTotal;
+        else if (oi.status !== 'cancelled' && oi.status !== 'rejected') newSubtotal += Number(oi.line_total || 0);
       });
 
       const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
       const newTaxAmount = newSubtotal * taxRate;
       const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
 
-      const { data, error: itemError } = await supabase
-        .from('order_items')
-        .update({ 
-          product_variant_id: selectedSubstitute.id, 
-          unit_price: newUnitPrice, 
-          line_total: newLineTotal,
-          total_base_units: qty
-        })
-        .eq('id', item.id)
-        .select(); 
-      
+      const { data, error: itemError } = await supabase.from('order_items')
+        .update({ product_variant_id: selectedSubstitute.id, unit_price: newUnitPrice, line_total: newLineTotal, total_base_units: qty }).eq('id', item.id).select(); 
       if (itemError) throw itemError;
-      if (!data || data.length === 0) throw new Error("Action Blocked: Check Supabase Permissions.");
       
       const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
       if (orderError) throw orderError;
 
-      setOrders(prevOrders => prevOrders.map(o => {
-        if (o.id === order.id) {
-          const updatedItems = o.order_items.map(oi => oi.id === item.id ? { ...oi, unit_price: newUnitPrice, line_total: newLineTotal, product_variants: selectedSubstitute } : oi);
-          return { ...o, subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, order_items: updatedItems };
-        }
-        return o;
-      }));
-
       setNotification({ show: true, isError: false, message: 'Product successfully substituted!' });
+      queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
       setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
       setSelectedSubstitute(null);
       setSubstituteSearch('');
@@ -490,7 +281,8 @@ export default function AdminOrders() {
       const { error } = await supabase.from('orders').update({ payment_status: 'paid', updated_at: new Date().toISOString() }).eq('id', orderId);
       if (error) throw error;
       setNotification({ show: true, isError: false, message: 'Order successfully marked as Paid!' });
-      window.dispatchEvent(new Event('orderStatusChanged'));
+      queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
     } catch (error) { setNotification({ show: true, isError: true, message: `Failed to update: ${error.message}` }); }
   };
 
@@ -516,124 +308,138 @@ export default function AdminOrders() {
     });
   };
 
+  // 🚀 Phase 4: Dynamic Imports for PDF Generation
   const generatePDF = async (order, docType = 'invoice') => {
-    const doc = new jsPDF();
-    const orderNum = order.id.substring(0, 8).toUpperCase();
-    const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-
-    // 🚀 PDF CALCULATIONS
-    const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
-    const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+    setIsGeneratingPDF(true); // Disable buttons while downloading libraries
     
-    const finalTax = Number(order.tax_amount || 0);
-    const finalTotal = Number(order.total_amount || 0);
+    try {
+      // DYNAMIC IMPORTS: Only fetch these massive libraries when the button is clicked!
+      const { default: jsPDF } = await import('jspdf');
+      const { default: autoTable } = await import('jspdf-autotable');
 
-    const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
-    if (logoData) {
-      const imgWidth = 45; const imgHeight = (logoData.height * imgWidth) / logoData.width; 
-      doc.addImage(logoData.dataURL, 'PNG', 14, 12, imgWidth, imgHeight); 
-    } else {
-      doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
-    }
-    
-    doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
-    doc.text(docType === 'receipt' ? "PAYMENT RECEIPT" : "INVOICE", 140, 18);
-    
-    doc.setFontSize(10); doc.setFont("helvetica", "normal");
-    doc.setFont("helvetica", "bold"); doc.text(`${docType === 'receipt' ? 'Receipt' : 'Invoice'} #: INV-${orderNum}`, 140, 24);
-    doc.setFont("helvetica", "normal"); doc.text(`Date: ${datePlaced}`, 140, 29);
-    
-    if (docType === 'receipt') { doc.setFont("helvetica", "bold"); doc.setTextColor(16, 185, 129); doc.text("Status: PAID IN FULL", 140, 34); doc.setTextColor(15, 23, 42); } 
-    else { doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34); }
+      const doc = new jsPDF();
+      const orderNum = order.id.substring(0, 8).toUpperCase();
+      const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-    const isB2B = !!order.company_id;
-    const up = Array.isArray(order.user_profiles) ? order.user_profiles[0] : order.user_profiles;
+      const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+      const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+      
+      const finalTax = Number(order.tax_amount || 0);
+      const finalTotal = Number(order.total_amount || 0);
 
-    const billName = isB2B ? (order.companies?.name || 'Agency') : (up?.full_name || order.shipping_name || 'Retail Customer');
-    const billAddress = isB2B ? (order.companies?.address || '') : (order.shipping_address || '');
-    const billCityState = isB2B ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
-    const billPhone = isB2B ? (order.companies?.phone || '') : (order.shipping_phone || up?.contact_number || '');
-    const billEmail = isB2B ? (order.companies?.email || '') : (order.shipping_email || up?.email || '');
+      const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
+      if (logoData) {
+        const imgWidth = 45; const imgHeight = (logoData.height * imgWidth) / logoData.width; 
+        doc.addImage(logoData.dataURL, 'PNG', 14, 12, imgWidth, imgHeight); 
+      } else {
+        doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
+      }
+      
+      doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
+      doc.text(docType === 'receipt' ? "PAYMENT RECEIPT" : "INVOICE", 140, 18);
+      
+      doc.setFontSize(10); doc.setFont("helvetica", "normal");
+      doc.setFont("helvetica", "bold"); doc.text(`${docType === 'receipt' ? 'Receipt' : 'Invoice'} #: INV-${orderNum}`, 140, 24);
+      doc.setFont("helvetica", "normal"); doc.text(`Date: ${datePlaced}`, 140, 29);
+      
+      if (docType === 'receipt') { doc.setFont("helvetica", "bold"); doc.setTextColor(16, 185, 129); doc.text("Status: PAID IN FULL", 140, 34); doc.setTextColor(15, 23, 42); } 
+      else { doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34); }
 
-    const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
-    const shipAddress = order.shipping_address || 'No shipping address provided';
-    const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-    const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || up?.contact_number || '';
-    const shipEmail = order.shipping_email || order.agency_patients?.email || up?.email || '';
+      const isB2B = !!order.company_id;
+      const up = Array.isArray(order.user_profiles) ? order.user_profiles[0] : order.user_profiles;
 
-    doc.setFont("helvetica", "bold"); doc.text("BILL TO:", 14, 50); doc.text("SHIP TO:", 110, 50); doc.setFont("helvetica", "normal");
-    
-    let currentYBill = 56;
-    doc.setFont("helvetica", "bold"); doc.text(billName, 14, currentYBill); currentYBill += 5; doc.setFont("helvetica", "normal");
-    if (billAddress && billAddress !== 'No billing address provided') { doc.text(billAddress, 14, currentYBill); currentYBill += 5; }
-    if (billCityState) { doc.text(billCityState, 14, currentYBill); currentYBill += 5; }
-    if (billPhone) { doc.text(`Phone: ${billPhone}`, 14, currentYBill); currentYBill += 5; }
-    if (billEmail) { doc.text(`Email: ${billEmail}`, 14, currentYBill); currentYBill += 5; }
+      const billName = isB2B ? (order.companies?.name || 'Agency') : (up?.full_name || order.shipping_name || 'Retail Customer');
+      const billAddress = isB2B ? (order.companies?.address || '') : (order.shipping_address || '');
+      const billCityState = isB2B ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
+      const billPhone = isB2B ? (order.companies?.phone || '') : (order.shipping_phone || up?.contact_number || '');
+      const billEmail = isB2B ? (order.companies?.email || '') : (order.shipping_email || up?.email || '');
 
-    let currentYShip = 56;
-    doc.setFont("helvetica", "bold"); doc.text(shipName, 110, currentYShip); currentYShip += 5; doc.setFont("helvetica", "normal");
-    if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
-    if (shipCityState) { doc.text(shipCityState, 110, currentYShip); currentYShip += 5; }
-    if (shipPhone) { doc.text(`Phone: ${shipPhone}`, 110, currentYShip); currentYShip += 5; }
-    if (shipEmail) { doc.text(`Email: ${shipEmail}`, 110, currentYShip); currentYShip += 5; }
+      const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
+      const shipAddress = order.shipping_address || 'No shipping address provided';
+      const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
+      const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || up?.contact_number || '';
+      const shipEmail = order.shipping_email || order.agency_patients?.email || up?.email || '';
 
-    const maxAddressY = Math.max(currentYBill, currentYShip);
-    const activeItems = order.order_items?.filter(item => item.status !== 'cancelled' && item.status !== 'rejected') || [];
-    const tableRows = activeItems.map(item => [
-      `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}`,
-      item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}`
-    ]);
+      doc.setFont("helvetica", "bold"); doc.text("BILL TO:", 14, 50); doc.text("SHIP TO:", 110, 50); doc.setFont("helvetica", "normal");
+      
+      let currentYBill = 56;
+      doc.setFont("helvetica", "bold"); doc.text(billName, 14, currentYBill); currentYBill += 5; doc.setFont("helvetica", "normal");
+      if (billAddress && billAddress !== 'No billing address provided') { doc.text(billAddress, 14, currentYBill); currentYBill += 5; }
+      if (billCityState) { doc.text(billCityState, 14, currentYBill); currentYBill += 5; }
+      if (billPhone) { doc.text(`Phone: ${billPhone}`, 14, currentYBill); currentYBill += 5; }
+      if (billEmail) { doc.text(`Email: ${billEmail}`, 14, currentYBill); currentYBill += 5; }
 
-    autoTable(doc, {
-      startY: maxAddressY + 10,
-      head: [["DESCRIPTION", "QTY", "UNIT PRICE", "TOTAL"]],
-      body: tableRows,
-      theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
-      styles: { fontSize: 10, cellPadding: 5 }, columnStyles: { 0: { cellWidth: 100 }, 1: { halign: 'center' }, 2: { halign: 'right' }, 3: { halign: 'right' } }
-    });
+      let currentYShip = 56;
+      doc.setFont("helvetica", "bold"); doc.text(shipName, 110, currentYShip); currentYShip += 5; doc.setFont("helvetica", "normal");
+      if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 110, currentYShip); currentYShip += 5; }
+      if (shipCityState) { doc.text(shipCityState, 110, currentYShip); currentYShip += 5; }
+      if (shipPhone) { doc.text(`Phone: ${shipPhone}`, 110, currentYShip); currentYShip += 5; }
+      if (shipEmail) { doc.text(`Email: ${shipEmail}`, 110, currentYShip); currentYShip += 5; }
 
-    const finalY = doc.lastAutoTable.finalY || maxAddressY + 10;
-    doc.setFont("helvetica", "normal");
-    
-    let currentY = finalY + 10;
+      const maxAddressY = Math.max(currentYBill, currentYShip);
+      const activeItems = order.order_items?.filter(item => item.status !== 'cancelled' && item.status !== 'rejected') || [];
+      const tableRows = activeItems.map(item => [
+        `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}`,
+        item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}`
+      ]);
 
-    doc.text("Subtotal (Gross):", 140, currentY); doc.text(`$${grossSubtotal.toFixed(2)}`, 180, currentY, { align: 'right' });
-    currentY += 6;
-    
-    if (rejectedItemsSum > 0) {
-      doc.setTextColor(220, 38, 38);
-      doc.text("Adjustments:", 140, currentY); doc.text(`-$${rejectedItemsSum.toFixed(2)}`, 180, currentY, { align: 'right' });
-      doc.setTextColor(15, 23, 42); 
+      autoTable(doc, {
+        startY: maxAddressY + 10,
+        head: [["DESCRIPTION", "QTY", "UNIT PRICE", "TOTAL"]],
+        body: tableRows,
+        theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
+        styles: { fontSize: 10, cellPadding: 5 }, columnStyles: { 0: { cellWidth: 100 }, 1: { halign: 'center' }, 2: { halign: 'right' }, 3: { halign: 'right' } }
+      });
+
+      const finalY = doc.lastAutoTable.finalY || maxAddressY + 10;
+      doc.setFont("helvetica", "normal");
+      
+      let currentY = finalY + 10;
+
+      doc.text("Subtotal (Gross):", 140, currentY); doc.text(`$${grossSubtotal.toFixed(2)}`, 180, currentY, { align: 'right' });
       currentY += 6;
-    }
+      
+      if (rejectedItemsSum > 0) {
+        doc.setTextColor(220, 38, 38);
+        doc.text("Adjustments:", 140, currentY); doc.text(`-$${rejectedItemsSum.toFixed(2)}`, 180, currentY, { align: 'right' });
+        doc.setTextColor(15, 23, 42); 
+        currentY += 6;
+      }
 
-    doc.text("Shipping:", 140, currentY); doc.text(`$${Number(order.shipping_amount || 0).toFixed(2)}`, 180, currentY, { align: 'right' });
-    currentY += 6;
-
-    doc.text("Tax:", 140, currentY); doc.text(`$${finalTax.toFixed(2)}`, 180, currentY, { align: 'right' });
-    currentY += 10;
-    
-    if (docType === 'receipt') {
-      doc.text(`Payment Method: ${order.payment_method?.replace(/_/g, ' ').toUpperCase() || 'CARD'}`, 14, currentY);
-      doc.setFont("helvetica", "bold");
-      doc.text("Total Paid:", 140, currentY); doc.text(`$${finalTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+      doc.text("Shipping:", 140, currentY); doc.text(`$${Number(order.shipping_amount || 0).toFixed(2)}`, 180, currentY, { align: 'right' });
       currentY += 6;
-      doc.text("Balance Due:", 140, currentY); doc.text("$0.00", 180, currentY, { align: 'right' });
-    } else {
-      doc.setFont("helvetica", "bold");
-      doc.text("Grand Total:", 140, currentY); doc.text(`$${finalTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+
+      doc.text("Tax:", 140, currentY); doc.text(`$${finalTax.toFixed(2)}`, 180, currentY, { align: 'right' });
+      currentY += 10;
+      
+      if (docType === 'receipt') {
+        doc.text(`Payment Method: ${order.payment_method?.replace(/_/g, ' ').toUpperCase() || 'CARD'}`, 14, currentY);
+        doc.setFont("helvetica", "bold");
+        doc.text("Total Paid:", 140, currentY); doc.text(`$${finalTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+        currentY += 6;
+        doc.text("Balance Due:", 140, currentY); doc.text("$0.00", 180, currentY, { align: 'right' });
+      } else {
+        doc.setFont("helvetica", "bold");
+        doc.text("Grand Total:", 140, currentY); doc.text(`$${finalTotal.toFixed(2)}`, 180, currentY, { align: 'right' });
+      }
+
+      const pageHeight = doc.internal.pageSize.height;
+      doc.setFontSize(9); doc.setFont("helvetica", "bold");
+      doc.text("Thank you for your business!", 105, pageHeight - 30, { align: "center" });
+      doc.setFont("helvetica", "normal");
+      doc.text("TRICORE MEDICAL SUPPLY", 105, pageHeight - 24, { align: "center" });
+      doc.text("2169 Harbor St, Pittsburg CA 94565, United States", 105, pageHeight - 19, { align: "center" });
+      doc.text("info@tricoremedicalsupply.com", 105, pageHeight - 14, { align: "center" });
+      doc.text("www.tricoremedicalsupply.com", 105, pageHeight - 9, { align: "center" });
+
+      doc.save(`${docType === 'receipt' ? 'Receipt' : 'Invoice'}_${orderNum}.pdf`);
+      
+    } catch (error) {
+      console.error("PDF Generation failed:", error);
+      setNotification({ show: true, isError: true, message: 'Failed to generate PDF. Please try again.' });
+    } finally {
+      setIsGeneratingPDF(false); // Re-enable buttons
     }
-
-    const pageHeight = doc.internal.pageSize.height;
-    doc.setFontSize(9); doc.setFont("helvetica", "bold");
-    doc.text("Thank you for your business!", 105, pageHeight - 30, { align: "center" });
-    doc.setFont("helvetica", "normal");
-    doc.text("TRICORE MEDICAL SUPPLY", 105, pageHeight - 24, { align: "center" });
-    doc.text("2169 Harbor St, Pittsburg CA 94565, United States", 105, pageHeight - 19, { align: "center" });
-    doc.text("info@tricoremedicalsupply.com", 105, pageHeight - 14, { align: "center" });
-    doc.text("www.tricoremedicalsupply.com", 105, pageHeight - 9, { align: "center" });
-
-    doc.save(`${docType === 'receipt' ? 'Invoice' : 'Invoice'}_${orderNum}.pdf`);
   };
 
   const getDisplayName = (order) => {
@@ -676,9 +482,7 @@ export default function AdminOrders() {
             <button onClick={() => setActiveTab('pending')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'pending' ? 'bg-red-500 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>{newPendingCount > 0 && <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>}Pending ({tabCounts.pending})</button>
             <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-600 hover:bg-blue-50'}`}>Processing ({tabCounts.processing})</button>
             <button onClick={() => setActiveTab('shipped')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'shipped' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>Shipped ({tabCounts.shipped})</button>
-            
             <button onClick={() => setActiveTab('attempted')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'attempted' ? 'bg-amber-600 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>Attempted ({tabCounts.attempted})</button>
-
             <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>Completed ({tabCounts.completed})</button>
             
             {!isWarehouse && (
@@ -689,14 +493,13 @@ export default function AdminOrders() {
             )}
 
             <button onClick={() => setActiveTab('cancelled')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>Cancelled ({tabCounts.cancelled})</button>
-            
             <button onClick={() => setActiveTab('restocked')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'restocked' ? 'bg-slate-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200/50'}`}>Restocked ({tabCounts.restocked})</button>
           </div>
         </div>
         <div className="relative w-full xl:w-64 shrink-0"><Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" /></div>
       </div>
 
-      {loading ? (
+      {isLoading ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 flex justify-center"><div className="w-8 h-8 border-4 border-slate-900 border-t-transparent rounded-full animate-spin"></div></div>
       ) : orders.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 mt-6"><Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" /><h3 className="text-xl font-bold text-slate-900 mb-2">No orders found</h3></div>
@@ -756,7 +559,6 @@ export default function AdminOrders() {
                     }
                   }
 
-                  // 🚀 DYNAMIC CALCULATIONS FOR SUMMARY (Gross vs Deductions)
                   const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
                   const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
                   const finalTax = Number(order.tax_amount || 0);
@@ -797,10 +599,8 @@ export default function AdminOrders() {
                             {getStatusBadge(order.status)}
                             {['delivered', 'delivered_partial'].includes(order.status) && (order.delivered_at || order.updated_at) && (<span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><CheckCircle2 size={10} /> {new Date(order.delivered_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.delivered_at || order.updated_at)}</span>)}
                             {order.status === 'cancelled' && (order.cancelled_at || order.updated_at) && (<span className="text-[9px] font-bold text-red-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><XCircle size={10} /> {new Date(order.cancelled_at || order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.cancelled_at || order.updated_at)}</span>)}
-                            
                             {order.status === 'attempted' && (order.updated_at) && (<span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest flex items-center gap-1 mt-0.5"><AlertTriangle size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}</span>)}
                             {order.status === 'restocked' && (order.updated_at) && (<span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1 mt-0.5"><RefreshCw size={10} /> {new Date(order.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {format12hr(order.updated_at)}</span>)}
-
                             {['processing', 'ready_for_delivery', 'shipped'].includes(order.status) && (<span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 mt-0.5"><Clock size={10} /> Updated at {format12hr(order.shipped_at || order.processing_at || order.updated_at)}</span>)}
                           </div>
                         </td>
@@ -843,7 +643,14 @@ export default function AdminOrders() {
                                   {['delivered', 'delivered_partial'].includes(order.status) && (
                                     <>
                                       {!isWarehouse && (
-                                        <button onClick={() => generatePDF(order, order.payment_status === 'paid' ? 'receipt' : 'invoice')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2"><FileDown size={16} className="text-slate-400" /> {order.payment_status === 'paid' ? 'Download Receipt' : 'Download Invoice'}</button>
+                                        <button 
+                                          onClick={() => generatePDF(order, order.payment_status === 'paid' ? 'receipt' : 'invoice')} 
+                                          disabled={isGeneratingPDF}
+                                          className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                          {isGeneratingPDF ? <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></div> : <FileDown size={16} className="text-slate-400" />} 
+                                          {isGeneratingPDF ? 'Generating...' : (order.payment_status === 'paid' ? 'Download Receipt' : 'Download Invoice')}
+                                        </button>
                                       )}
                                       {order.payment_status === 'unpaid' && !isWarehouse && (
                                         <button onClick={() => handleMarkAsPaid(order.id)} className="px-5 py-2 bg-emerald-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-emerald-700 active:scale-95 transition-all flex items-center gap-2"><CheckCircle2 size={16} /> Mark as Paid</button>
@@ -852,7 +659,14 @@ export default function AdminOrders() {
                                   )}
 
                                   {order.status === 'cancelled' && order.payment_status === 'paid' && !isWarehouse && (
-                                      <button onClick={() => generatePDF(order, 'receipt')} className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2"><FileDown size={16} className="text-slate-400" /> Download Receipt</button>
+                                      <button 
+                                        onClick={() => generatePDF(order, 'receipt')} 
+                                        disabled={isGeneratingPDF}
+                                        className="px-5 py-2 bg-white border border-slate-200 text-slate-900 text-sm font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                      >
+                                        {isGeneratingPDF ? <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></div> : <FileDown size={16} className="text-slate-400" />} 
+                                        {isGeneratingPDF ? 'Generating...' : 'Download Receipt'}
+                                      </button>
                                   )}
                                 </div>
                               </div>
@@ -1127,7 +941,7 @@ export default function AdminOrders() {
 
                 <div className="flex gap-3 pt-5">
                   <button onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all">Cancel</button>
-                  <button onClick={executeItemAdd} disabled={!selectedSubstitute || !itemAction.newQty || itemAction.newQty <= 0} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 active:scale-95 transition-all">Add to Order</button>
+                  <button onClick={() => addItemMutation.mutate({ orderId: itemAction.order.id, variantId: selectedSubstitute.id, qty: parseInt(itemAction.newQty, 10) })} disabled={!selectedSubstitute || !itemAction.newQty || itemAction.newQty <= 0} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 active:scale-95 transition-all">Add to Order</button>
                 </div>
               </>
             )}
@@ -1143,7 +957,7 @@ export default function AdminOrders() {
                 </div>
                 <div className="flex gap-3 pt-5">
                   <button onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-all">Go Back</button>
-                  <button onClick={executeItemCancel} disabled={!itemAction.reason.trim()} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-red-600 hover:bg-red-700 disabled:opacity-50 transition-all">Confirm Cancel</button>
+                  <button onClick={() => cancelItemMutation.mutate({ itemId: itemAction.item.id, reason: itemAction.reason })} disabled={!itemAction.reason.trim()} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-red-600 hover:bg-red-700 disabled:opacity-50 transition-all">Confirm Cancel</button>
                 </div>
               </>
             )}
@@ -1160,7 +974,7 @@ export default function AdminOrders() {
                 </div>
                 <div className="flex gap-3 pt-5">
                   <button onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-all">Cancel</button>
-                  <button onClick={executeItemEdit} disabled={!itemAction.newQty || itemAction.newQty <= 0} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition-all">Update Quantity</button>
+                  <button onClick={() => editItemMutation.mutate({ itemId: itemAction.item.id, newQty: parseInt(itemAction.newQty, 10) })} disabled={!itemAction.newQty || itemAction.newQty <= 0} className="w-full py-3 text-sm text-white font-bold rounded-xl shadow-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition-all">Update Quantity</button>
                 </div>
               </>
             )}
