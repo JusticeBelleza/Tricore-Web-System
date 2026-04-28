@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
 import { useMetricsStore } from '../store/useMetricsStore';
@@ -38,6 +38,27 @@ export default function Dashboard() {
   const [filterYear, setFilterYear] = useState(currentYear.toString());
   const [filterType, setFilterType] = useState('month'); 
   const [filterDetail, setFilterDetail] = useState(currentMonth.toString()); 
+
+  // Custom Dropdown States
+  const [isYearDropdownOpen, setIsYearDropdownOpen] = useState(false);
+  const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState(false);
+  const [isDetailDropdownOpen, setIsDetailDropdownOpen] = useState(false);
+  
+  const yearDropdownRef = useRef(null);
+  const typeDropdownRef = useRef(null);
+  const detailDropdownRef = useRef(null);
+
+  // Click outside listener for the custom dropdowns
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (yearDropdownRef.current && !yearDropdownRef.current.contains(event.target)) setIsYearDropdownOpen(false);
+      if (typeDropdownRef.current && !typeDropdownRef.current.contains(event.target)) setIsTypeDropdownOpen(false);
+      if (detailDropdownRef.current && !detailDropdownRef.current.contains(event.target)) setIsDetailDropdownOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
 
   // Re-fetch when the filters change
   useEffect(() => {
@@ -115,9 +136,9 @@ export default function Dashboard() {
     fetchLists();
   }, [profile?.id, profile?.role, profile?.company_id, filterType, filterDetail, filterYear]);
 
-  const handleFilterTypeChange = (e) => {
-    const newType = e.target.value;
+  const handleFilterTypeChange = (newType) => {
     setFilterType(newType);
+    setIsTypeDropdownOpen(false);
     const isCurrentYear = parseInt(filterYear) === currentYear;
     
     if (newType === 'month') setFilterDetail(isCurrentYear ? currentMonth.toString() : "11");
@@ -126,9 +147,10 @@ export default function Dashboard() {
     else setFilterDetail("1"); 
   };
 
-  const handleFilterYearChange = (e) => {
-    const newYear = parseInt(e.target.value);
-    setFilterYear(e.target.value);
+  const handleFilterYearChange = (newYearVal) => {
+    const newYear = parseInt(newYearVal);
+    setFilterYear(newYearVal);
+    setIsYearDropdownOpen(false);
     
     if (newYear === currentYear) {
       if (filterType === 'month' && parseInt(filterDetail) > currentMonth) setFilterDetail(currentMonth.toString());
@@ -360,53 +382,101 @@ export default function Dashboard() {
           <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
             
             {/* 1. YEAR SELECTOR */}
-            <div className="relative w-full sm:w-28 shrink-0">
-              <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-              <select 
-                value={filterYear}
-                onChange={handleFilterYearChange}
-                className="w-full pl-10 pr-8 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-700 shadow-sm appearance-none cursor-pointer transition-all"
+            <div className="relative w-full sm:w-32 shrink-0" ref={yearDropdownRef}>
+              <button 
+                type="button" 
+                onClick={() => setIsYearDropdownOpen(!isYearDropdownOpen)} 
+                className="w-full flex justify-between items-center bg-white border border-slate-200 hover:border-slate-300 text-slate-700 font-bold py-2.5 pl-4 pr-3 rounded-xl focus:bg-white focus:ring-2 focus:ring-slate-100 outline-none text-sm transition-all text-left z-10 relative min-h-[44px] shadow-sm"
               >
-                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
-              </select>
-              <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
+                <span className="flex items-center gap-2">
+                  <Calendar size={16} className="text-slate-400 shrink-0 hidden sm:block" />
+                  {filterYear}
+                </span>
+                <ChevronDown className={`text-slate-400 shrink-0 transition-transform duration-300 ${isYearDropdownOpen ? 'rotate-180' : ''}`} size={16} />
+              </button>
+              
+              <div className={`absolute z-50 w-full mt-2 bg-white border border-slate-100 rounded-xl shadow-xl overflow-hidden transition-all duration-200 origin-top ${isYearDropdownOpen ? 'opacity-100 translate-y-0 scale-100 visible pointer-events-auto' : 'opacity-0 -translate-y-2 scale-95 invisible pointer-events-none'}`}>
+                <ul className="max-h-64 overflow-y-auto divide-y divide-slate-50 py-1">
+                  {availableYears.map(y => (
+                    <li key={y}>
+                      <button 
+                        type="button" 
+                        onClick={() => handleFilterYearChange(y.toString())} 
+                        className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors whitespace-normal break-words ${filterYear === y.toString() ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
+                      >
+                        {y}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
 
             {/* 2. FILTER CATEGORY */}
-            <div className="relative w-full sm:w-40 shrink-0">
-              <select 
-                value={filterType}
-                onChange={handleFilterTypeChange}
-                className="w-full pl-4 pr-10 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold text-slate-700 shadow-sm appearance-none cursor-pointer transition-all"
+            <div className="relative w-full sm:w-44 shrink-0" ref={typeDropdownRef}>
+              <button 
+                type="button" 
+                onClick={() => setIsTypeDropdownOpen(!isTypeDropdownOpen)} 
+                className="w-full flex justify-between items-center bg-white border border-slate-200 hover:border-slate-300 text-slate-700 font-bold py-2.5 pl-4 pr-3 rounded-xl focus:bg-white focus:ring-2 focus:ring-slate-100 outline-none text-sm transition-all text-left z-10 relative min-h-[44px] shadow-sm"
               >
-                <option value="month">Monthly</option>
-                <option value="quarter">Quarterly</option>
-                <option value="semester">Semester</option>
-                <option value="annual">Annual ({filterYear})</option>
-              </select>
-              <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
+                <span className="truncate pr-2">
+                  {filterType === 'month' ? 'Monthly' : filterType === 'quarter' ? 'Quarterly' : filterType === 'semester' ? 'Semester' : 'Annual'}
+                </span>
+                <ChevronDown className={`text-slate-400 shrink-0 transition-transform duration-300 ${isTypeDropdownOpen ? 'rotate-180' : ''}`} size={16} />
+              </button>
+              
+              <div className={`absolute z-50 w-full mt-2 bg-white border border-slate-100 rounded-xl shadow-xl overflow-hidden transition-all duration-200 origin-top ${isTypeDropdownOpen ? 'opacity-100 translate-y-0 scale-100 visible pointer-events-auto' : 'opacity-0 -translate-y-2 scale-95 invisible pointer-events-none'}`}>
+                <ul className="max-h-64 overflow-y-auto divide-y divide-slate-50 py-1">
+                  <li><button type="button" onClick={() => handleFilterTypeChange('month')} className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors whitespace-normal break-words ${filterType === 'month' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>Monthly</button></li>
+                  <li><button type="button" onClick={() => handleFilterTypeChange('quarter')} className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors whitespace-normal break-words ${filterType === 'quarter' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>Quarterly</button></li>
+                  <li><button type="button" onClick={() => handleFilterTypeChange('semester')} className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors whitespace-normal break-words ${filterType === 'semester' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>Semester</button></li>
+                  <li><button type="button" onClick={() => handleFilterTypeChange('annual')} className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors whitespace-normal break-words ${filterType === 'annual' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>Annual ({filterYear})</button></li>
+                </ul>
+              </div>
             </div>
 
             {/* 3. DYNAMIC SPECIFIC PERIOD SELECTOR */}
             {filterType !== 'annual' && (
-              <div className="relative w-full sm:w-56 shrink-0">
-                <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-500" size={16} />
-                <select 
-                  value={filterDetail}
-                  onChange={(e) => setFilterDetail(e.target.value)}
-                  className="w-full pl-10 pr-10 py-2.5 bg-blue-50 border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 text-sm font-bold text-blue-900 shadow-sm appearance-none cursor-pointer transition-all"
+              <div className="relative w-full sm:w-60 shrink-0" ref={detailDropdownRef}>
+                <button 
+                  type="button" 
+                  onClick={() => setIsDetailDropdownOpen(!isDetailDropdownOpen)} 
+                  className="w-full flex justify-between items-center bg-blue-50/80 border border-blue-200 hover:border-blue-300 text-blue-900 font-bold py-2.5 pl-4 pr-3 rounded-xl focus:bg-white focus:ring-4 focus:ring-blue-100 focus:border-blue-400 outline-none text-sm transition-all text-left z-10 relative min-h-[44px] shadow-sm hover:bg-blue-100/50"
                 >
-                  {filterType === 'month' && availableMonths.map(m => (
-                    <option key={m} value={m}>{monthNames[m]} {filterYear}</option>
-                  ))}
-                  {filterType === 'quarter' && availableQuarters.map(q => (
-                    <option key={q} value={q}>{q === 1 ? '1st' : q === 2 ? '2nd' : q === 3 ? '3rd' : '4th'} Quarter {filterYear}</option>
-                  ))}
-                  {filterType === 'semester' && availableSemesters.map(s => (
-                    <option key={s} value={s}>{s === 1 ? '1st' : '2nd'} Semester {filterYear}</option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none" size={16} />
+                  <span className="flex items-center gap-2 truncate pr-2">
+                    <Calendar size={16} className="text-blue-500 shrink-0 hidden sm:block" />
+                    {filterType === 'month' && `${monthNames[parseInt(filterDetail)]} ${filterYear}`}
+                    {filterType === 'quarter' && `${parseInt(filterDetail) === 1 ? '1st' : parseInt(filterDetail) === 2 ? '2nd' : parseInt(filterDetail) === 3 ? '3rd' : '4th'} Quarter ${filterYear}`}
+                    {filterType === 'semester' && `${parseInt(filterDetail) === 1 ? '1st' : '2nd'} Semester ${filterYear}`}
+                  </span>
+                  <ChevronDown className={`text-blue-400 shrink-0 transition-transform duration-300 ${isDetailDropdownOpen ? 'rotate-180' : ''}`} size={16} />
+                </button>
+                
+                <div className={`absolute z-50 w-full mt-2 bg-white border border-blue-100 rounded-xl shadow-xl overflow-hidden transition-all duration-200 origin-top ${isDetailDropdownOpen ? 'opacity-100 translate-y-0 scale-100 visible pointer-events-auto' : 'opacity-0 -translate-y-2 scale-95 invisible pointer-events-none'}`}>
+                  <ul className="max-h-64 overflow-y-auto divide-y divide-slate-50 py-1">
+                    {filterType === 'month' && availableMonths.map(m => (
+                      <li key={m}>
+                        <button type="button" onClick={() => { setFilterDetail(m.toString()); setIsDetailDropdownOpen(false); }} className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors whitespace-normal break-words ${filterDetail === m.toString() ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'}`}>
+                          {monthNames[m]} {filterYear}
+                        </button>
+                      </li>
+                    ))}
+                    {filterType === 'quarter' && availableQuarters.map(q => (
+                      <li key={q}>
+                        <button type="button" onClick={() => { setFilterDetail(q.toString()); setIsDetailDropdownOpen(false); }} className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors whitespace-normal break-words ${filterDetail === q.toString() ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'}`}>
+                          {q === 1 ? '1st' : q === 2 ? '2nd' : q === 3 ? '3rd' : '4th'} Quarter {filterYear}
+                        </button>
+                      </li>
+                    ))}
+                    {filterType === 'semester' && availableSemesters.map(s => (
+                      <li key={s}>
+                        <button type="button" onClick={() => { setFilterDetail(s.toString()); setIsDetailDropdownOpen(false); }} className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors whitespace-normal break-words ${filterDetail === s.toString() ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'}`}>
+                          {s === 1 ? '1st' : '2nd'} Semester {filterYear}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               </div>
             )}
           </div>

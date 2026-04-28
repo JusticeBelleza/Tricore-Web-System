@@ -855,6 +855,17 @@ export default function Reports() {
     setIsExporting(false);
   };
 
+  // Prevent closing the dropdown if the click originated from within it
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (isDropdownOpen && !event.target.closest('.report-dropdown-container')) {
+        setIsDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isDropdownOpen]);
+
   const maxPages = Math.ceil(totalCount / pageSize) || 1;
 
   return (
@@ -891,8 +902,8 @@ export default function Reports() {
           
           <div className="flex flex-col md:flex-row gap-6 items-start md:items-end w-full">
             
-            {/* Report Type Selector */}
-            <div className="w-full md:w-64 shrink-0">
+            {/* 🚀 FIXED: Custom Animated Dropdown (Matches Home.jsx / Products.jsx) */}
+            <div className="w-full md:w-64 shrink-0 report-dropdown-container">
               <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Report Type</label>
               {authLoading ? (
                 <div className="w-full h-[42px] bg-slate-100 animate-pulse rounded-xl"></div>
@@ -904,38 +915,37 @@ export default function Reports() {
                   <Lock size={14} className="text-slate-400 shrink-0" />
                 </div>
               ) : (
-                <div className="relative z-20">
+                <div className="relative z-50">
                   <button 
-                    type="button"
-                    onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                    className={`relative w-full flex items-center justify-between px-4 py-2.5 bg-blue-50/80 border border-blue-200 rounded-xl outline-none transition-all focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm font-bold text-blue-900 shadow-sm hover:bg-blue-100/50`}
+                    type="button" 
+                    onClick={() => setIsDropdownOpen(!isDropdownOpen)} 
+                    className="w-full flex justify-between items-center bg-blue-50/80 border border-blue-200 hover:border-blue-300 hover:bg-blue-100/50 text-blue-900 font-bold py-2.5 pl-4 pr-3 rounded-xl focus:bg-white focus:ring-4 focus:ring-blue-100 focus:border-blue-400 outline-none text-sm transition-all text-left relative min-h-[44px] shadow-sm"
                   >
-                    <span className="flex items-center gap-2 truncate">
-                      <FileText size={16} className="text-blue-500 shrink-0" />
+                    <span className="flex items-center gap-2 whitespace-normal break-words leading-tight pr-2">
+                      <FileText size={16} className="text-blue-500 shrink-0 hidden sm:block" />
                       {adminReportOptions.find(o => o.value === reportType)?.label || 'Select Report'}
                     </span>
-                    <ChevronDown size={16} className={`text-blue-400 shrink-0 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`} />
+                    <ChevronDown className={`text-blue-400 shrink-0 transition-transform duration-300 ${isDropdownOpen ? 'rotate-180' : ''}`} size={16} />
                   </button>
-
-                  {isDropdownOpen && (
-                    <>
-                      <div className="fixed inset-0 z-30" onClick={() => setIsDropdownOpen(false)}></div>
-                      <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-blue-100 rounded-2xl shadow-xl overflow-hidden z-40 py-1">
-                        {adminReportOptions.map((option) => (
-                          <button
-                            key={option.value}
+                  
+                  <div className={`absolute left-0 right-0 w-full mt-2 bg-white border border-blue-100 rounded-xl shadow-xl overflow-hidden transition-all duration-200 origin-top ${isDropdownOpen ? 'opacity-100 translate-y-0 scale-100 visible pointer-events-auto' : 'opacity-0 -translate-y-2 scale-95 invisible pointer-events-none'}`}>
+                    <ul className="max-h-64 overflow-y-auto divide-y divide-slate-50 py-1">
+                      {adminReportOptions.map((option) => (
+                        <li key={option.value}>
+                          <button 
+                            type="button" 
                             onClick={() => {
                               setTableData([]); setWarehouseData([]); setTopProductsData([]); setProfitabilityData([]);
                               setReportType(option.value); setSearchTerm(''); setIsDropdownOpen(false);
-                            }}
-                            className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors ${reportType === option.value ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'}`}
+                            }} 
+                            className={`w-full text-left px-4 py-3 text-sm font-bold transition-colors whitespace-normal break-words ${reportType === option.value ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'}`}
                           >
                             {option.label}
                           </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 </div>
               )}
             </div>
@@ -946,7 +956,7 @@ export default function Reports() {
             <div className="flex flex-col sm:flex-row gap-6 items-start sm:items-end w-full">
               
               {/* Quick Select Pills */}
-              <div className="shrink-0 w-full sm:w-auto">
+              <div className="shrink-0 w-full sm:w-auto z-10 relative">
                 <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Quick Select</label>
                 <div className="flex bg-slate-100/80 p-1 rounded-xl border border-slate-200/60 shadow-inner">
                   <button type="button" onClick={() => setQuickDate('today')} className={`flex-1 sm:flex-none px-5 py-1.5 text-xs font-bold rounded-lg transition-all ${activeDateFilter === 'today' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>Today</button>
@@ -956,7 +966,7 @@ export default function Reports() {
               </div>
 
               {/* 🚀 MOBILE FIX: Start & End Dates (Stacked horizontally strictly at 50% using Grid) */}
-              <div className="grid grid-cols-2 sm:flex sm:items-center gap-3 w-full sm:w-auto">
+              <div className="grid grid-cols-2 sm:flex sm:items-center gap-3 w-full sm:w-auto z-10 relative">
                 <div className="w-full sm:w-auto">
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Start Date</label>
                   <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full sm:w-36 px-2.5 sm:px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-[13px] sm:text-sm font-bold text-slate-700 shadow-sm transition-all hover:border-slate-300" />
@@ -974,10 +984,10 @@ export default function Reports() {
           </div>
         </div>
 
-        <div className="h-px w-full bg-slate-100"></div>
+        <div className="h-px w-full bg-slate-100 z-10 relative"></div>
 
         {/* Bottom Row: Full Width Search */}
-        <div className="relative w-full">
+        <div className="relative w-full z-10">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 mt-0.5" size={18} />
           <input 
             type="text" 
