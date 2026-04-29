@@ -69,10 +69,10 @@ export default function AdminOrders() {
       };
       fetchVariants();
     }
-  }, [itemAction.show, itemAction.type]);
+  }, [itemAction.show, itemAction.type, availableVariants.length]);
 
   // ==========================================
-  // REACT QUERY: DATA FETCHING
+  // 🚀 REACT QUERY: DATA FETCHING
   // ==========================================
 
   const { data: tabCounts = { pending: 0, newPending: 0, processing: 0, shipped: 0, completed: 0, due: 0, paid: 0, cancelled: 0, attempted: 0, restocked: 0 } } = useQuery({
@@ -97,16 +97,18 @@ export default function AdminOrders() {
     enabled: !!profile?.id
   });
 
+  // 🚀 N+1 INFINITE PAGINATION QUERY (No Exact Count)
   const { data: ordersData, isLoading } = useQuery({
     queryKey: ['admin_orders', activeTab, debouncedSearch, page],
     queryFn: async () => {
+      // Notice: NO { count: 'exact' } here
       let query = supabase.from('orders').select(`
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( full_name, contact_number, email ),
           order_items ( id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, cancellation_reason, product_variants ( id, product_id, name, sku, price, products(name, base_sku) ) )
-        `, { count: 'exact' }); 
+        `); 
 
       if (activeTab === 'pending') query = query.eq('status', 'pending');
       else if (activeTab === 'processing') query = query.eq('status', 'processing');
@@ -129,33 +131,47 @@ export default function AdminOrders() {
       }
 
       const sortColumn = (['completed', 'cancelled', 'paid', 'attempted', 'restocked'].includes(activeTab)) ? 'updated_at' : 'created_at';
-      query = query.order(sortColumn, { ascending: false }).range(page * pageSize, (page * pageSize) + pageSize - 1);
+      
+      // 🚀 The N+1 Math: Ask for exactly 1 extra row
+      const from = page * pageSize;
+      const to = from + pageSize; 
+      query = query.order(sortColumn, { ascending: false }).range(from, to);
 
-      const { data, count, error } = await query;
+      const { data, error } = await query;
       if (error) throw error;
-      return { orders: data || [], count: count || 0 };
+      return data || [];
     },
     placeholderData: keepPreviousData,
     enabled: !!profile?.id
   });
 
-  const orders = ordersData?.orders || [];
-  const totalCount = ordersData?.count || 0;
+  // 🚀 Process the N+1 Array
+  const hasNextPage = ordersData && ordersData.length > pageSize;
+  const displayOrders = ordersData ? ordersData.slice(0, pageSize) : [];
   const newPendingCount = tabCounts.newPending || 0;
 
+  // 🚀 THROTTLED REAL-TIME SUBSCRIPTION
   useEffect(() => {
     if (!profile?.id) return;
+    let debounceTimer;
+    
     const sub = supabase.channel('admin_orders_channel')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-        queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
-        queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
+          queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
+        }, 500);
       }).subscribe();
       
-    return () => { supabase.removeChannel(sub); };
+    return () => { 
+      clearTimeout(debounceTimer);
+      supabase.removeChannel(sub); 
+    };
   }, [profile?.id, queryClient]);
 
   // ==========================================
-  // REACT QUERY: MUTATIONS (RPCs)
+  // 🚀 REACT QUERY: MUTATIONS (RPCs)
   // ==========================================
 
   const cancelItemMutation = useMutation({
@@ -199,11 +215,28 @@ export default function AdminOrders() {
     onError: (error) => toast.error(`Add failed: ${error.message}`)
   });
 
+  const assignDriverMutation = useMutation({
+    mutationFn: async ({ orderId, driverObj }) => {
+      const driverPayload = `${driverObj.full_name} | ${driverObj.contact_number || 'No Phone'}`;
+      const { error } = await supabase.from('orders').update({ 
+        driver_name: driverPayload,
+        status: 'ready_for_delivery'
+      }).eq('id', orderId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success('Driver assigned successfully.');
+      queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
+    },
+    onError: (error) => toast.error(`Failed to assign driver: ${error.message}`)
+  });
+
   const toggleOrderDetails = (orderId) => setExpandedOrderId(expandedOrderId === orderId ? null : orderId);
 
   const executeOrderStatusUpdate = async (orderId, newStatus, reason = null) => {
     try {
-      const currentOrder = orders.find(o => o.id === orderId);
+      const currentOrder = displayOrders.find(o => o.id === orderId);
       if (!currentOrder) return;
 
       const updatePayload = { status: newStatus, updated_at: new Date().toISOString() };
@@ -229,7 +262,7 @@ export default function AdminOrders() {
   };
 
   const handleStatusChangeClick = (orderId, newStatus) => {
-    const currentOrder = orders.find(o => o.id === orderId);
+    const currentOrder = displayOrders.find(o => o.id === orderId);
     setConfirmAction({
       show: true, title: newStatus === 'processing' ? 'Accept Order?' : 'Reject Order?',
       message: newStatus === 'processing' 
@@ -505,7 +538,7 @@ export default function AdminOrders() {
 
       {isLoading ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 flex justify-center"><div className="w-8 h-8 border-4 border-slate-900 border-t-transparent rounded-full animate-spin"></div></div>
-      ) : orders.length === 0 ? (
+      ) : displayOrders.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 mt-6"><Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" /><h3 className="text-xl font-bold text-slate-900 mb-2">No orders found</h3></div>
       ) : (
         <div className="bg-white rounded-3xl border border-slate-200 mt-6 flex flex-col">
@@ -522,7 +555,7 @@ export default function AdminOrders() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {orders.map(order => {
+                {displayOrders.map((order) => {
                   const isExpanded = expandedOrderId === order.id;
                   const isB2B = !!order.company_id;
                   const shortId = order.id.substring(0, 8).toUpperCase();
@@ -738,8 +771,8 @@ export default function AdminOrders() {
                                                 <td className="px-5 py-4">
                                                   <p className={`font-bold leading-snug ${isVoided ? 'text-slate-500 line-through' : 'text-slate-900'}`}>{item.product_variants?.products?.name || item.product_variants?.name}</p>
                                                   <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}</span></p>
-                                                  {isItemCancelled && <p className="text-[10px] text-red-600 font-bold mt-1 uppercase tracking-widest">Cancelled: {item.cancellation_reason}</p>}
-                                                  {isItemRejected && <p className="text-[10px] text-orange-600 font-bold mt-1 uppercase tracking-widest">Rejected at Delivery</p>}
+                                                  {isItemCancelled && <p className="text-[10px] text-red-600 font-bold mt-1 uppercase tracking-widest flex items-center gap-1"><XCircle size={10}/> Cancelled: {item.cancellation_reason}</p>}
+                                                  {isItemRejected && <p className="text-[10px] text-orange-600 font-bold mt-1 uppercase tracking-widest flex items-center gap-1"><XCircle size={10}/> Rejected at Delivery</p>}
                                                 </td>
                                                 <td className="px-5 py-4 text-center">
                                                   <span className={`px-2.5 py-1 font-bold rounded-lg border shadow-sm ${isVoided ? 'bg-slate-100 text-slate-400 border-slate-200 line-through' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>{item.quantity_variants}</span>
@@ -834,15 +867,16 @@ export default function AdminOrders() {
             </table>
           </div>
 
-          {totalCount > pageSize && (
-            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
-              <span className="text-sm font-medium text-slate-500">Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> entries</span>
-              <div className="flex gap-2">
-                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={18} /></button>
-                <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalCount} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={18} /></button>
-              </div>
+          {/* 🚀 N+1 INFINITE PAGINATION UI */}
+          <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
+            <span className="text-sm font-medium text-slate-500">
+              Page {page + 1}: {(page * pageSize) + 1}-{page * pageSize + displayOrders.length}
+            </span>
+            <div className="flex gap-2">
+              <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={18} /></button>
+              <button onClick={() => setPage(p => p + 1)} disabled={!hasNextPage} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={18} /></button>
             </div>
-          )}
+          </div>
 
         </div>
       )}
@@ -877,7 +911,6 @@ export default function AdminOrders() {
             </div>
           )}
 
-          {/* ❌ REMOVED DIALOGFOOTER ABSTRACTION - USING DIRECT DIV INSTEAD */}
           <div className="flex w-full flex-row justify-center gap-3 pt-6">
             <Button 
               variant="outline" 
@@ -958,7 +991,6 @@ export default function AdminOrders() {
                 <p className="text-xs text-slate-400 mt-3 font-medium">The order subtotal and total amount will recalculate automatically.</p>
               </div>
 
-              {/* ❌ REMOVED DIALOGFOOTER ABSTRACTION - USING DIRECT DIV INSTEAD */}
               <div className="flex w-full flex-row justify-center gap-3 pt-6">
                 <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Cancel</Button>
                 <Button className="w-[140px] py-6 bg-emerald-600 hover:bg-emerald-700" disabled={!selectedSubstitute || !itemAction.newQty || itemAction.newQty <= 0} onClick={() => addItemMutation.mutate({ orderId: itemAction.order.id, variantId: selectedSubstitute.id, qty: parseInt(itemAction.newQty, 10) })}>Add to Order</Button>
@@ -978,7 +1010,6 @@ export default function AdminOrders() {
                 <textarea value={itemAction.reason} onChange={(e) => setItemAction({...itemAction, reason: e.target.value})} placeholder="Reason for canceling this item..." className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500 outline-none resize-none h-20"/>
               </div>
               
-              {/* ❌ REMOVED DIALOGFOOTER ABSTRACTION - USING DIRECT DIV INSTEAD */}
               <div className="flex w-full flex-row justify-center gap-3 pt-6">
                 <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Go Back</Button>
                 <Button variant="destructive" className="w-[140px] py-6" disabled={!itemAction.reason.trim()} onClick={() => cancelItemMutation.mutate({ itemId: itemAction.item.id, reason: itemAction.reason })}>Confirm Cancel</Button>
@@ -999,7 +1030,6 @@ export default function AdminOrders() {
                 <p className="text-xs text-slate-400 mt-2">The order subtotal and total amount will recalculate automatically.</p>
               </div>
               
-              {/* ❌ REMOVED DIALOGFOOTER ABSTRACTION - USING DIRECT DIV INSTEAD */}
               <div className="flex w-full flex-row justify-center gap-3 pt-6">
                 <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Cancel</Button>
                 <Button className="w-[140px] py-6 bg-blue-600 hover:bg-blue-700" disabled={!itemAction.newQty || itemAction.newQty <= 0} onClick={() => editItemMutation.mutate({ itemId: itemAction.item.id, newQty: parseInt(itemAction.newQty, 10) })}>Update Quantity</Button>
@@ -1047,7 +1077,6 @@ export default function AdminOrders() {
                 <p className="text-xs text-slate-400 mt-3 font-medium">The order subtotal and total amount will recalculate automatically based on the new item's price.</p>
               </div>
               
-              {/* ❌ REMOVED DIALOGFOOTER ABSTRACTION - USING DIRECT DIV INSTEAD */}
               <div className="flex w-full flex-row justify-center gap-3 pt-6">
                 <Button variant="outline" className="w-[140px] py-6" onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }}>Cancel</Button>
                 <Button className="w-[140px] py-6 bg-purple-600 hover:bg-purple-700" disabled={!selectedSubstitute} onClick={executeItemSubstitute}>Confirm Swap</Button>
