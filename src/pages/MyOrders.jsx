@@ -42,13 +42,14 @@ export default function MyOrders() {
     staleTime: Infinity, // Drivers don't change often, keep in cache
   });
 
-  // 2. Fetch Tab Counts
+  // 2. Fetch Tab Counts (Frontend Calculation)
   const { data: tabCounts = { all: 0, delivered: 0, due: 0, paid: 0, cancelled: 0, returned: 0 } } = useQuery({
     queryKey: ['my_orders_tabs', profile?.id, profile?.company_id],
     queryFn: async () => {
       const thresholdDate = new Date();
       thresholdDate.setDate(thresholdDate.getDate() - 25);
 
+      // Base query restricted to JUST this user or company
       const baseQuery = () => {
         let q = supabase.from('orders').select('*', { count: 'exact', head: true });
         if (profile?.company_id) q = q.eq('company_id', profile.company_id);
@@ -56,6 +57,7 @@ export default function MyOrders() {
         return q;
       };
 
+      // Run parallel counts for this specific user
       const [allReq, deliveredReq, dueReq, paidReq, cancelledReq, returnedReq] = await Promise.all([
         baseQuery(),
         baseQuery().in('status', ['delivered', 'delivered_partial']),
@@ -78,10 +80,11 @@ export default function MyOrders() {
     staleTime: 60000,
   });
 
-  // 3. Fetch Paginated Orders
+  // 3. Fetch Paginated Orders using N+1 Infinite Cursor Pagination
   const { data: ordersData, isLoading } = useQuery({
     queryKey: ['my_orders', activeTab, page, profile?.id, profile?.company_id],
     queryFn: async () => {
+      // Notice: NO { count: 'exact' } here
       let query = supabase
         .from('orders')
         .select(`
@@ -95,7 +98,7 @@ export default function MyOrders() {
             id, quantity_variants, unit_price, line_total, status, cancellation_reason,
             product_variants ( name, sku, products ( name, base_sku ) ) 
           )
-        `, { count: 'exact' });
+        `);
 
       if (profile?.company_id) {
         query = query.eq('company_id', profile.company_id);
@@ -118,21 +121,24 @@ export default function MyOrders() {
       }
 
       query = query.order('created_at', { ascending: false });
+      
+      // 🚀 The N+1 Math: Ask for exactly 1 extra row
       const from = page * pageSize;
-      const to = from + pageSize - 1;
+      const to = from + pageSize; 
       query = query.range(from, to);
 
-      const { data, count, error } = await query;
+      const { data, error } = await query;
       if (error) throw error;
       
-      return { orders: data || [], count: count || 0 };
+      return data || [];
     },
     placeholderData: keepPreviousData, // Keeps old data visible while fetching new page
     enabled: !!(profile?.id || profile?.company_id),
   });
 
-  const orders = ordersData?.orders || [];
-  const totalCount = ordersData?.count || 0;
+  // 🚀 Process the N+1 Array
+  const hasNextPage = ordersData && ordersData.length > pageSize;
+  const displayOrders = ordersData ? ordersData.slice(0, pageSize) : [];
 
   // ==========================================
   // 🚀 THROTTLED REAL-TIME SUBSCRIPTION
@@ -217,6 +223,9 @@ export default function MyOrders() {
     const orderNum = order.id.substring(0, 8).toUpperCase();
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
+    // 🚀 DYNAMIC CALCULATIONS FOR PDF
+    // The DB already holds the exact final Net Subtotal, Final Tax, and Final Total. 
+    // We just need to sum all items to display the original gross subtotal!
     const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
     const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
     
@@ -273,6 +282,7 @@ export default function MyOrders() {
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
+    // 🚀 FILTER OUT REJECTED ITEMS FROM THE ACTUAL INVOICE LIST
     const activeItems = order.order_items?.filter(item => item.status !== 'cancelled' && item.status !== 'rejected') || [];
     const tableRows = activeItems.map(item => [
       `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.products?.base_sku || item.product_variants?.sku || 'N/A'}`,
@@ -385,7 +395,7 @@ export default function MyOrders() {
             </div>
           ))}
         </div>
-      ) : orders.length === 0 ? (
+      ) : displayOrders.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm mt-6">
           <Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" />
           <h3 className="text-xl font-bold text-slate-900 mb-2 tracking-tight">No orders found</h3>
@@ -400,7 +410,8 @@ export default function MyOrders() {
             <table className="w-full text-left text-sm whitespace-nowrap">
               <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500">
                 <tr>
-                  <th className="px-6 py-4 font-bold tracking-tight rounded-tl-3xl">Order Details</th>
+                  <th className="px-6 py-4 font-bold tracking-tight text-center w-16 rounded-tl-3xl">#</th>
+                  <th className="px-6 py-4 font-bold tracking-tight">Order Details</th>
                   <th className="px-6 py-4 font-bold tracking-tight">Date Placed</th>
                   <th className="px-6 py-4 font-bold tracking-tight">Total Amount</th>
                   <th className="px-6 py-4 font-bold tracking-tight">Payment</th>
@@ -409,7 +420,7 @@ export default function MyOrders() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {orders.map((order) => {
+                {displayOrders.map((order, index) => {
                   const isExpanded = expandedOrderId === order.id;
                   const shortId = order.id.split('-')[0].toUpperCase();
                   const isB2B = !!order.company_id || !!profile?.company_id;
@@ -463,6 +474,11 @@ export default function MyOrders() {
                         onClick={() => toggleOrderDetails(order.id)} 
                         className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-800' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}
                       >
+                        <td className="px-6 py-4 text-center">
+                          <span className="font-medium text-slate-400 text-sm">
+                            {(page * pageSize) + index + 1}
+                          </span>
+                        </td>
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-4">
                             <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border transition-colors shadow-sm ${isExpanded ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
@@ -538,7 +554,7 @@ export default function MyOrders() {
                       </tr>
                       {isExpanded && (
                         <tr className="bg-slate-50 shadow-inner">
-                          <td colSpan="6" className="p-0 border-b border-slate-200">
+                          <td colSpan="7" className="p-0 border-b border-slate-200">
                             <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
                               
                               {['cancelled', 'attempted', 'restocked'].includes(order.status) && order.cancellation_reason && (
@@ -820,29 +836,28 @@ export default function MyOrders() {
             </table>
           </div>
 
-          {totalCount > pageSize && (
-            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
-              <span className="text-sm font-medium text-slate-500">
-                Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> orders
-              </span>
-              <div className="flex gap-2">
-                <button 
-                  onClick={() => setPage(p => Math.max(0, p - 1))} 
-                  disabled={page === 0} 
-                  className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
-                >
-                  <ChevronLeft size={18} />
-                </button>
-                <button 
-                  onClick={() => setPage(p => p + 1)} 
-                  disabled={(page + 1) * pageSize >= totalCount} 
-                  className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
-                >
-                  <ChevronRight size={18} />
-                </button>
-              </div>
+          {/* 🚀 ULTIMATE INFINITE PAGINATION UI */}
+          <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
+            <span className="text-sm font-medium text-slate-500">
+              Page {page + 1}: {(page * pageSize) + 1}-{page * pageSize + displayOrders.length}
+            </span>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setPage(p => Math.max(0, p - 1))} 
+                disabled={page === 0} 
+                className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <button 
+                onClick={() => setPage(p => p + 1)} 
+                disabled={!hasNextPage} 
+                className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+              >
+                <ChevronRight size={18} />
+              </button>
             </div>
-          )}
+          </div>
 
         </div>
       )}
