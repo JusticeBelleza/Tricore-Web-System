@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { 
   Search, Package, CheckCircle2, Truck, FileDown, 
   CheckSquare, Square, Box, ChevronDown, Hash, Calendar, MapPin, User, Phone, Mail, Car,
@@ -11,84 +12,77 @@ import autoTable from 'jspdf-autotable';
 
 export default function Warehouse() {
   const { profile } = useAuth();
-  const [orders, setOrders] = useState([]);
-  const [drivers, setDrivers] = useState([]); 
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   
   const [page, setPage] = useState(0);
-  const [totalCount, setTotalCount] = useState(0);
   const pageSize = 20;
+  
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  
   const [activeTab, setActiveTab] = useState('processing'); 
-  const [tabCounts, setTabCounts] = useState({ processing: 0, completed: 0, returns: 0 });
-
+  
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [pickedItems, setPickedItems] = useState({});
   
   const [confirmReady, setConfirmReady] = useState({ show: false, orderId: null });
   const [confirmRestock, setConfirmRestock] = useState({ show: false, order: null });
   const [confirmReattempt, setConfirmReattempt] = useState({ show: false, orderId: null });
-  
-  const [isRestocking, setIsRestocking] = useState(false);
-  const [isReattempting, setIsReattempting] = useState(false);
 
+  // Debounce Search
   useEffect(() => {
     const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
+  // Reset state on tab change
   useEffect(() => {
     setPage(0);
     setExpandedOrderId(null);
+    setPickedItems({});
   }, [activeTab]);
 
-  useEffect(() => {
-    if (profile?.id) {
-      fetchWarehouseOrders();
-      fetchTabCounts();
+  // ==========================================
+  // 🚀 REACT QUERY: DATA FETCHING
+  // ==========================================
 
-      const sub = supabase.channel('warehouse_orders')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-          fetchWarehouseOrders();
-          fetchTabCounts();
-        }).subscribe();
+  // 1. Fetch Drivers (Cached heavily)
+  const { data: drivers = [] } = useQuery({
+    queryKey: ['warehouse_drivers'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('user_profiles').select('full_name, contact_number').eq('role', 'driver');
+      if (error) throw error;
+      return data || [];
+    },
+    staleTime: Infinity,
+  });
 
-      const localUpdateHandler = () => { fetchWarehouseOrders(); fetchTabCounts(); };
-      window.addEventListener('orderStatusChanged', localUpdateHandler);
+  // 2. Fetch Tab Counts (Using RPC)
+  const { data: tabCounts = { processing: 0, completed: 0, returns: 0 } } = useQuery({
+    queryKey: ['warehouse_tab_counts'],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('get_warehouse_tab_counts');
+      if (error) {
+        console.error("RPC Error:", error);
+        return { processing: 0, completed: 0, returns: 0 };
+      }
+      return data;
+    },
+    enabled: !!profile?.id,
+    refetchInterval: 60000, 
+  });
 
-      return () => {
-        supabase.removeChannel(sub);
-        window.removeEventListener('orderStatusChanged', localUpdateHandler);
-      };
-    }
-  }, [profile?.id, activeTab, debouncedSearch, page]);
-
-  const fetchTabCounts = async () => {
-    try {
-      const [procReq, compReq, returnsReq] = await Promise.all([
-        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['ready_for_delivery', 'shipped']),
-        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['attempted', 'delivered_partial']).is('is_restocked', false)
-      ]);
-      setTabCounts({ processing: procReq.count || 0, completed: compReq.count || 0, returns: returnsReq.count || 0 });
-    } catch (error) { console.error('Error counting tabs:', error); }
-  };
-
-  const fetchWarehouseOrders = async () => {
-    setLoading(true);
-    try {
-      const { data: driversData } = await supabase.from('user_profiles').select('full_name, contact_number').eq('role', 'driver');
-      setDrivers(driversData || []);
-
+  // 3. Fetch Paginated Orders using N+1 Infinite Cursor Pagination
+  const { data: ordersData, isLoading } = useQuery({
+    queryKey: ['warehouse_orders', activeTab, page, debouncedSearch],
+    queryFn: async () => {
+      // Notice: NO { count: 'exact' } here
       let query = supabase.from('orders').select(`
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( contact_number, email ),
           order_items ( id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, product_variants ( product_id, name, sku, products ( name ) ) )
-        `, { count: 'exact' });
+        `);
 
       if (activeTab === 'processing') query = query.eq('status', 'processing');
       else if (activeTab === 'returns') query = query.in('status', ['attempted', 'delivered_partial']).is('is_restocked', false);
@@ -97,16 +91,126 @@ export default function Warehouse() {
       if (debouncedSearch) query = query.ilike('shipping_name', `%${debouncedSearch}%`);
 
       query = query.order('updated_at', { ascending: false });
-      const from = page * pageSize; const to = from + pageSize - 1;
+      
+      // 🚀 The N+1 Math: Ask for exactly 1 extra row
+      const from = page * pageSize; 
+      const to = from + pageSize;
       query = query.range(from, to);
 
-      const { data, count, error } = await query;
+      const { data, error } = await query;
       if (error) throw error;
       
-      setOrders(data || []); setTotalCount(count || 0);
-    } catch (error) { console.error('Error:', error.message); } finally { setLoading(false); }
-  };
+      return data || [];
+    },
+    placeholderData: keepPreviousData,
+    enabled: !!profile?.id,
+  });
 
+  // 🚀 Process the N+1 Array
+  const hasNextPage = ordersData && ordersData.length > pageSize;
+  const displayOrders = ordersData ? ordersData.slice(0, pageSize) : [];
+
+
+  // ==========================================
+  // 🚀 THROTTLED REAL-TIME SUBSCRIPTION
+  // ==========================================
+  useEffect(() => {
+    if (!profile?.id) return;
+    
+    let debounceTimer;
+    
+    const sub = supabase.channel('warehouse_orders_channel')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
+          queryClient.invalidateQueries({ queryKey: ['warehouse_tab_counts'] });
+        }, 500);
+      }).subscribe();
+      
+    return () => { 
+      clearTimeout(debounceTimer);
+      supabase.removeChannel(sub); 
+    };
+  }, [profile?.id, queryClient]);
+
+
+  // ==========================================
+  // 🚀 REACT QUERY: MUTATIONS
+  // ==========================================
+
+  const markAsReadyMutation = useMutation({
+    mutationFn: async (orderId) => {
+      const { error } = await supabase.from('orders').update({ status: 'ready_for_delivery', updated_at: new Date().toISOString() }).eq('id', orderId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['warehouse_tab_counts'] });
+      if (activeTab === 'processing') setExpandedOrderId(null);
+    },
+    onError: () => alert('Failed to mark as ready.')
+  });
+
+  const reattemptMutation = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.from('orders').update({ status: 'ready_for_delivery', updated_at: new Date().toISOString() }).eq('id', confirmReattempt.orderId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['warehouse_tab_counts'] });
+      setConfirmReattempt({ show: false, orderId: null });
+      setExpandedOrderId(null);
+    },
+    onError: () => alert('Failed to reschedule delivery.')
+  });
+
+  const restockMutation = useMutation({
+    mutationFn: async () => {
+      const { order } = confirmRestock;
+      const isAttempted = order.status?.toLowerCase() === 'attempted';
+      let itemsRestocked = 0;
+
+      for (const item of order.order_items) {
+        const productId = item.product_variants?.product_id;
+        const itemStatus = item.status?.toLowerCase();
+        
+        const shouldRestock = isAttempted ? itemStatus !== 'cancelled' : itemStatus === 'rejected';
+        
+        if (productId && shouldRestock) {
+          const { data: inventoryData, error: fetchError } = await supabase.from('inventory').select('base_units_on_hand').eq('product_id', productId).maybeSingle();
+          if (fetchError) continue; 
+          
+          if (inventoryData && inventoryData.base_units_on_hand !== undefined) {
+             const qtyToReturn = Number(item.total_base_units || item.quantity_variants || 0);
+             const newStock = Number(inventoryData.base_units_on_hand) + qtyToReturn;
+             
+             const { error: updateError } = await supabase.from('inventory').update({ base_units_on_hand: newStock }).eq('product_id', productId);
+             if (!updateError) itemsRestocked++;
+          }
+        }
+      }
+
+      const finalStatus = !isAttempted ? 'delivered' : 'restocked';
+      const { error: orderError } = await supabase.from('orders').update({ is_restocked: true, status: finalStatus, updated_at: new Date().toISOString() }).eq('id', order.id);
+      if (orderError) throw orderError;
+      
+      return { itemsRestocked, orderItemsLength: order.order_items.length };
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['warehouse_tab_counts'] });
+      setConfirmRestock({ show: false, order: null });
+      setExpandedOrderId(null);
+      if (data.itemsRestocked === 0 && data.orderItemsLength > 0) {
+        alert("⚠️ Order was updated, but NO items were restocked in inventory. Please check your Supabase RLS policies for the 'inventory' table!");
+      }
+    },
+    onError: (error) => alert(`Failed to process restock: ${error.message}`)
+  });
+
+  // Helpers
   const getDisplayName = (order) => {
     if (order.companies?.name) return order.patient_name ? `${order.companies.name} - ${order.patient_name}` : order.companies.name;
     return order.shipping_name || order.customer_name || 'Retail Customer';
@@ -123,98 +227,6 @@ export default function Warehouse() {
     const newPickedState = { ...pickedItems };
     activeItems.forEach(item => { newPickedState[item.id] = !isAllPicked; });
     setPickedItems(newPickedState);
-  };
-
-  const markAsReady = async (orderId) => {
-    try {
-      const { error } = await supabase.from('orders').update({ status: 'ready_for_delivery', updated_at: new Date().toISOString() }).eq('id', orderId);
-      if (error) throw error;
-      window.dispatchEvent(new Event('orderStatusChanged'));
-      if (activeTab === 'processing') setExpandedOrderId(null);
-    } catch (error) { alert('Failed to mark as ready.'); }
-  };
-
-  const executeReattempt = async () => {
-    setIsReattempting(true);
-    try {
-      const { error } = await supabase.from('orders').update({ status: 'ready_for_delivery', updated_at: new Date().toISOString() }).eq('id', confirmReattempt.orderId);
-      if (error) throw error;
-      window.dispatchEvent(new Event('orderStatusChanged'));
-      setConfirmReattempt({ show: false, orderId: null });
-      setExpandedOrderId(null);
-    } catch (error) { alert('Failed to reschedule delivery.'); } finally { setIsReattempting(false); }
-  };
-
-  const executeRestock = async () => {
-    const { order } = confirmRestock;
-    setIsRestocking(true);
-    
-    try {
-      const isAttempted = order.status?.toLowerCase() === 'attempted';
-      let itemsRestocked = 0;
-
-      for (const item of order.order_items) {
-        const productId = item.product_variants?.product_id;
-        const itemStatus = item.status?.toLowerCase();
-        
-        const shouldRestock = isAttempted 
-          ? itemStatus !== 'cancelled' 
-          : itemStatus === 'rejected';
-        
-        if (productId && shouldRestock) {
-          const { data: inventoryData, error: fetchError } = await supabase
-            .from('inventory')
-            .select('base_units_on_hand')
-            .eq('product_id', productId)
-            .maybeSingle();
-            
-          if (fetchError) {
-            console.error(`Failed to fetch inventory for product ${productId}:`, fetchError);
-            continue; 
-          }
-          
-          if (inventoryData && inventoryData.base_units_on_hand !== undefined) {
-             const qtyToReturn = Number(item.total_base_units || item.quantity_variants || 0);
-             const newStock = Number(inventoryData.base_units_on_hand) + qtyToReturn;
-             
-             const { error: updateError } = await supabase
-               .from('inventory')
-               .update({ base_units_on_hand: newStock })
-               .eq('product_id', productId);
-               
-             if (updateError) {
-               console.error(`Supabase rejected inventory update for product ${productId}:`, updateError);
-             } else {
-               itemsRestocked++;
-             }
-          }
-        }
-      }
-
-      const finalStatus = !isAttempted ? 'delivered' : 'restocked';
-
-      const { error: orderError } = await supabase.from('orders').update({ 
-        is_restocked: true,
-        status: finalStatus,
-        updated_at: new Date().toISOString() 
-      }).eq('id', order.id);
-
-      if (orderError) throw orderError;
-      
-      window.dispatchEvent(new Event('orderStatusChanged'));
-      setConfirmRestock({ show: false, order: null });
-      setExpandedOrderId(null);
-      
-      if (itemsRestocked === 0 && order.order_items.length > 0) {
-        alert("⚠️ Order was updated, but NO items were restocked in inventory. Please check your Supabase RLS policies for the 'inventory' table!");
-      }
-
-    } catch (error) { 
-      console.error("Restock execution failed:", error);
-      alert(`Failed to process restock: ${error.message}`); 
-    } finally { 
-      setIsRestocking(false); 
-    }
   };
 
   const getBase64ImageFromUrl = (imageUrl) => {
@@ -274,7 +286,6 @@ export default function Warehouse() {
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    // Filter cancelled and rejected out for the actual printed paper packing slip
     const activeItems = order.order_items?.filter(item => item.status?.toLowerCase() !== 'cancelled' && item.status?.toLowerCase() !== 'rejected') || [];
     const tableRows = activeItems.map(item => [
       item.product_variants?.products?.name || item.product_variants?.name || 'Item',
@@ -349,12 +360,12 @@ export default function Warehouse() {
         </div>
       </div>
 
-      {loading ? (
+      {isLoading ? (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
           {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div></div>))}
         </div>
-      ) : orders.length === 0 ? (
+      ) : displayOrders.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm mt-6">
           <Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" />
           <h3 className="text-xl font-bold text-slate-900 mb-2 tracking-tight">Queue is empty</h3>
@@ -374,7 +385,7 @@ export default function Warehouse() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {orders.map(order => {
+              {displayOrders.map(order => {
                 const isExpanded = expandedOrderId === order.id;
                 const shortId = order.id.substring(0, 8).toUpperCase();
                 const isB2B = !!order.company_id;
@@ -478,7 +489,6 @@ export default function Warehouse() {
 
                                       return (
                                         <div key={item.id} onClick={() => order.status === 'processing' && togglePickItem(item.id)} className={`flex items-center justify-between p-4 sm:px-5 sm:py-4 rounded-2xl border transition-all ${order.status === 'processing' ? 'cursor-pointer active:scale-[0.99]' : ''} ${isPicked || isDone ? (isReturn && isItemRejected ? 'bg-red-50/50 border-red-200 shadow-sm' : 'bg-slate-100 border-slate-200 shadow-sm') : 'bg-white border-slate-200 hover:border-slate-300 shadow-sm'}`}>
-                                          {/* 🚀 MODIFIED TEXT WRAP CONTAINER */}
                                           <div className="flex items-center gap-4 sm:gap-5 flex-1 min-w-0 pr-4">
                                             {!isReturn && <div className={`shrink-0 transition-colors ${isPicked || isDone ? 'text-emerald-500' : 'text-slate-300'}`}>{isPicked || isDone ? <CheckSquare size={26} strokeWidth={2} /> : <Square size={26} strokeWidth={2} />}</div>}
                                             {isReturn && <div className={`shrink-0 ${isItemRejected ? 'text-red-400' : 'text-emerald-500'}`}>{isItemRejected ? <Package size={24} strokeWidth={1.5} /> : <CheckCircle2 size={24} strokeWidth={1.5} />}</div>}
@@ -537,10 +547,10 @@ export default function Warehouse() {
                                   {order.status === 'processing' && (
                                     <button 
                                       onClick={() => setConfirmReady({ show: true, orderId: order.id })} 
-                                      disabled={!allItemsPicked || activeItems.length === 0} 
+                                      disabled={!allItemsPicked || activeItems.length === 0 || markAsReadyMutation.isPending} 
                                       className={`w-full py-4 text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-all shadow-md ${allItemsPicked && activeItems.length > 0 ? 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
                                     >
-                                      <Box size={18} /> {allItemsPicked && activeItems.length > 0 ? 'Mark as Ready for Delivery' : 'Pick all items to continue'}
+                                      <Box size={18} /> {markAsReadyMutation.isPending ? 'Processing...' : (allItemsPicked && activeItems.length > 0 ? 'Mark as Ready for Delivery' : 'Pick all items to continue')}
                                     </button>
                                   )}
 
@@ -580,19 +590,31 @@ export default function Warehouse() {
               })}
             </tbody>
           </table>
-
-          {totalCount > pageSize && (
-            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
-              <span className="text-sm font-medium text-slate-500">Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> entries</span>
-              <div className="flex gap-2">
-                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={18} /></button>
-                <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalCount} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={18} /></button>
-              </div>
-            </div>
-          )}
-
         </div>
       )}
+
+      {/* 🚀 ULTIMATE INFINITE PAGINATION UI */}
+      <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
+        <span className="text-sm font-medium text-slate-500">
+          Page {page + 1}: {(page * pageSize) + 1}-{page * pageSize + displayOrders.length}
+        </span>
+        <div className="flex gap-2">
+          <button 
+            onClick={() => setPage(p => Math.max(0, p - 1))} 
+            disabled={page === 0} 
+            className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+          >
+            <ChevronLeft size={18} />
+          </button>
+          <button 
+            onClick={() => setPage(p => p + 1)} 
+            disabled={!hasNextPage} 
+            className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+          >
+            <ChevronRight size={18} />
+          </button>
+        </div>
+      </div>
 
       {/* MODALS */}
       {confirmReady.show && (
@@ -600,7 +622,7 @@ export default function Warehouse() {
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border border-slate-100 animate-in zoom-in-95">
             <div className="w-16 h-16 bg-purple-50 text-purple-600 rounded-full flex items-center justify-center mx-auto mb-4 border border-purple-100 shadow-sm"><Box size={32} /></div>
             <h4 className="text-xl font-bold text-slate-900 tracking-tight">Ready for Delivery?</h4><p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">Confirming this will clear the order from the packing queue and mark it ready for driver dispatch.</p>
-            <div className="flex gap-3 pt-5"><button onClick={() => setConfirmReady({ show: false, orderId: null })} className="w-full py-3.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">Cancel</button><button onClick={() => { markAsReady(confirmReady.orderId); setConfirmReady({ show: false, orderId: null }); }} className="w-full py-3.5 text-white font-bold rounded-xl active:scale-95 transition-all shadow-md bg-slate-900 hover:bg-slate-800">Confirm Ready</button></div>
+            <div className="flex gap-3 pt-5"><button onClick={() => setConfirmReady({ show: false, orderId: null })} className="w-full py-3.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">Cancel</button><button onClick={() => { markAsReadyMutation.mutate(confirmReady.orderId); setConfirmReady({ show: false, orderId: null }); }} className="w-full py-3.5 text-white font-bold rounded-xl active:scale-95 transition-all shadow-md bg-slate-900 hover:bg-slate-800">Confirm Ready</button></div>
           </div>
         </div>
       )}
@@ -612,9 +634,9 @@ export default function Warehouse() {
             <h4 className="text-xl font-bold text-slate-900 tracking-tight">Re-Attempt Delivery?</h4>
             <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">This will push the order back into the dispatch queue for a driver to deliver. Inventory will remain packed.</p>
             <div className="flex gap-3 pt-5">
-              <button onClick={() => setConfirmReattempt({ show: false, orderId: null })} disabled={isReattempting} className="w-full py-3.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">Cancel</button>
-              <button onClick={executeReattempt} disabled={isReattempting} className="w-full py-3.5 text-white font-bold rounded-xl active:scale-95 transition-all shadow-md bg-blue-600 hover:bg-blue-700 disabled:opacity-70 disabled:cursor-not-allowed">
-                {isReattempting ? 'Loading...' : 'Confirm'}
+              <button onClick={() => setConfirmReattempt({ show: false, orderId: null })} disabled={reattemptMutation.isPending} className="w-full py-3.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">Cancel</button>
+              <button onClick={() => reattemptMutation.mutate()} disabled={reattemptMutation.isPending} className="w-full py-3.5 text-white font-bold rounded-xl active:scale-95 transition-all shadow-md bg-blue-600 hover:bg-blue-700 disabled:opacity-70 disabled:cursor-not-allowed">
+                {reattemptMutation.isPending ? 'Loading...' : 'Confirm'}
               </button>
             </div>
           </div>
@@ -628,9 +650,9 @@ export default function Warehouse() {
             <h4 className="text-xl font-bold text-slate-900 tracking-tight">Restock Items?</h4>
             <p className="text-sm text-slate-500 mt-2 font-medium leading-relaxed">Confirming this will update the system inventory and clear these items from the returns queue.</p>
             <div className="flex gap-3 pt-5">
-              <button onClick={() => setConfirmRestock({ show: false, order: null })} disabled={isRestocking} className="w-full py-3.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">Cancel</button>
-              <button onClick={executeRestock} disabled={isRestocking} className="w-full py-3.5 text-white font-bold rounded-xl active:scale-95 transition-all shadow-md bg-slate-900 hover:bg-slate-800 disabled:opacity-70 disabled:cursor-not-allowed">
-                {isRestocking ? 'Restocking...' : 'Confirm Restock'}
+              <button onClick={() => setConfirmRestock({ show: false, order: null })} disabled={restockMutation.isPending} className="w-full py-3.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">Cancel</button>
+              <button onClick={() => restockMutation.mutate()} disabled={restockMutation.isPending} className="w-full py-3.5 text-white font-bold rounded-xl active:scale-95 transition-all shadow-md bg-slate-900 hover:bg-slate-800 disabled:opacity-70 disabled:cursor-not-allowed">
+                {restockMutation.isPending ? 'Restocking...' : 'Confirm Restock'}
               </button>
             </div>
           </div>
