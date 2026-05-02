@@ -81,8 +81,8 @@ export default function Warehouse() {
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( contact_number, email ),
-          order_items ( id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, product_variants ( product_id, name, sku, products ( name ) ) )
-        `);
+          order_items ( id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, product_variants ( product_id, name, sku, multiplier, products ( name ) ) )
+        `); // 🚀 FIX 1: Added 'multiplier' to the select query above
 
       if (activeTab === 'processing') query = query.eq('status', 'processing');
       else if (activeTab === 'returns') query = query.in('status', ['attempted', 'delivered_partial']).is('is_restocked', false);
@@ -183,7 +183,10 @@ export default function Warehouse() {
           if (fetchError) continue; 
           
           if (inventoryData && inventoryData.base_units_on_hand !== undefined) {
-             const qtyToReturn = Number(item.total_base_units || item.quantity_variants || 0);
+             // 🚀 FIX 2: Calculate the exact units to return using the multiplier
+             const variantMultiplier = Number(item.product_variants?.multiplier || 1);
+             const qtyToReturn = Number(item.total_base_units || (item.quantity_variants * variantMultiplier) || 0);
+             
              const newStock = Number(inventoryData.base_units_on_hand) + qtyToReturn;
              
              const { error: updateError } = await supabase.from('inventory').update({ base_units_on_hand: newStock }).eq('product_id', productId);

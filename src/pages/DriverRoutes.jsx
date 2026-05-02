@@ -278,9 +278,10 @@ export default function DriverRoutes() {
   const fetchMyRoutes = async () => {
     setLoading(true);
     try {
+      // 🚀 FIX 1: We added "multiplier" to the product_variants fetch string
       const { data: pendingData, error: pendingError } = await supabase
         .from('orders')
-        .select(`*, companies ( name, address, city, state, zip, phone ), agency_patients ( contact_number ), user_profiles ( full_name, contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, line_total, unit_price, product_variants ( product_id, name, products(name) ) )`)
+        .select(`*, companies ( name, address, city, state, zip, phone ), agency_patients ( contact_number ), user_profiles ( full_name, contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, line_total, unit_price, product_variants ( product_id, name, multiplier, products(name) ) )`)
         .in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery'])
         .ilike('driver_name', `${profile.full_name}%`) 
         .order('created_at', { ascending: true }); 
@@ -527,7 +528,11 @@ export default function DriverRoutes() {
         if (item.status !== 'cancelled' && productId) {
           const { data: invData } = await supabase.from('inventory').select('base_units_on_hand').eq('product_id', productId).single();
           if (invData && invData.base_units_on_hand !== undefined) {
-            const qtyToReturn = Number(item.total_base_units || item.quantity_variants || 0);
+            
+            // 🚀 FIX 2: Calculate the exact units to return using the multiplier
+            const variantMultiplier = Number(item.product_variants?.multiplier || 1);
+            const qtyToReturn = Number(item.total_base_units || (item.quantity_variants * variantMultiplier) || 0);
+            
             const newStock = Number(invData.base_units_on_hand) + qtyToReturn;
             await supabase.from('inventory').update({ base_units_on_hand: newStock }).eq('product_id', productId);
           }
