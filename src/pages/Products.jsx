@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { 
   Bold, Italic, Underline, List, ListOrdered, AlignLeft, AlignCenter, AlignRight, 
   Upload, X, Plus, Image as ImageIcon, Download, FileUp, FileDown, CheckCircle2, 
@@ -8,17 +9,14 @@ import {
 } from 'lucide-react';
 
 export default function Products() {
-  const [products, setProducts] = useState([]);
-  const [categories, setCategories] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+
   const [showForm, setShowForm] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
 
   // SERVER-SIDE PAGINATION, SEARCH, & TABS
   const [page, setPage] = useState(0);
-  const [totalCount, setTotalCount] = useState(0);
   const pageSize = 20;
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -85,15 +83,6 @@ export default function Products() {
   }, [selectedCategory, activeTab]);
 
   useEffect(() => {
-    fetchCategories();
-  }, []);
-
-  useEffect(() => {
-    fetchProducts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearch, selectedCategory, activeTab, page]);
-
-  useEffect(() => {
     if (showForm && editorRef.current) {
       if (editorRef.current.innerHTML !== formData.description) {
         editorRef.current.innerHTML = formData.description || '';
@@ -101,7 +90,6 @@ export default function Products() {
     }
   }, [showForm, formData.description]); 
 
-  // Margin Calculator Helper
   const calculateMargin = (price, cost) => {
     const p = Number(price) || 0;
     const c = Number(cost) || 0;
@@ -109,27 +97,51 @@ export default function Products() {
     return (((p - c) / p) * 100).toFixed(1);
   };
 
-  const fetchCategories = async () => {
-    try {
-      const { data } = await supabase.from('products').select('category').neq('category', null);
-      if (data) {
-        const unique = Array.from(new Set(data.map(d => d.category).filter(Boolean))).sort();
-        setCategories(unique);
-      }
-    } catch (error) {
-      console.error('Error fetching categories:', error);
-    }
+  const showToast = (title, message, isError = false) => {
+    setNotification({ show: true, title, message, isError });
+    setTimeout(() => setNotification({ show: false, title: '', message: '', isError: false }), 4000);
   };
 
-  const fetchProducts = async () => {
-    setLoading(true);
-    try {
+  // ==========================================
+  // 🚀 REACT QUERY: DATA FETCHING
+  // ==========================================
+
+  // 1. Fetch Categories
+  const { data: categories = [] } = useQuery({
+    queryKey: ['admin_categories'],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('get_unique_categories');
+      if (error) throw error;
+      return data || [];
+    },
+    staleTime: 1000 * 60 * 60,
+  });
+
+  // 2. Fetch Tab Counts (Using RPC)
+  const { data: tabCounts = { all: 0, low_stock: 0, out_of_stock: 0 } } = useQuery({
+    queryKey: ['admin_product_tab_counts'],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('get_admin_product_tab_counts');
+      if (error) {
+        console.error("RPC Error:", error);
+        return { all: 0, low_stock: 0, out_of_stock: 0 };
+      }
+      return data;
+    },
+    refetchInterval: 60000, 
+  });
+
+  // 3. Fetch Paginated Products (N+1)
+  const { data: productsData, isPending: loading } = useQuery({
+    queryKey: ['admin_products', activeTab, selectedCategory, debouncedSearch, page],
+    queryFn: async () => {
+      // Notice: NO { count: 'exact' } here
       let query = supabase.from('products').select(`
           *,
           unit_cost,
           inventory!inner ( base_units_on_hand, base_units_reserved ),
           product_variants ( id, name, multiplier, sku, price, unit_cost )
-        `, { count: 'exact' });
+        `);
 
       if (debouncedSearch) {
         query = query.or(`name.ilike.%${debouncedSearch}%,base_sku.ilike.%${debouncedSearch}%`);
@@ -147,32 +159,127 @@ export default function Products() {
 
       query = query.order('name');
 
+      // N+1 Math
       const from = page * pageSize;
-      const to = from + pageSize - 1;
+      const to = from + pageSize; 
       query = query.range(from, to);
 
-      const { data, count, error } = await query;
+      const { data, error } = await query;
       if (error) throw error;
       
-      setProducts(data || []);
-      setTotalCount(count || 0);
+      return data || [];
+    },
+    placeholderData: keepPreviousData,
+  });
 
-    } catch (error) {
-      console.error('Error fetching products:', error.message);
-    } finally {
-      setLoading(false);
+  // 🚀 Process N+1 Array
+  const hasNextPage = productsData && productsData.length > pageSize;
+  const products = productsData ? productsData.slice(0, pageSize) : [];
+
+
+  // ==========================================
+  // 🚀 REACT QUERY: MUTATIONS
+  // ==========================================
+
+  const saveProductMutation = useMutation({
+    mutationFn: async () => {
+      let productId = editingId;
+      const parsedUnitCost = formData.unit_cost === '' || formData.unit_cost === null ? 0 : Number(formData.unit_cost);
+      
+      const productPayload = {
+        name: formData.name, 
+        description: formData.description, 
+        base_sku: formData.base_sku,
+        retail_base_price: Number(formData.retail_base_price) || 0, 
+        unit_cost: parsedUnitCost, 
+        base_unit_name: formData.base_unit_name, 
+        manufacturer: formData.manufacturer, 
+        category: formData.category, 
+        continue_selling: formData.continue_selling, 
+        image_urls: existingPhotos
+      };
+
+      if (editingId) {
+        const { data: updateData, error: updateError } = await supabase.from('products').update(productPayload).eq('id', editingId).select();
+        if (updateError) throw new Error(updateError.message);
+        if (!updateData || updateData.length === 0) throw new Error("Update blocked by database security (RLS). Ensure your SQL policies are updated.");
+        
+        await supabase.from('inventory').update({ base_units_on_hand: Number(formData.initial_stock) }).eq('product_id', editingId);
+      } else {
+        const { data: newProduct, error: productError } = await supabase.from('products').insert(productPayload).select().single();
+        if (productError) throw new Error(productError.message);
+        productId = newProduct.id;
+        await supabase.from('inventory').insert({ product_id: productId, base_units_on_hand: Number(formData.initial_stock), base_units_reserved: 0 });
+      }
+
+      if (deletedVariantIds.length > 0) await supabase.from('product_variants').delete().in('id', deletedVariantIds);
+
+      if (variants.length > 0) {
+        const existingVariants = variants.filter(v => v.id).map(v => ({ 
+          id: v.id, product_id: productId, name: v.name, sku: v.sku, 
+          multiplier: Number(v.multiplier), 
+          unit_cost: v.unit_cost === '' ? 0 : Number(v.unit_cost), 
+          price: v.price === '' ? 0 : Number(v.price) 
+        }));
+        const newVariants = variants.filter(v => !v.id).map(v => ({ 
+          product_id: productId, name: v.name, sku: v.sku, 
+          multiplier: Number(v.multiplier), 
+          unit_cost: v.unit_cost === '' ? 0 : Number(v.unit_cost), 
+          price: v.price === '' ? 0 : Number(v.price) 
+        }));
+        
+        if (existingVariants.length > 0) {
+          const { error: existingError } = await supabase.from('product_variants').upsert(existingVariants);
+          if (existingError) throw new Error(existingError.message);
+        }
+        if (newVariants.length > 0) {
+          const { error: newError } = await supabase.from('product_variants').insert(newVariants);
+          if (newError) throw new Error(newError.message);
+        }
+      } else if (!editingId) {
+        const { error: variantError } = await supabase.from('product_variants').insert({
+          product_id: productId, name: `1x ${formData.base_unit_name || 'Unit'}`, sku: `${formData.base_sku}-1`, 
+          multiplier: 1, 
+          unit_cost: parsedUnitCost, 
+          price: formData.retail_base_price === '' ? 0 : Number(formData.retail_base_price)
+        });
+        if (variantError) throw new Error(variantError.message);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin_products'] });
+      queryClient.invalidateQueries({ queryKey: ['admin_categories'] });
+      queryClient.invalidateQueries({ queryKey: ['admin_product_tab_counts'] });
+      setShowForm(false); 
+      showToast(editingId ? 'Product Updated' : 'Product Created', 'Catalog has been successfully updated.');
+    },
+    onError: (error) => {
+      showToast('Save Failed', error.message, true);
     }
-  };
+  });
 
+  const deleteProductMutation = useMutation({
+    mutationFn: async (id) => {
+      await supabase.from('inventory').delete().eq('product_id', id);
+      await supabase.from('product_variants').delete().eq('product_id', id);
+      const { error } = await supabase.from('products').delete().eq('id', id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin_products'] });
+      queryClient.invalidateQueries({ queryKey: ['admin_product_tab_counts'] });
+      showToast('Product Deleted', 'The product and its variants were successfully removed.');
+    },
+    onError: () => {
+      showToast('Delete Error', 'Cannot delete this product. It is likely linked to an existing customer order.', true);
+    }
+  });
+
+
+  // --- HELPERS ---
   const toggleRow = (id) => setExpandedRows(prev => ({ ...prev, [id]: !prev[id] }));
 
-  const showToast = (title, message, isError = false) => {
-    setNotification({ show: true, title, message, isError });
-    setTimeout(() => setNotification({ show: false, title: '', message: '', isError: false }), 4000);
-  };
-
   // --- 🚀 IMPORT/EXPORT Logic ---
-
   const parseCSVLine = (text) => {
     let ret = [], inQuote = false, value = '';
     for (let i = 0; i < text.length; i++) {
@@ -241,7 +348,6 @@ export default function Products() {
     try {
       const text = await file.text();
       const lines = text.split('\n').filter(line => line.trim() !== '');
-      
       let importedCount = 0;
 
       for (let i = 1; i < lines.length; i++) {
@@ -259,7 +365,6 @@ export default function Products() {
         }).select().single();
 
         if (productError) continue;
-        
         importedCount++;
 
         await supabase.from('inventory').insert({ product_id: newProduct.id, base_units_on_hand: Number(stock) || 0, base_units_reserved: 0 });
@@ -269,8 +374,9 @@ export default function Products() {
         });
       }
       showToast('Import Complete', `Successfully imported ${importedCount} products!`);
-      fetchProducts();
-      fetchCategories(); 
+      queryClient.invalidateQueries({ queryKey: ['admin_products'] });
+      queryClient.invalidateQueries({ queryKey: ['admin_categories'] });
+      queryClient.invalidateQueries({ queryKey: ['admin_product_tab_counts'] });
     } catch (error) {
       showToast('Import Failed', 'Failed to parse CSV.', true);
     } finally {
@@ -410,114 +516,15 @@ export default function Products() {
     setConfirmAction({
       show: true, title: editingId ? 'Save Changes' : 'Create Product',
       message: editingId ? 'Save these changes to the catalog?' : 'Add this new product to the catalog?',
-      onConfirm: () => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); executeSaveProduct(); }
+      onConfirm: () => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); saveProductMutation.mutate(); }
     });
-  };
-
-  const executeSaveProduct = async () => {
-    setSaving(true);
-    try {
-      let productId = editingId;
-      
-      const parsedUnitCost = formData.unit_cost === '' || formData.unit_cost === null ? 0 : Number(formData.unit_cost);
-      
-      const productPayload = {
-        name: formData.name, 
-        description: formData.description, 
-        base_sku: formData.base_sku,
-        retail_base_price: Number(formData.retail_base_price) || 0, 
-        unit_cost: parsedUnitCost, 
-        base_unit_name: formData.base_unit_name, 
-        manufacturer: formData.manufacturer, 
-        category: formData.category, 
-        continue_selling: formData.continue_selling, 
-        image_urls: existingPhotos
-      };
-
-      if (editingId) {
-        const { data: updateData, error: updateError } = await supabase
-          .from('products')
-          .update(productPayload)
-          .eq('id', editingId)
-          .select();
-          
-        if (updateError) throw new Error(updateError.message);
-        
-        if (!updateData || updateData.length === 0) {
-           throw new Error("Update blocked by database security (RLS). Ensure your SQL policies are updated.");
-        }
-        
-        await supabase.from('inventory').update({ base_units_on_hand: Number(formData.initial_stock) }).eq('product_id', editingId);
-      } else {
-        const { data: newProduct, error: productError } = await supabase.from('products').insert(productPayload).select().single();
-        if (productError) throw new Error(productError.message);
-        productId = newProduct.id;
-        await supabase.from('inventory').insert({ product_id: productId, base_units_on_hand: Number(formData.initial_stock), base_units_reserved: 0 });
-      }
-
-      if (deletedVariantIds.length > 0) await supabase.from('product_variants').delete().in('id', deletedVariantIds);
-
-      if (variants.length > 0) {
-        const existingVariants = variants.filter(v => v.id).map(v => ({ 
-          id: v.id, product_id: productId, name: v.name, sku: v.sku, 
-          multiplier: Number(v.multiplier), 
-          unit_cost: v.unit_cost === '' ? 0 : Number(v.unit_cost), 
-          price: v.price === '' ? 0 : Number(v.price) 
-        }));
-        const newVariants = variants.filter(v => !v.id).map(v => ({ 
-          product_id: productId, name: v.name, sku: v.sku, 
-          multiplier: Number(v.multiplier), 
-          unit_cost: v.unit_cost === '' ? 0 : Number(v.unit_cost), 
-          price: v.price === '' ? 0 : Number(v.price) 
-        }));
-        if (existingVariants.length > 0) {
-          const { error: existingError } = await supabase.from('product_variants').upsert(existingVariants);
-          if (existingError) throw new Error(existingError.message);
-        }
-        if (newVariants.length > 0) {
-          const { error: newError } = await supabase.from('product_variants').insert(newVariants);
-          if (newError) throw new Error(newError.message);
-        }
-      } else if (!editingId) {
-        const { error: variantError } = await supabase.from('product_variants').insert({
-          product_id: productId, name: `1x ${formData.base_unit_name || 'Unit'}`, sku: `${formData.base_sku}-1`, 
-          multiplier: 1, 
-          unit_cost: parsedUnitCost, 
-          price: formData.retail_base_price === '' ? 0 : Number(formData.retail_base_price)
-        });
-        if (variantError) throw new Error(variantError.message);
-      }
-
-      setShowForm(false); 
-      fetchProducts();
-      fetchCategories();
-      showToast(editingId ? 'Product Updated' : 'Product Created', 'Catalog has been successfully updated.');
-    } catch (error) {
-      showToast('Save Failed', error.message, true);
-    } finally {
-      setSaving(false);
-    }
   };
 
   const handleDelete = (id) => {
     setConfirmAction({
       show: true, title: 'Delete Product', 
       message: 'Are you sure you want to completely remove this product? This action cannot be undone.',
-      onConfirm: async () => {
-        setConfirmAction({ show: false, title: '', message: '', onConfirm: null });
-        try {
-          await supabase.from('inventory').delete().eq('product_id', id);
-          await supabase.from('product_variants').delete().eq('product_id', id);
-          
-          const { error } = await supabase.from('products').delete().eq('id', id);
-          if (error) throw error;
-          
-          fetchProducts();
-          showToast('Product Deleted', 'The product and its variants were successfully removed.');
-        } catch (error) {
-          showToast('Delete Error', 'Cannot delete this product. It is likely linked to an existing customer order.', true);
-        }
-      }
+      onConfirm: () => { setConfirmAction({ show: false, title: '', message: '', onConfirm: null }); deleteProductMutation.mutate(id); }
     });
   };
 
@@ -558,9 +565,9 @@ export default function Products() {
       {/* Filters Row */}
       <div className="flex flex-col sm:flex-row gap-3 bg-white p-3 rounded-2xl border border-slate-200 shadow-sm z-30">
         <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full sm:w-auto overflow-x-auto shrink-0">
-          <button onClick={() => setActiveTab('all')} className={activeTab === 'all' ? tabActiveClass : tabInactiveClass}><Layers size={16}/> All</button>
-          <button onClick={() => setActiveTab('low_stock')} className={activeTab === 'low_stock' ? tabActiveClass : tabInactiveClass}><AlertTriangle size={16}/> Low Stock</button>
-          <button onClick={() => setActiveTab('out_of_stock')} className={activeTab === 'out_of_stock' ? tabActiveClass : tabInactiveClass}><AlertCircle size={16}/> Out of Stock</button>
+          <button onClick={() => setActiveTab('all')} className={activeTab === 'all' ? tabActiveClass : tabInactiveClass}><Layers size={16}/> All ({tabCounts.all})</button>
+          <button onClick={() => setActiveTab('low_stock')} className={activeTab === 'low_stock' ? tabActiveClass : tabInactiveClass}><AlertTriangle size={16}/> Low Stock ({tabCounts.low_stock})</button>
+          <button onClick={() => setActiveTab('out_of_stock')} className={activeTab === 'out_of_stock' ? tabActiveClass : tabInactiveClass}><AlertCircle size={16}/> Out of Stock ({tabCounts.out_of_stock})</button>
         </div>
         <div className="relative flex-1">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -726,17 +733,15 @@ export default function Products() {
           </div>
 
           {/* 🚀 PAGINATION CONTROLS */}
-          {totalCount > pageSize && (
-            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
-              <span className="text-sm font-medium text-slate-500">
-                Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> products
-              </span>
-              <div className="flex gap-2">
-                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={18} /></button>
-                <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalCount} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={18} /></button>
-              </div>
+          <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
+            <span className="text-sm font-medium text-slate-500">
+              Page {page + 1}: {(page * pageSize) + 1}-{page * pageSize + products.length}
+            </span>
+            <div className="flex gap-2">
+              <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronLeft size={18} /></button>
+              <button onClick={() => setPage(p => p + 1)} disabled={!hasNextPage} className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"><ChevronRight size={18} /></button>
             </div>
-          )}
+          </div>
 
         </div>
       )}
@@ -837,7 +842,6 @@ export default function Products() {
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('justifyRight'); }} className={getFormatClass(activeFormats.alignRight)}><AlignRight size={16}/></button>
                     <div className="w-px h-5 bg-slate-200 mx-2"></div>
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('insertUnorderedList'); }} className={getFormatClass(activeFormats.unorderedList)}><List size={16}/></button>
-                    {/* 🚀 TYPO FIXED HERE: <ListOrdered /> */}
                     <button type="button" onMouseDown={(e) => { e.preventDefault(); formatText('insertOrderedList'); }} className={getFormatClass(activeFormats.orderedList)}><ListOrdered size={16}/></button>
                   </div>
                   <div ref={editorRef} contentEditable onInput={handleEditorInput} onKeyDown={handleEditorKeyDown} onKeyUp={checkFormats} onMouseUp={checkFormats} onClick={checkFormats} className="p-4 min-h-[100px] max-h-[250px] overflow-y-auto outline-none text-sm text-slate-700 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:mt-1 leading-relaxed" />
@@ -933,7 +937,7 @@ export default function Products() {
 
             <div className="shrink-0 border-t border-slate-100 p-6 flex justify-end gap-3 bg-white">
               <button type="button" onClick={() => setShowForm(false)} className="w-full sm:w-auto px-6 py-3 text-sm font-bold text-slate-700 bg-white hover:bg-slate-50 active:scale-95 rounded-xl transition-all border border-slate-200 shadow-sm">Cancel</button>
-              <button type="submit" disabled={saving} className="w-full sm:w-auto px-8 py-3 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-800 active:scale-95 shadow-md disabled:opacity-50 transition-all">{saving ? 'Saving...' : 'Save Product'}</button>
+              <button type="submit" disabled={saveProductMutation.isPending} className="w-full sm:w-auto px-8 py-3 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-800 active:scale-95 shadow-md disabled:opacity-50 transition-all">{saveProductMutation.isPending ? 'Saving...' : 'Save Product'}</button>
             </div>
           </form>
         </div>
