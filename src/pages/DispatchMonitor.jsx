@@ -1,17 +1,21 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { 
   Truck, Navigation, CheckCircle2, Clock, MapPin, 
-  User, Image as ImageIcon, PenTool, X, Search,
-  AlertTriangle, XCircle, ChevronDown, Car, PackageCheck, CreditCard, Package
+  User, Image as ImageIcon, X, Search,
+  AlertTriangle, XCircle, ChevronDown, Car, PackageCheck, CreditCard, Package,
+  ChevronLeft, ChevronRight
 } from 'lucide-react';
 
 export default function DispatchMonitor() {
-  const [deliveries, setDeliveries] = useState([]);
-  const [fleetVehicles, setFleetVehicles] = useState([]);
-  const [drivers, setDrivers] = useState([]); 
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+  
+  const [page, setPage] = useState(0);
+  const pageSize = 20;
+  
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   
   const [activeTab, setActiveTab] = useState('needs_dispatch');
   const [selectedPod, setSelectedPod] = useState(null);
@@ -24,6 +28,17 @@ export default function DispatchMonitor() {
   const [vehicleLicense, setVehicleLicense] = useState('');
   const [notification, setNotification] = useState({ show: false, message: '', isError: false });
 
+  // Debounce Search
+  useEffect(() => {
+    const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
+
+  // Reset page on tab change
+  useEffect(() => {
+    setPage(0);
+  }, [activeTab]);
+
   // Auto-hide notifications
   useEffect(() => {
     if (notification.show) {
@@ -32,22 +47,7 @@ export default function DispatchMonitor() {
     }
   }, [notification.show]);
 
-  useEffect(() => {
-    fetchFleetAndDrivers();
-    fetchDeliveries();
-
-    const sub = supabase.channel('dispatch_updates')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchDeliveries)
-      .subscribe();
-
-    window.addEventListener('orderStatusChanged', fetchDeliveries);
-
-    return () => {
-      supabase.removeChannel(sub);
-      window.removeEventListener('orderStatusChanged', fetchDeliveries);
-    };
-  }, []);
-
+  // Handle local storage markers for badges
   useEffect(() => {
     if (activeTab === 'delivered') {
       localStorage.setItem('lastViewedDelivered', new Date().toISOString());
@@ -57,33 +57,152 @@ export default function DispatchMonitor() {
       localStorage.setItem('lastViewedDispatch', new Date().toISOString());
       window.dispatchEvent(new Event('dispatchViewed'));
     }
-  }, [activeTab, deliveries]);
+  }, [activeTab]);
 
-  const fetchFleetAndDrivers = async () => {
-    const [fleetRes, driversRes] = await Promise.all([
-      supabase.from('vehicles').select('*').order('name', { ascending: true }),
-      supabase.from('user_profiles').select('id, full_name, contact_number, license_number, license_expiry').eq('role', 'driver').order('full_name', { ascending: true }) 
-    ]);
-    setFleetVehicles(fleetRes.data || []);
-    setDrivers(driversRes.data || []);
-  };
+  // ==========================================
+  // 🚀 REACT QUERY: DATA FETCHING
+  // ==========================================
 
-  const fetchDeliveries = async () => {
-    setLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from('orders')
-        .select('*')
-        .in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery', 'delivered', 'cancelled'])
-        .order('updated_at', { ascending: false });
-
+  // 1. Fetch Fleet Vehicles (Cached)
+  const { data: fleetVehicles = [] } = useQuery({
+    queryKey: ['fleet_vehicles'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('vehicles').select('*').order('name', { ascending: true });
       if (error) throw error;
-      setDeliveries(data || []);
-    } catch (error) {
-      console.error('Error fetching dispatch data:', error.message);
-    } finally {
-      setLoading(false);
+      return data || [];
+    },
+    staleTime: Infinity,
+  });
+
+  // 2. Fetch Drivers (Cached)
+  const { data: drivers = [] } = useQuery({
+    queryKey: ['dispatch_drivers'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('user_profiles').select('id, full_name, contact_number, license_number, license_expiry').eq('role', 'driver').order('full_name', { ascending: true });
+      if (error) throw error;
+      return data || [];
+    },
+    staleTime: Infinity,
+  });
+
+  // 3. Fetch Tab Counts via RPC
+  const { data: tabCounts = { needs_dispatch: 0, in_transit: 0, delivered: 0, cancelled: 0 } } = useQuery({
+    queryKey: ['dispatch_tab_counts'],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('get_dispatch_tab_counts');
+      if (error) throw error;
+      return data;
+    },
+    refetchInterval: 60000,
+  });
+
+  // 4. Fetch Paginated Deliveries (N+1)
+  const { data: deliveriesData, isLoading } = useQuery({
+    queryKey: ['dispatch_deliveries', activeTab, page, debouncedSearch],
+    queryFn: async () => {
+      let query = supabase.from('orders').select('*');
+
+      // Server-side Tab Filtering
+      if (activeTab === 'needs_dispatch') query = query.eq('status', 'ready_for_delivery');
+      else if (activeTab === 'in_transit') query = query.in('status', ['shipped', 'out_for_delivery']);
+      else if (activeTab === 'delivered') query = query.eq('status', 'delivered');
+      else if (activeTab === 'cancelled') query = query.eq('status', 'cancelled');
+
+      // Server-side Search Filtering
+      if (debouncedSearch) {
+        const clean = debouncedSearch.trim();
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clean);
+        if (isUUID) {
+          query = query.or(`id.eq.${clean},shipping_name.ilike.%${clean}%,driver_name.ilike.%${clean}%`);
+        } else {
+          query = query.or(`shipping_name.ilike.%${clean}%,driver_name.ilike.%${clean}%`);
+        }
+      }
+
+      query = query.order('updated_at', { ascending: false });
+
+      // N+1 Pagination Math
+      const from = page * pageSize;
+      const to = from + pageSize; 
+      query = query.range(from, to);
+
+      const { data, error } = await query;
+      if (error) throw error;
+      return data || [];
+    },
+    placeholderData: keepPreviousData,
+  });
+
+  // Process N+1 Array
+  const hasNextPage = deliveriesData && deliveriesData.length > pageSize;
+  const displayedDeliveries = deliveriesData ? deliveriesData.slice(0, pageSize) : [];
+
+
+  // ==========================================
+  // 🚀 THROTTLED REAL-TIME SUBSCRIPTION
+  // ==========================================
+  useEffect(() => {
+    let debounceTimer;
+    
+    const sub = supabase.channel('dispatch_updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ['dispatch_deliveries'] });
+          queryClient.invalidateQueries({ queryKey: ['dispatch_tab_counts'] });
+        }, 500);
+      }).subscribe();
+      
+    return () => { 
+      clearTimeout(debounceTimer);
+      supabase.removeChannel(sub); 
+    };
+  }, [queryClient]);
+
+  // ==========================================
+  // 🚀 REACT QUERY: MUTATIONS
+  // ==========================================
+  const assignDriverMutation = useMutation({
+    mutationFn: async () => {
+      const assignedDriverObj = drivers.find(d => d.full_name === driverName);
+      const driverPhone = assignedDriverObj?.contact_number || '';
+      const finalDriverName = driverPhone ? `${driverName} | ${driverPhone}` : driverName;
+
+      const { data, error } = await supabase.from('orders').update({ 
+        driver_name: finalDriverName || null, vehicle_name: vehicleName || null, 
+        vehicle_license: vehicleLicense || null, status: 'shipped', 
+        updated_at: new Date().toISOString(),
+        shipped_at: new Date().toISOString()
+      })
+      .eq('id', assigningOrder.id)
+      .eq('status', assigningOrder.status)
+      .select();
+      
+      if (error) throw error;
+      if (data && data.length === 0) throw new Error('Action Blocked: Another user already modified this order.');
+      
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dispatch_deliveries'] });
+      queryClient.invalidateQueries({ queryKey: ['dispatch_tab_counts'] });
+      setAssigningOrder(null);
+      setNotification({ show: true, isError: false, message: 'Driver assigned and order shipped successfully!' });
+      window.dispatchEvent(new Event('orderStatusChanged'));
+    },
+    onError: (error) => {
+      setNotification({ show: true, isError: true, message: `Failed to dispatch: ${error.message}` });
     }
+  });
+
+  const confirmAssignment = (e) => {
+    e.preventDefault(); 
+    if (!assigningOrder) return;
+    if (!vehicleName) {
+      setNotification({ show: true, isError: true, message: 'You must select a vehicle.' });
+      return;
+    }
+    assignDriverMutation.mutate();
   };
 
   const openAssignModal = (order) => {
@@ -100,64 +219,12 @@ export default function DispatchMonitor() {
       setVehicleName(selectedVehicle.name); 
       setVehicleType(selectedVehicle.type); 
       setVehicleLicense(selectedVehicle.license_plate || ''); 
-    }
-    else { 
+    } else { 
       setVehicleName(''); 
       setVehicleType('Cargo Van'); 
       setVehicleLicense(''); 
     }
   };
-
-  const confirmAssignment = async (e) => {
-    e.preventDefault(); 
-    if (!assigningOrder) return;
-    if (!vehicleName) {
-      setNotification({ show: true, isError: true, message: 'You must select a vehicle.' });
-      return;
-    }
-
-    try {
-      const assignedDriverObj = drivers.find(d => d.full_name === driverName);
-      const driverPhone = assignedDriverObj?.contact_number || '';
-      const finalDriverName = driverPhone ? `${driverName} | ${driverPhone}` : driverName;
-
-      const { data, error } = await supabase.from('orders').update({ 
-        driver_name: finalDriverName || null, vehicle_name: vehicleName || null, 
-        vehicle_license: vehicleLicense || null, status: 'shipped', 
-        updated_at: new Date().toISOString(),
-        shipped_at: new Date().toISOString()
-      })
-      .eq('id', assigningOrder.id)
-      .eq('status', assigningOrder.status)
-      .select();
-      
-      if (error) throw error;
-
-      if (data && data.length === 0) {
-        setAssigningOrder(null);
-        setNotification({ show: true, isError: true, message: 'Action Blocked: Another user already modified this order.' });
-        fetchDeliveries();
-        return;
-      }
-      
-      setAssigningOrder(null);
-      setNotification({ show: true, isError: false, message: 'Driver assigned and order shipped successfully!' });
-      window.dispatchEvent(new Event('orderStatusChanged'));
-    } catch (error) { setNotification({ show: true, isError: true, message: `Failed to dispatch: ${error.message}` }); }
-  };
-
-  const displayedDeliveries = deliveries.filter(d => {
-    let matchesTab = false;
-    if (activeTab === 'needs_dispatch') matchesTab = d.status === 'ready_for_delivery';
-    if (activeTab === 'in_transit') matchesTab = ['shipped', 'out_for_delivery'].includes(d.status);
-    if (activeTab === 'delivered') matchesTab = d.status === 'delivered';
-    if (activeTab === 'cancelled') matchesTab = d.status === 'cancelled';
-      
-    const searchString = `${d.id} ${d.driver_name} ${d.shipping_name}`.toLowerCase();
-    const matchesSearch = searchString.includes(searchTerm.toLowerCase());
-
-    return matchesTab && matchesSearch;
-  });
 
   // --- UI HELPERS ---
   const getInitials = (name) => {
@@ -207,16 +274,16 @@ export default function DispatchMonitor() {
       <div className="flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full lg:w-auto overflow-x-auto shrink-0">
           <button onClick={() => setActiveTab('needs_dispatch')} className={`${tabBaseClass} ${activeTab === 'needs_dispatch' ? activeStyles.needs_dispatch : tabInactiveClass}`}>
-            <PackageCheck size={16}/> Needs Dispatch ({deliveries.filter(d => d.status === 'ready_for_delivery').length})
+            <PackageCheck size={16}/> Needs Dispatch ({tabCounts.needs_dispatch})
           </button>
           <button onClick={() => setActiveTab('in_transit')} className={`${tabBaseClass} ${activeTab === 'in_transit' ? activeStyles.in_transit : tabInactiveClass}`}>
-            <Truck size={16}/> In Transit ({deliveries.filter(d => ['shipped', 'out_for_delivery'].includes(d.status)).length})
+            <Truck size={16}/> In Transit ({tabCounts.in_transit})
           </button>
           <button onClick={() => setActiveTab('delivered')} className={`${tabBaseClass} ${activeTab === 'delivered' ? activeStyles.delivered : tabInactiveClass}`}>
-            <CheckCircle2 size={16}/> Delivered ({deliveries.filter(d => d.status === 'delivered').length})
+            <CheckCircle2 size={16}/> Delivered ({tabCounts.delivered})
           </button>
           <button onClick={() => setActiveTab('cancelled')} className={`${tabBaseClass} ${activeTab === 'cancelled' ? activeStyles.cancelled : tabInactiveClass}`}>
-            <AlertTriangle size={16}/> Exceptions ({deliveries.filter(d => d.status === 'cancelled').length})
+            <AlertTriangle size={16}/> Exceptions ({tabCounts.cancelled})
           </button>
         </div>
         <div className="relative w-full lg:w-80 shrink-0">
@@ -226,9 +293,10 @@ export default function DispatchMonitor() {
       </div>
 
       {/* Main Content Area */}
-      {loading ? (
-        <div className="flex justify-center items-center py-20">
-          <div className="w-8 h-8 border-4 border-slate-900 border-t-transparent rounded-full animate-spin"></div>
+      {isLoading ? (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden mt-6">
+          <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
+          {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div></div>))}
         </div>
       ) : displayedDeliveries.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm mt-6">
@@ -338,6 +406,29 @@ export default function DispatchMonitor() {
               })}
             </tbody>
           </table>
+
+          {/* 🚀 ULTIMATE INFINITE PAGINATION UI */}
+          <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
+            <span className="text-sm font-medium text-slate-500">
+              Page {page + 1}: {(page * pageSize) + 1}-{page * pageSize + displayedDeliveries.length}
+            </span>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setPage(p => Math.max(0, p - 1))} 
+                disabled={page === 0} 
+                className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <button 
+                onClick={() => setPage(p => p + 1)} 
+                disabled={!hasNextPage} 
+                className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+              >
+                <ChevronRight size={18} />
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -417,7 +508,6 @@ export default function DispatchMonitor() {
                   <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
                 </div>
 
-                {/* 🚀 TABLE-LIKE DETAILED VEHICLE INFO */}
                 {selectedVehicleObj && (
                   <div className="mt-3 p-4 bg-blue-50/30 border border-blue-100 rounded-2xl animate-in fade-in slide-in-from-top-1">
                     <div className="flex items-center gap-1.5 mb-3 text-[10px] font-bold text-blue-600 uppercase tracking-widest">
@@ -467,9 +557,9 @@ export default function DispatchMonitor() {
               </div>
 
               <div className="pt-4 flex gap-3">
-                <button type="button" onClick={() => setAssigningOrder(null)} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-semibold rounded-xl hover:bg-slate-50 active:scale-95 transition-all">Cancel</button>
-                <button type="submit" disabled={!vehicleName || isLicenseExpired} className={`w-full py-3 text-sm text-white font-semibold rounded-xl flex justify-center gap-2 items-center active:scale-95 transition-all ${!vehicleName || isLicenseExpired ? 'bg-slate-300 cursor-not-allowed' : 'bg-slate-900 hover:bg-slate-800 shadow-md'}`}>
-                  Confirm Dispatch
+                <button type="button" onClick={() => setAssigningOrder(null)} disabled={assignDriverMutation.isPending} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-semibold rounded-xl hover:bg-slate-50 active:scale-95 transition-all">Cancel</button>
+                <button type="submit" disabled={!vehicleName || isLicenseExpired || assignDriverMutation.isPending} className={`w-full py-3 text-sm text-white font-semibold rounded-xl flex justify-center gap-2 items-center active:scale-95 transition-all ${!vehicleName || isLicenseExpired || assignDriverMutation.isPending ? 'bg-slate-300 cursor-not-allowed' : 'bg-slate-900 hover:bg-slate-800 shadow-md'}`}>
+                  {assignDriverMutation.isPending ? 'Processing...' : 'Confirm Dispatch'}
                 </button>
               </div>
 
