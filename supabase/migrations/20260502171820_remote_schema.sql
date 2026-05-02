@@ -2734,3 +2734,35 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 
 
 
+drop extension if exists "pg_net";
+
+CREATE TRIGGER on_auth_user_created AFTER INSERT ON auth.users FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+
+  create policy "Allow All Authenticated Uploads 1uh8lhk_0"
+  on "storage"."objects"
+  as permissive
+  for insert
+  to authenticated
+with check ((bucket_id = 'product_images'::text));
+
+
+
+  create policy "Allow Authenticated Uploads dsl9k8_1"
+  on "storage"."objects"
+  as permissive
+  for insert
+  to authenticated
+with check ((bucket_id = 'delivery-proofs'::text));
+
+
+
+  create policy "Allow Authenticated Uploads dsl9k8_2"
+  on "storage"."objects"
+  as permissive
+  for update
+  to authenticated
+using ((bucket_id = 'delivery-proofs'::text));
+
+
+
