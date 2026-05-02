@@ -163,7 +163,6 @@ export default function Checkout() {
     return () => clearTimeout(timeoutId);
   }, [isB2B, profile?.companies?.tax_exempt, selectedPatient?.zip, retailInfo?.zip, shipToAgency, profile?.companies?.zip]);
 
-  // 🚀 FAILSAFE ADDED HERE: Prevents UI freeze if a patient's name is accidentally null in the DB
   const filteredPatients = patients.filter(p => {
     const safeName = p.full_name || '';
     return safeName.toLowerCase().includes((patientSearch || '').toLowerCase());
@@ -214,6 +213,7 @@ export default function Checkout() {
       const sEmail = isB2B ? (shipToAgency ? profile?.companies?.email : selectedPatient.email) : retailInfo.email;
       const sPhone = isB2B ? (shipToAgency ? (profile?.companies?.phone || profile?.contact_number) : (selectedPatient.phone || selectedPatient.contact_number)) : retailInfo.phone;
 
+      // 1. Create the base order
       const { data: order, error: orderError } = await supabase.from('orders').insert({
           user_id: profile.id, 
           company_id: profile.company_id || null, 
@@ -231,10 +231,29 @@ export default function Checkout() {
 
       if (orderError) throw orderError;
 
-      const orderItems = cart.map(item => ({
-        order_id: order.id, product_variant_id: item.variant_id, quantity_variants: item.quantity,
-        total_base_units: item.quantity * (item.multiplier || 1), unit_price: item.unit_price, line_total: item.line_total
-      }));
+      // 2. Fetch fresh multipliers straight from the database to ensure perfect accuracy
+      const variantIds = cart.map(item => item.variant_id);
+      const { data: variantsData, error: variantsError } = await supabase
+        .from('product_variants')
+        .select('id, multiplier')
+        .in('id', variantIds);
+        
+      if (variantsError) throw variantsError;
+
+      // 3. Map the order items using the true database multiplier
+      const orderItems = cart.map(item => {
+        const dbVariant = variantsData?.find(v => v.id === item.variant_id);
+        const actualMultiplier = dbVariant?.multiplier || 1;
+
+        return {
+          order_id: order.id, 
+          product_variant_id: item.variant_id, 
+          quantity_variants: item.quantity, // 🚀 FIXED: Reverted back to your actual column name!
+          total_base_units: item.quantity * actualMultiplier, // Perfect math for your trigger!
+          unit_price: item.unit_price, 
+          line_total: item.line_total
+        };
+      });
 
       const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
       if (itemsError) throw itemsError;
@@ -315,7 +334,7 @@ export default function Checkout() {
                   </div>
                 </div>
 
-                {/* B2B SHIP TO CARD - 🚀 REMOVED overflow-hidden so the dropdown can overlay the page! */}
+                {/* B2B SHIP TO CARD */}
                 <div className="border border-slate-200 rounded-2xl bg-white shadow-sm flex flex-col h-full transition-all duration-300">
                   <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex justify-between items-center rounded-t-2xl">
                     <div className="flex items-center gap-2">
@@ -353,7 +372,6 @@ export default function Checkout() {
                       </div>
                     ) : (
                       !selectedPatient ? (
-                        // 🚀 ENTERPRISE SEARCHABLE COMBOBOX
                         <div className="relative animate-in fade-in" ref={dropdownRef}>
                           <div 
                             onClick={() => setShowDropdown(!showDropdown)}
@@ -369,7 +387,7 @@ export default function Checkout() {
                             <div className="absolute z-50 w-full mt-2 bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden">
                               <div 
                                 className="p-3 border-b border-slate-100 flex items-center gap-2 bg-slate-50"
-                                onClick={(e) => e.stopPropagation()} // 🚀 Prevents focus bug!
+                                onClick={(e) => e.stopPropagation()} 
                               >
                                 <Search size={16} className="text-slate-400 ml-1 shrink-0" />
                                 <input
@@ -451,7 +469,7 @@ export default function Checkout() {
               </div>
             </div>
           ) : (
-            // 🚀 RETAIL CHECKOUT (UPDATED TO CARD LAYOUT)
+            // RETAIL CHECKOUT
             <div className="space-y-4">
               {isEditingRetail ? (
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden animate-in fade-in slide-in-from-top-2 duration-300">

@@ -9,6 +9,9 @@ import {
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { toast } from "sonner";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 export default function Warehouse() {
   const { profile } = useAuth();
@@ -28,24 +31,17 @@ export default function Warehouse() {
   const [confirmRestock, setConfirmRestock] = useState({ show: false, order: null });
   const [confirmReattempt, setConfirmReattempt] = useState({ show: false, orderId: null });
 
-  // Debounce Search
   useEffect(() => {
     const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
-  // Reset state on tab change
   useEffect(() => {
     setPage(0);
     setExpandedOrderId(null);
     setPickedItems({});
   }, [activeTab]);
 
-  // ==========================================
-  // 🚀 REACT QUERY: DATA FETCHING
-  // ==========================================
-
-  // 1. Fetch Drivers (Cached heavily)
   const { data: drivers = [] } = useQuery({
     queryKey: ['warehouse_drivers'],
     queryFn: async () => {
@@ -56,7 +52,6 @@ export default function Warehouse() {
     staleTime: Infinity,
   });
 
-  // 2. Fetch Tab Counts (Using RPC)
   const { data: tabCounts = { processing: 0, completed: 0, returns: 0 } } = useQuery({
     queryKey: ['warehouse_tab_counts'],
     queryFn: async () => {
@@ -71,18 +66,16 @@ export default function Warehouse() {
     refetchInterval: 60000, 
   });
 
-  // 3. Fetch Paginated Orders using N+1 Infinite Cursor Pagination
   const { data: ordersData, isLoading } = useQuery({
     queryKey: ['warehouse_orders', activeTab, page, debouncedSearch],
     queryFn: async () => {
-      // Notice: NO { count: 'exact' } here
       let query = supabase.from('orders').select(`
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( contact_number, email ),
           order_items ( id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, product_variants ( product_id, name, sku, multiplier, products ( name ) ) )
-        `); // 🚀 FIX 1: Added 'multiplier' to the select query above
+        `);
 
       if (activeTab === 'processing') query = query.eq('status', 'processing');
       else if (activeTab === 'returns') query = query.in('status', ['attempted', 'delivered_partial']).is('is_restocked', false);
@@ -92,7 +85,6 @@ export default function Warehouse() {
 
       query = query.order('updated_at', { ascending: false });
       
-      // 🚀 The N+1 Math: Ask for exactly 1 extra row
       const from = page * pageSize; 
       const to = from + pageSize;
       query = query.range(from, to);
@@ -106,14 +98,9 @@ export default function Warehouse() {
     enabled: !!profile?.id,
   });
 
-  // 🚀 Process the N+1 Array
   const hasNextPage = ordersData && ordersData.length > pageSize;
   const displayOrders = ordersData ? ordersData.slice(0, pageSize) : [];
 
-
-  // ==========================================
-  // 🚀 THROTTLED REAL-TIME SUBSCRIPTION
-  // ==========================================
   useEffect(() => {
     if (!profile?.id) return;
     
@@ -134,22 +121,18 @@ export default function Warehouse() {
     };
   }, [profile?.id, queryClient]);
 
-
-  // ==========================================
-  // 🚀 REACT QUERY: MUTATIONS
-  // ==========================================
-
   const markAsReadyMutation = useMutation({
     mutationFn: async (orderId) => {
       const { error } = await supabase.from('orders').update({ status: 'ready_for_delivery', updated_at: new Date().toISOString() }).eq('id', orderId);
       if (error) throw error;
     },
     onSuccess: () => {
+      toast.success("Order packed and moved to dispatch!");
       queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
       queryClient.invalidateQueries({ queryKey: ['warehouse_tab_counts'] });
       if (activeTab === 'processing') setExpandedOrderId(null);
     },
-    onError: () => alert('Failed to mark as ready.')
+    onError: (err) => toast.error(`Failed to mark as ready: ${err.message}`)
   });
 
   const reattemptMutation = useMutation({
@@ -158,62 +141,35 @@ export default function Warehouse() {
       if (error) throw error;
     },
     onSuccess: () => {
+      toast.success("Order rescheduled for delivery.");
       queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
       queryClient.invalidateQueries({ queryKey: ['warehouse_tab_counts'] });
       setConfirmReattempt({ show: false, orderId: null });
       setExpandedOrderId(null);
     },
-    onError: () => alert('Failed to reschedule delivery.')
+    onError: (err) => toast.error(`Failed to reschedule delivery: ${err.message}`)
   });
 
   const restockMutation = useMutation({
     mutationFn: async () => {
       const { order } = confirmRestock;
-      const isAttempted = order.status?.toLowerCase() === 'attempted';
-      let itemsRestocked = 0;
-
-      for (const item of order.order_items) {
-        const productId = item.product_variants?.product_id;
-        const itemStatus = item.status?.toLowerCase();
-        
-        const shouldRestock = isAttempted ? itemStatus !== 'cancelled' : itemStatus === 'rejected';
-        
-        if (productId && shouldRestock) {
-          const { data: inventoryData, error: fetchError } = await supabase.from('inventory').select('base_units_on_hand').eq('product_id', productId).maybeSingle();
-          if (fetchError) continue; 
-          
-          if (inventoryData && inventoryData.base_units_on_hand !== undefined) {
-             // 🚀 FIX 2: Calculate the exact units to return using the multiplier
-             const variantMultiplier = Number(item.product_variants?.multiplier || 1);
-             const qtyToReturn = Number(item.total_base_units || (item.quantity_variants * variantMultiplier) || 0);
-             
-             const newStock = Number(inventoryData.base_units_on_hand) + qtyToReturn;
-             
-             const { error: updateError } = await supabase.from('inventory').update({ base_units_on_hand: newStock }).eq('product_id', productId);
-             if (!updateError) itemsRestocked++;
-          }
-        }
-      }
-
-      const finalStatus = !isAttempted ? 'delivered' : 'restocked';
-      const { error: orderError } = await supabase.from('orders').update({ is_restocked: true, status: finalStatus, updated_at: new Date().toISOString() }).eq('id', order.id);
-      if (orderError) throw orderError;
       
-      return { itemsRestocked, orderItemsLength: order.order_items.length };
+      const { error } = await supabase.rpc('process_warehouse_restock', {
+        p_order_id: order.id
+      });
+      
+      if (error) throw error;
     },
-    onSuccess: (data) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
       queryClient.invalidateQueries({ queryKey: ['warehouse_tab_counts'] });
       setConfirmRestock({ show: false, order: null });
       setExpandedOrderId(null);
-      if (data.itemsRestocked === 0 && data.orderItemsLength > 0) {
-        alert("⚠️ Order was updated, but NO items were restocked in inventory. Please check your Supabase RLS policies for the 'inventory' table!");
-      }
+      toast.success("Inventory correctly restocked!");
     },
-    onError: (error) => alert(`Failed to process restock: ${error.message}`)
+    onError: (error) => toast.error(`Failed to process restock: ${error.message}`)
   });
 
-  // Helpers
   const getDisplayName = (order) => {
     if (order.companies?.name) return order.patient_name ? `${order.companies.name} - ${order.patient_name}` : order.companies.name;
     return order.shipping_name || order.customer_name || 'Retail Customer';
@@ -398,7 +354,8 @@ export default function Warehouse() {
                 
                 let activeItems = [];
                 if (activeTab === 'returns' && order.status === 'delivered_partial') {
-                  activeItems = order.order_items?.filter(item => item.status?.toLowerCase() === 'rejected') || [];
+                  // 🚀 THE FIX: Make sure the Returns tab shows both rejected AND successfully restocked items
+                  activeItems = order.order_items?.filter(item => item.status?.toLowerCase() === 'rejected' || item.status?.toLowerCase() === 'restocked') || [];
                 } else {
                   activeItems = order.order_items?.filter(item => item.status?.toLowerCase() !== 'cancelled') || [];
                 }
@@ -488,7 +445,9 @@ export default function Warehouse() {
                                     activeItems.map(item => {
                                       const isPicked = pickedItems[item.id];
                                       const isDone = isOrderDone || isReturn; 
-                                      const isItemRejected = item.status?.toLowerCase() === 'rejected';
+                                      
+                                      // 🚀 THE FIX: This ensures restocked items are perfectly crossed out!
+                                      const isItemRejected = item.status?.toLowerCase() === 'rejected' || item.status?.toLowerCase() === 'restocked';
 
                                       return (
                                         <div key={item.id} onClick={() => order.status === 'processing' && togglePickItem(item.id)} className={`flex items-center justify-between p-4 sm:px-5 sm:py-4 rounded-2xl border transition-all ${order.status === 'processing' ? 'cursor-pointer active:scale-[0.99]' : ''} ${isPicked || isDone ? (isReturn && isItemRejected ? 'bg-red-50/50 border-red-200 shadow-sm' : 'bg-slate-100 border-slate-200 shadow-sm') : 'bg-white border-slate-200 hover:border-slate-300 shadow-sm'}`}>

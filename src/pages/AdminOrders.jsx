@@ -9,7 +9,6 @@ import {
   ChevronLeft, ChevronRight, AlertTriangle, Receipt, Edit3, RefreshCw, Plus
 } from 'lucide-react';
 
-// 🚀 SHADCN UI IMPORTS
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -31,7 +30,7 @@ export default function AdminOrders() {
   const [confirmAction, setConfirmAction] = useState({ show: false, title: '', message: '', onConfirm: null });
   const [cancelReason, setCancelReason] = useState(''); 
 
-  const [itemAction, setItemAction] = useState({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+  const [itemAction, setItemAction] = useState({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' });
   
   const [availableVariants, setAvailableVariants] = useState([]);
   const [substituteSearch, setSubstituteSearch] = useState('');
@@ -39,16 +38,13 @@ export default function AdminOrders() {
 
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
 
-  // Search Debounce
   useEffect(() => {
     const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
-  // Reset page on tab change
   useEffect(() => { setPage(0); }, [activeTab]);
 
-  // Clear "New" pending badge when viewing Pending tab
   useEffect(() => {
     if (activeTab === 'pending') {
       localStorage.setItem('lastViewedPending', new Date().toISOString());
@@ -57,23 +53,18 @@ export default function AdminOrders() {
     }
   }, [activeTab, queryClient]);
 
-  // Fetch variants for the Add/Substitute modal
   useEffect(() => {
     if (itemAction.show && (itemAction.type === 'substitute' || itemAction.type === 'add') && availableVariants.length === 0) {
       const fetchVariants = async () => {
         const { data, error } = await supabase
           .from('product_variants')
-          .select('id, name, price, sku, products(name, base_sku)')
+          .select('id, name, price, sku, multiplier, products(name, base_sku)')
           .order('name', { ascending: true });
         if (!error && data) setAvailableVariants(data);
       };
       fetchVariants();
     }
   }, [itemAction.show, itemAction.type, availableVariants.length]);
-
-  // ==========================================
-  // 🚀 REACT QUERY: DATA FETCHING
-  // ==========================================
 
   const { data: tabCounts = { pending: 0, newPending: 0, processing: 0, shipped: 0, completed: 0, due: 0, paid: 0, cancelled: 0, attempted: 0, restocked: 0 } } = useQuery({
     queryKey: ['admin_tab_counts'],
@@ -97,17 +88,16 @@ export default function AdminOrders() {
     enabled: !!profile?.id
   });
 
-  // 🚀 N+1 INFINITE PAGINATION QUERY (No Exact Count)
   const { data: ordersData, isLoading } = useQuery({
     queryKey: ['admin_orders', activeTab, debouncedSearch, page],
     queryFn: async () => {
-      // Notice: NO { count: 'exact' } here
+      // 🚀 FIX: Reverted to quantity_variants and total_base_units to match your schema exactly
       let query = supabase.from('orders').select(`
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( full_name, contact_number, email ),
-          order_items ( id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, cancellation_reason, product_variants ( id, product_id, name, sku, price, products(name, base_sku) ) )
+          order_items ( id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, cancellation_reason, product_variants ( id, product_id, name, sku, price, multiplier, products(name, base_sku) ) )
         `); 
 
       if (activeTab === 'pending') query = query.eq('status', 'pending');
@@ -132,7 +122,6 @@ export default function AdminOrders() {
 
       const sortColumn = (['completed', 'cancelled', 'paid', 'attempted', 'restocked'].includes(activeTab)) ? 'updated_at' : 'created_at';
       
-      // 🚀 The N+1 Math: Ask for exactly 1 extra row
       const from = page * pageSize;
       const to = from + pageSize; 
       query = query.order(sortColumn, { ascending: false }).range(from, to);
@@ -145,12 +134,10 @@ export default function AdminOrders() {
     enabled: !!profile?.id
   });
 
-  // 🚀 Process the N+1 Array
   const hasNextPage = ordersData && ordersData.length > pageSize;
   const displayOrders = ordersData ? ordersData.slice(0, pageSize) : [];
   const newPendingCount = tabCounts.newPending || 0;
 
-  // 🚀 THROTTLED REAL-TIME SUBSCRIPTION
   useEffect(() => {
     if (!profile?.id) return;
     let debounceTimer;
@@ -170,19 +157,19 @@ export default function AdminOrders() {
     };
   }, [profile?.id, queryClient]);
 
-  // ==========================================
-  // 🚀 REACT QUERY: MUTATIONS (RPCs)
-  // ==========================================
-
   const cancelItemMutation = useMutation({
-    mutationFn: async ({ itemId, reason }) => {
-      const { error } = await supabase.rpc('cancel_order_item', { p_item_id: itemId, p_reason: reason });
+    mutationFn: async ({ itemId, reason, totalBaseUnits }) => {
+      const { error } = await supabase.rpc('cancel_order_item', { 
+        p_item_id: itemId, 
+        p_reason: reason,
+        p_restock_qty: totalBaseUnits 
+      });
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
-      toast.success('Item cancelled and inventory restocked.');
-      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+      toast.success('Item cancelled and inventory restocked accurately.');
+      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' });
     },
     onError: (error) => toast.error(`Cancel failed: ${error.message}`)
   });
@@ -195,7 +182,7 @@ export default function AdminOrders() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
       toast.success('Item quantity and totals updated!');
-      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' });
     },
     onError: (error) => toast.error(`Update failed: ${error.message}`)
   });
@@ -208,7 +195,7 @@ export default function AdminOrders() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
       toast.success('Product added successfully!');
-      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' });
       setSelectedSubstitute(null);
       setSubstituteSearch('');
     },
@@ -241,9 +228,23 @@ export default function AdminOrders() {
 
       const updatePayload = { status: newStatus, updated_at: new Date().toISOString() };
       if (newStatus === 'processing') updatePayload.processing_at = new Date().toISOString();
+      
       if (newStatus === 'cancelled') {
         updatePayload.cancelled_at = new Date().toISOString();
         updatePayload.cancellation_reason = reason; 
+
+        const activeItems = currentOrder.order_items.filter(item => item.status !== 'cancelled' && item.status !== 'rejected');
+        
+        for (const item of activeItems) {
+          // 🚀 FIX: Safely calculate using quantity_variants
+          const calculatedBaseUnits = item.quantity_variants;
+
+          await supabase.rpc('cancel_order_item', { 
+            p_item_id: item.id, 
+            p_reason: reason || 'Full Order Rejected',
+            p_restock_qty: calculatedBaseUnits
+          });
+        }
       }
 
       const { data, error } = await supabase.from('orders').update(updatePayload).eq('id', orderId).eq('status', currentOrder.status).select();
@@ -278,7 +279,7 @@ export default function AdminOrders() {
       if (!selectedSubstitute) throw new Error("Please select a product to substitute.");
       
       const newUnitPrice = Number(selectedSubstitute.price || 0);
-      const qty = Number(item.quantity_variants || 1);
+      const qty = Number(item.quantity_variants || 1); // 🚀 FIX
       const newLineTotal = qty * newUnitPrice;
 
       let newSubtotal = 0;
@@ -291,8 +292,15 @@ export default function AdminOrders() {
       const newTaxAmount = newSubtotal * taxRate;
       const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
 
+      // 🚀 FIX: Update both quantity_variants and total_base_units perfectly
       const { error: itemError } = await supabase.from('order_items')
-        .update({ product_variant_id: selectedSubstitute.id, unit_price: newUnitPrice, line_total: newLineTotal, total_base_units: qty }).eq('id', item.id); 
+        .update({ 
+          product_variant_id: selectedSubstitute.id, 
+          unit_price: newUnitPrice, 
+          line_total: newLineTotal, 
+          quantity_variants: qty,
+          total_base_units: qty * (selectedSubstitute.multiplier || 1)
+        }).eq('id', item.id); 
       if (itemError) throw itemError;
       
       const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
@@ -300,7 +308,7 @@ export default function AdminOrders() {
 
       toast.success('Product successfully substituted!');
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
-      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+      setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' });
       setSelectedSubstitute(null);
       setSubstituteSearch('');
     } catch (error) { toast.error(error.message); }
@@ -408,7 +416,7 @@ export default function AdminOrders() {
       const activeItems = order.order_items?.filter(item => item.status !== 'cancelled' && item.status !== 'rejected') || [];
       const tableRows = activeItems.map(item => [
         `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}`,
-        item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}`
+        item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}` // 🚀 FIX: Reverted to quantity_variants
       ]);
 
       autoTable(doc, {
@@ -747,7 +755,7 @@ export default function AdminOrders() {
                                       </h4>
                                       {order.status === 'pending' && (
                                         <button 
-                                          onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'add', order, item: null, reason: '', newQty: '1', newVariantId: '' }); }} 
+                                          onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'add', order, item: null, reason: '', newQty: '1', newVariantId: '', totalBaseUnits: '' }); }} 
                                           className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 text-white text-xs font-bold rounded-lg shadow-sm hover:bg-slate-800 active:scale-95 transition-all"
                                         >
                                           <Plus size={14} /> Add Product
@@ -775,6 +783,7 @@ export default function AdminOrders() {
                                                   {isItemRejected && <p className="text-[10px] text-orange-600 font-bold mt-1 uppercase tracking-widest flex items-center gap-1"><XCircle size={10}/> Rejected at Delivery</p>}
                                                 </td>
                                                 <td className="px-5 py-4 text-center">
+                                                  {/* 🚀 FIX: Reverted to quantity_variants */}
                                                   <span className={`px-2.5 py-1 font-bold rounded-lg border shadow-sm ${isVoided ? 'bg-slate-100 text-slate-400 border-slate-200 line-through' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>{item.quantity_variants}</span>
                                                 </td>
                                                 <td className={`px-5 py-4 text-right font-extrabold ${isVoided ? 'text-slate-400 line-through' : 'text-slate-900'}`}>${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
@@ -782,9 +791,10 @@ export default function AdminOrders() {
                                                 {order.status === 'pending' && !isVoided && (
                                                   <td className="px-5 py-4 text-right w-10">
                                                     <div className="flex items-center justify-end gap-1 transition-opacity">
-                                                      <button title="Edit Quantity" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'edit', order, item, reason: '', newQty: item.quantity_variants, newVariantId: '' })}} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
-                                                      <button title="Substitute" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'substitute', order, item, reason: '', newQty: '', newVariantId: '' })}} className="p-1.5 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"><RefreshCw size={16} /></button>
-                                                      <button title="Cancel Item" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'cancel', order, item, reason: '', newQty: '', newVariantId: '' })}} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><XCircle size={16} /></button>
+                                                      {/* 🚀 FIX: Reverted to quantity_variants */}
+                                                      <button title="Edit Quantity" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'edit', order, item, reason: '', newQty: item.quantity_variants, newVariantId: '', totalBaseUnits: '' })}} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
+                                                      <button title="Substitute" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'substitute', order, item, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' })}} className="p-1.5 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"><RefreshCw size={16} /></button>
+                                                      <button title="Cancel Item" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'cancel', order, item, reason: '', newQty: '', newVariantId: '', totalBaseUnits: item.quantity_variants * (item.product_variants?.multiplier || 1) })}} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><XCircle size={16} /></button>
                                                     </div>
                                                   </td>
                                                 )}
@@ -867,7 +877,6 @@ export default function AdminOrders() {
             </table>
           </div>
 
-          {/* 🚀 N+1 INFINITE PAGINATION UI */}
           <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
             <span className="text-sm font-medium text-slate-500">
               Page {page + 1}: {(page * pageSize) + 1}-{page * pageSize + displayOrders.length}
@@ -936,7 +945,7 @@ export default function AdminOrders() {
         open={itemAction.show} 
         onOpenChange={(isOpen) => {
           if (!isOpen) {
-            setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' });
+            setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' });
             setSelectedSubstitute(null);
             setSubstituteSearch('');
           }
@@ -992,7 +1001,7 @@ export default function AdminOrders() {
               </div>
 
               <div className="flex w-full flex-row justify-center gap-3 pt-6">
-                <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Cancel</Button>
+                <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' })}>Cancel</Button>
                 <Button className="w-[140px] py-6 bg-emerald-600 hover:bg-emerald-700" disabled={!selectedSubstitute || !itemAction.newQty || itemAction.newQty <= 0} onClick={() => addItemMutation.mutate({ orderId: itemAction.order.id, variantId: selectedSubstitute.id, qty: parseInt(itemAction.newQty, 10) })}>Add to Order</Button>
               </div>
             </>
@@ -1011,8 +1020,8 @@ export default function AdminOrders() {
               </div>
               
               <div className="flex w-full flex-row justify-center gap-3 pt-6">
-                <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Go Back</Button>
-                <Button variant="destructive" className="w-[140px] py-6" disabled={!itemAction.reason.trim()} onClick={() => cancelItemMutation.mutate({ itemId: itemAction.item.id, reason: itemAction.reason })}>Confirm Cancel</Button>
+                <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' })}>Go Back</Button>
+                <Button variant="destructive" className="w-[140px] py-6" disabled={!itemAction.reason.trim()} onClick={() => cancelItemMutation.mutate({ itemId: itemAction.item.id, reason: itemAction.reason, totalBaseUnits: itemAction.totalBaseUnits })}>Confirm Cancel</Button>
               </div>
             </>
           )}
@@ -1031,7 +1040,7 @@ export default function AdminOrders() {
               </div>
               
               <div className="flex w-full flex-row justify-center gap-3 pt-6">
-                <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' })}>Cancel</Button>
+                <Button variant="outline" className="w-[140px] py-6" onClick={() => setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' })}>Cancel</Button>
                 <Button className="w-[140px] py-6 bg-blue-600 hover:bg-blue-700" disabled={!itemAction.newQty || itemAction.newQty <= 0} onClick={() => editItemMutation.mutate({ itemId: itemAction.item.id, newQty: parseInt(itemAction.newQty, 10) })}>Update Quantity</Button>
               </div>
             </>
@@ -1078,7 +1087,7 @@ export default function AdminOrders() {
               </div>
               
               <div className="flex w-full flex-row justify-center gap-3 pt-6">
-                <Button variant="outline" className="w-[140px] py-6" onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }}>Cancel</Button>
+                <Button variant="outline" className="w-[140px] py-6" onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }}>Cancel</Button>
                 <Button className="w-[140px] py-6 bg-purple-600 hover:bg-purple-700" disabled={!selectedSubstitute} onClick={executeItemSubstitute}>Confirm Swap</Button>
               </div>
             </>

@@ -443,6 +443,45 @@ $$;
 ALTER FUNCTION "public"."cancel_order_item"("p_item_id" "uuid", "p_reason" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."cancel_order_item"("p_item_id" "uuid", "p_reason" "text", "p_restock_qty" integer) RETURNS "void"
+    LANGUAGE "plpgsql"
+    AS $$
+DECLARE
+  v_product_id UUID;
+  v_saved_base_units INT;
+BEGIN
+  -- 1. Grab the exact base units that were perfectly deducted at checkout
+  SELECT total_base_units INTO v_saved_base_units
+  FROM order_items 
+  WHERE id = p_item_id;
+
+  -- 2. Prevent double cancellation if someone double-clicks the button
+  IF EXISTS (SELECT 1 FROM order_items WHERE id = p_item_id AND status = 'cancelled') THEN
+    RETURN;
+  END IF;
+
+  -- 3. Update the item status
+  UPDATE order_items 
+  SET status = 'cancelled', cancellation_reason = p_reason 
+  WHERE id = p_item_id;
+
+  -- 4. Find the parent product ID for the inventory table
+  SELECT product_id INTO v_product_id
+  FROM product_variants
+  WHERE id = (SELECT product_variant_id FROM order_items WHERE id = p_item_id);
+
+  -- 5. Safely restock the EXACT amount that was originally deducted
+  UPDATE inventory
+  SET base_units_on_hand = base_units_on_hand + COALESCE(v_saved_base_units, 0)
+  WHERE product_id = v_product_id;
+
+END;
+$$;
+
+
+ALTER FUNCTION "public"."cancel_order_item"("p_item_id" "uuid", "p_reason" "text", "p_restock_qty" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."complete_delivery"("p_order_id" "uuid", "p_signature_url" "text", "p_photo_url" "text") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -553,6 +592,32 @@ $$;
 
 
 ALTER FUNCTION "public"."deduct_inventory"("order_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."deduct_inventory_on_checkout"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    AS $$
+DECLARE
+  v_product_id UUID;
+BEGIN
+  -- Find the parent product_id for the variant that was just ordered
+  SELECT product_id INTO v_product_id
+  FROM product_variants
+  WHERE id = NEW.product_variant_id;
+
+  -- Deduct the exact base units from the inventory table
+  -- We use NEW.total_base_units because your React app already calculated it perfectly!
+  UPDATE inventory
+  SET base_units_on_hand = base_units_on_hand - NEW.total_base_units
+  WHERE product_id = v_product_id;
+
+  -- Finish the trigger
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."deduct_inventory_on_checkout"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."delete_user"("user_id" "uuid") RETURNS "void"
@@ -991,6 +1056,79 @@ $$;
 ALTER FUNCTION "public"."is_admin"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."process_order_item_inventory"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+DECLARE
+  v_product_id UUID;
+  v_multiplier INT;
+BEGIN
+  -- 🚀 THE FIX: If the driver app inserts a 'rejected' item during a split, IGNORE IT!
+  -- The inventory was already deducted during the original checkout.
+  IF NEW.status::text IN ('rejected', 'cancelled', 'restocked') THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT product_id, COALESCE(multiplier, 1) INTO v_product_id, v_multiplier
+  FROM product_variants WHERE id = NEW.product_variant_id;
+
+  NEW.total_base_units := NEW.quantity_variants * v_multiplier;
+
+  UPDATE inventory
+  SET base_units_on_hand = base_units_on_hand - NEW.total_base_units
+  WHERE product_id = v_product_id;
+
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."process_order_item_inventory"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."process_warehouse_restock"("p_order_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+DECLARE
+  v_item RECORD;
+  v_product_id UUID;
+  v_is_partial BOOLEAN;
+BEGIN
+  SELECT status::text = 'delivered_partial' INTO v_is_partial
+  FROM orders WHERE id = p_order_id;
+
+  FOR v_item IN
+    SELECT id, total_base_units, product_variant_id
+    FROM order_items
+    WHERE order_id = p_order_id 
+      AND (
+        (v_is_partial AND status::text = 'rejected') OR 
+        (NOT v_is_partial AND status::text NOT IN ('cancelled', 'restocked'))
+      )
+  LOOP
+    SELECT product_id INTO v_product_id FROM product_variants WHERE id = v_item.product_variant_id;
+    
+    UPDATE inventory
+    SET base_units_on_hand = base_units_on_hand + COALESCE(v_item.total_base_units, 0)
+    WHERE product_id = v_product_id;
+
+    UPDATE order_items
+    SET status = 'restocked'::order_status
+    WHERE id = v_item.id;
+  END LOOP;
+
+  UPDATE orders
+  SET is_restocked = true,
+      status = (CASE WHEN v_is_partial THEN 'delivered_partial' ELSE 'restocked' END)::order_status,
+      updated_at = NOW()
+  WHERE id = p_order_id;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."process_warehouse_restock"("p_order_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."protect_secure_profile_columns"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -1038,6 +1176,72 @@ $$;
 
 
 ALTER FUNCTION "public"."receive_purchase_order"("p_po_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."reject_full_order"("p_order_id" "uuid", "p_reason" "text", "p_target_status" "text" DEFAULT 'cancelled'::"text") RETURNS "void"
+    LANGUAGE "plpgsql"
+    AS $$
+DECLARE
+  v_item RECORD;
+  v_product_id UUID;
+BEGIN
+  -- 1. Prevent accidental double-rejections (casting status to text for safe comparison)
+  IF EXISTS (SELECT 1 FROM orders WHERE id = p_order_id AND status::text IN ('cancelled', 'restocked')) THEN
+    RETURN;
+  END IF;
+
+  -- 2. Loop through active items and restock them perfectly
+  FOR v_item IN
+    SELECT id, total_base_units, product_variant_id
+    FROM order_items
+    WHERE order_id = p_order_id AND status::text NOT IN ('cancelled', 'rejected', 'restocked')
+  LOOP
+    SELECT product_id INTO v_product_id FROM product_variants WHERE id = v_item.product_variant_id;
+    
+    -- Add the exact base units back to the shelf
+    UPDATE inventory
+    SET base_units_on_hand = base_units_on_hand + COALESCE(v_item.total_base_units, 0)
+    WHERE product_id = v_product_id;
+
+    -- 3. 🚀 THE FIX: We explicitly cast the TEXT to your custom ENUM using ::order_status
+    UPDATE order_items
+    SET status = p_target_status::order_status, 
+        cancellation_reason = p_reason
+    WHERE id = v_item.id;
+  END LOOP;
+
+  -- 4. 🚀 THE FIX: We explicitly cast the TEXT to your custom ENUM using ::order_status
+  UPDATE orders
+  SET status = p_target_status::order_status, 
+      cancellation_reason = p_reason, 
+      updated_at = NOW()
+  WHERE id = p_order_id;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."reject_full_order"("p_order_id" "uuid", "p_reason" "text", "p_target_status" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."reject_order_and_restock"("p_order_id" "uuid", "p_item_id" "uuid", "p_quantity" integer, "p_case_multiplier" integer) RETURNS "void"
+    LANGUAGE "plpgsql"
+    AS $$
+BEGIN
+  -- Step 1: Update the inventory by adding the calculated smallest units
+  UPDATE inventory
+  SET stock = stock + (p_quantity * p_case_multiplier)
+  WHERE item_id = p_item_id;
+
+  -- Step 2: Update the order status to 'rejected'
+  UPDATE orders
+  SET status = 'rejected'
+  WHERE id = p_order_id;
+
+END;
+$$;
+
+
+ALTER FUNCTION "public"."reject_order_and_restock"("p_order_id" "uuid", "p_item_id" "uuid", "p_quantity" integer, "p_case_multiplier" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."restock_inventory_on_cancel"() RETURNS "trigger"
@@ -1551,11 +1755,7 @@ CREATE OR REPLACE TRIGGER "enforce_profile_security" BEFORE UPDATE ON "public"."
 
 
 
-CREATE OR REPLACE TRIGGER "on_order_cancelled" AFTER UPDATE ON "public"."orders" FOR EACH ROW EXECUTE FUNCTION "public"."restock_inventory_on_cancel"();
-
-
-
-CREATE OR REPLACE TRIGGER "on_order_item_insert" AFTER INSERT ON "public"."order_items" FOR EACH ROW EXECUTE FUNCTION "public"."deduct_inventory"();
+CREATE OR REPLACE TRIGGER "trigger_deduct_inventory_on_insert" BEFORE INSERT ON "public"."order_items" FOR EACH ROW EXECUTE FUNCTION "public"."process_order_item_inventory"();
 
 
 
@@ -2210,6 +2410,12 @@ GRANT ALL ON FUNCTION "public"."cancel_order_item"("p_item_id" "uuid", "p_reason
 
 
 
+GRANT ALL ON FUNCTION "public"."cancel_order_item"("p_item_id" "uuid", "p_reason" "text", "p_restock_qty" integer) TO "anon";
+GRANT ALL ON FUNCTION "public"."cancel_order_item"("p_item_id" "uuid", "p_reason" "text", "p_restock_qty" integer) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."cancel_order_item"("p_item_id" "uuid", "p_reason" "text", "p_restock_qty" integer) TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."complete_delivery"("p_order_id" "uuid", "p_signature_url" "text", "p_photo_url" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."complete_delivery"("p_order_id" "uuid", "p_signature_url" "text", "p_photo_url" "text") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."complete_delivery"("p_order_id" "uuid", "p_signature_url" "text", "p_photo_url" "text") TO "service_role";
@@ -2225,6 +2431,12 @@ GRANT ALL ON FUNCTION "public"."deduct_inventory"() TO "service_role";
 REVOKE ALL ON FUNCTION "public"."deduct_inventory"("order_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."deduct_inventory"("order_id" "uuid") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."deduct_inventory"("order_id" "uuid") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."deduct_inventory_on_checkout"() TO "anon";
+GRANT ALL ON FUNCTION "public"."deduct_inventory_on_checkout"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."deduct_inventory_on_checkout"() TO "service_role";
 
 
 
@@ -2309,6 +2521,18 @@ GRANT ALL ON FUNCTION "public"."is_admin"() TO "service_role";
 
 
 
+GRANT ALL ON FUNCTION "public"."process_order_item_inventory"() TO "anon";
+GRANT ALL ON FUNCTION "public"."process_order_item_inventory"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."process_order_item_inventory"() TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."process_warehouse_restock"("p_order_id" "uuid") TO "anon";
+GRANT ALL ON FUNCTION "public"."process_warehouse_restock"("p_order_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."process_warehouse_restock"("p_order_id" "uuid") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."protect_secure_profile_columns"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."protect_secure_profile_columns"() TO "service_role";
 
@@ -2317,6 +2541,18 @@ GRANT ALL ON FUNCTION "public"."protect_secure_profile_columns"() TO "service_ro
 REVOKE ALL ON FUNCTION "public"."receive_purchase_order"("p_po_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."receive_purchase_order"("p_po_id" "uuid") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."receive_purchase_order"("p_po_id" "uuid") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."reject_full_order"("p_order_id" "uuid", "p_reason" "text", "p_target_status" "text") TO "anon";
+GRANT ALL ON FUNCTION "public"."reject_full_order"("p_order_id" "uuid", "p_reason" "text", "p_target_status" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."reject_full_order"("p_order_id" "uuid", "p_reason" "text", "p_target_status" "text") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."reject_order_and_restock"("p_order_id" "uuid", "p_item_id" "uuid", "p_quantity" integer, "p_case_multiplier" integer) TO "anon";
+GRANT ALL ON FUNCTION "public"."reject_order_and_restock"("p_order_id" "uuid", "p_item_id" "uuid", "p_quantity" integer, "p_case_multiplier" integer) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."reject_order_and_restock"("p_order_id" "uuid", "p_item_id" "uuid", "p_quantity" integer, "p_case_multiplier" integer) TO "service_role";
 
 
 

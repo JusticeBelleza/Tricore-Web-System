@@ -1,12 +1,13 @@
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { GoogleMap, useJsApiLoader, DirectionsRenderer, Marker, Polyline } from '@react-google-maps/api';
-import { 
-  MapPin, Phone, CheckCircle2, Camera, PenTool, X, Clock,
-  UploadCloud, Truck, Route, PackageCheck, Package, DollarSign, AlertTriangle, XCircle, Map,
-  Minus, Plus
-} from 'lucide-react';
+// 🚀 FIX: Added PackageCheck and Route to the import list!
+import { Truck, MapPin, Phone, User, CheckCircle2, AlertTriangle, XCircle, Navigation, Package, DollarSign, Clock, Check, X, PenTool, UploadCloud, Map, Minus, Plus, PackageCheck, Route, Camera } from 'lucide-react';
+import { toast } from "sonner";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 const WAREHOUSE_ADDRESS = "2169 Harbor St, Pittsburg CA 94565";
 
@@ -104,15 +105,11 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
     }
   }, [directions, activeLegIndex]);
 
-  // 🚀 GENERATE THE GOOGLE MAPS DIRECT URL FOR THE WHOLE ROUTE
   const getGoogleMapsRouteUrl = () => {
     if (!directions || !directions.routes[0]) return '';
     const origin = encodeURIComponent(WAREHOUSE_ADDRESS);
-    
-    // Safely extract the optimized sequence directly from Google's response legs
     const legs = directions.routes[0].legs;
     const wpAddresses = legs.slice(0, -1).map(leg => encodeURIComponent(leg.end_address));
-    
     const waypointsParam = wpAddresses.length > 0 ? `&waypoints=${wpAddresses.join('|')}` : '';
     return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${origin}${waypointsParam}&travelmode=driving`;
   };
@@ -148,7 +145,6 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
         <button onClick={() => setShowMap(false)} className="ml-auto p-2 bg-white/10 hover:bg-white/20 text-white rounded-full active:scale-95 transition-all"><X size={16} /></button>
       </div>
 
-      {/* 🚀 CLICKABLE MAP CONTAINER */}
       <div 
         onClick={() => window.open(getGoogleMapsRouteUrl(), '_blank')}
         className="w-full h-64 sm:h-80 rounded-2xl overflow-hidden relative shadow-inner border border-slate-300 group cursor-pointer"
@@ -170,7 +166,6 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
           )}
         </GoogleMap>
         
-        {/* OVERLAY HINT FOR THE DRIVER */}
         <div className="absolute inset-0 bg-blue-900/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 backdrop-blur-[1px]">
           <div className="bg-blue-600 text-white px-5 py-3 rounded-xl font-black shadow-xl flex items-center gap-2">
               <Map size={18} /> Open in GPS App
@@ -183,6 +178,8 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
 
 export default function DriverRoutes() {
   const { profile } = useAuth();
+  const queryClient = useQueryClient();
+
   const [orders, setOrders] = useState([]);
   const [completedThisWeek, setCompletedThisWeek] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -204,7 +201,7 @@ export default function DriverRoutes() {
   const [attemptReason, setAttemptReason] = useState('');
   const [isAttempting, setIsAttempting] = useState(false);
 
-  const [toast, setToast] = useState({ show: false, message: '', isError: false });
+  const [toastAlert, setToastAlert] = useState({ show: false, message: '', isError: false });
 
   const [currentLocation, setCurrentLocation] = useState(null);
   const [triggerMapOpen, setTriggerMapOpen] = useState(0);
@@ -237,13 +234,12 @@ export default function DriverRoutes() {
     }
   }, [profile?.id, profile?.full_name, profile?.license_expiry]);
 
-  // Pre-load default quantities when modal opens
   useEffect(() => {
     if (activeOrder) {
       const initialQtys = {};
       activeOrder.order_items?.forEach(item => {
         if (item.status === 'active') {
-          initialQtys[item.id] = item.quantity_variants; // Default: fully delivered
+          initialQtys[item.id] = item.quantity_variants; 
         }
       });
       setDeliveredQuantities(initialQtys);
@@ -270,15 +266,14 @@ export default function DriverRoutes() {
     }
   };
 
-  const showToast = (message, isError = false) => {
-    setToast({ show: true, message, isError });
-    setTimeout(() => setToast({ show: false, message: '', isError: false }), 4000);
+  const showToastMsg = (message, isError = false) => {
+    setToastAlert({ show: true, message, isError });
+    setTimeout(() => setToastAlert({ show: false, message: '', isError: false }), 4000);
   };
 
   const fetchMyRoutes = async () => {
     setLoading(true);
     try {
-      // 🚀 FIX 1: We added "multiplier" to the product_variants fetch string
       const { data: pendingData, error: pendingError } = await supabase
         .from('orders')
         .select(`*, companies ( name, address, city, state, zip, phone ), agency_patients ( contact_number ), user_profiles ( full_name, contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, line_total, unit_price, product_variants ( product_id, name, multiplier, products(name) ) )`)
@@ -298,7 +293,7 @@ export default function DriverRoutes() {
       setCompletedThisWeek(completedCount || 0);
     } catch (error) {
       console.error('Error fetching routes:', error.message);
-      showToast('Failed to load routes.', true);
+      showToastMsg('Failed to load routes.', true);
     } finally {
       setLoading(false);
     }
@@ -316,7 +311,7 @@ export default function DriverRoutes() {
     }));
     const completelySortedOrders = [...sortedRouteOrders, ...remainingOrders];
     setOrders(completelySortedOrders);
-    showToast("Route Optimized for Fastest Round Trip!");
+    showToastMsg("Route Optimized for Fastest Round Trip!");
   };
 
   const handlePhotoCapture = (e) => {
@@ -385,12 +380,12 @@ export default function DriverRoutes() {
         .eq('id', orderId);
       if (error) throw error;
     } catch (error) { 
-      showToast("Failed to sync status to database.", true); 
+      showToastMsg("Failed to sync status to database.", true); 
     }
   };
 
   const submitDelivery = async () => {
-    if (!receivedBy.trim()) { showToast('Please enter the full name of the person receiving the order.', true); return; }
+    if (!receivedBy.trim()) { showToastMsg('Please enter the full name of the person receiving the order.', true); return; }
     
     const activeItems = activeOrder.order_items?.filter(item => item.status === 'active') || [];
     
@@ -410,7 +405,7 @@ export default function DriverRoutes() {
       const blank = document.createElement('canvas'); 
       blank.width = canvas.width; 
       blank.height = canvas.height;
-      if (canvas.toDataURL() === blank.toDataURL()) { showToast('Please have the customer sign to confirm delivery.', true); return; }
+      if (canvas.toDataURL() === blank.toDataURL()) { showToastMsg('Please have the customer sign to confirm delivery.', true); return; }
     }
 
     setIsSubmitting(true);
@@ -509,49 +504,56 @@ export default function DriverRoutes() {
       
       window.dispatchEvent(new Event('orderStatusChanged')); 
       closeModal(); 
-      showToast(isTotalRejection ? 'Order marked as attempted (All items rejected).' : 'Delivery completed successfully!');
+      showToastMsg(isTotalRejection ? 'Order marked as attempted (All items rejected).' : 'Delivery completed successfully!');
       
     } catch (error) { 
       console.error('Delivery Error:', error.message); 
-      showToast('Failed to upload delivery proof. Check your connection.', true); 
+      showToastMsg('Failed to upload delivery proof. Check your connection.', true); 
     } finally { 
       setIsSubmitting(false); 
     }
   };
 
   const submitCancellation = async () => {
-    if (!cancelReason.trim()) { showToast('Please provide a reason for cancelling this delivery.', true); return; }
+    if (!cancelReason.trim()) { showToastMsg('Please provide a reason for cancelling this delivery.', true); return; }
     setIsCancelling(true);
     try {
-      for (const item of cancellingOrder.order_items || []) {
-        const productId = item.product_variants?.product_id;
-        if (item.status !== 'cancelled' && productId) {
-          const { data: invData } = await supabase.from('inventory').select('base_units_on_hand').eq('product_id', productId).single();
-          if (invData && invData.base_units_on_hand !== undefined) {
-            
-            // 🚀 FIX 2: Calculate the exact units to return using the multiplier
-            const variantMultiplier = Number(item.product_variants?.multiplier || 1);
-            const qtyToReturn = Number(item.total_base_units || (item.quantity_variants * variantMultiplier) || 0);
-            
-            const newStock = Number(invData.base_units_on_hand) + qtyToReturn;
-            await supabase.from('inventory').update({ base_units_on_hand: newStock }).eq('product_id', productId);
-          }
-        }
-      }
-      const { error } = await supabase.from('orders').update({ status: 'cancelled', cancellation_reason: cancelReason.trim(), is_restocked: true, updated_at: new Date().toISOString() }).eq('id', cancellingOrder.id);
+      // 🚀 Calls our foolproof RPC to handle exactly how many base_units get restocked!
+      const { error } = await supabase.rpc('reject_full_order', {
+        p_order_id: cancellingOrder.id,
+        p_reason: cancelReason.trim(),
+        p_target_status: 'cancelled'
+      });
       if (error) throw error;
-      setOrders(orders.filter(o => o.id !== cancellingOrder.id)); window.dispatchEvent(new Event('orderStatusChanged')); closeCancelModal(); showToast('Order cancelled and items successfully restocked!', false); 
-    } catch (error) { console.error('Cancellation Error:', error.message); showToast('Failed to cancel the delivery. Please try again.', true); } finally { setIsCancelling(false); }
+      
+      setOrders(orders.filter(o => o.id !== cancellingOrder.id)); 
+      window.dispatchEvent(new Event('orderStatusChanged')); 
+      closeCancelModal(); 
+      showToastMsg('Order cancelled and items successfully restocked!', false); 
+    } catch (error) { 
+      console.error('Cancellation Error:', error.message); 
+      showToastMsg('Failed to cancel the delivery. Please try again.', true); 
+    } finally { 
+      setIsCancelling(false); 
+    }
   };
 
   const submitAttempted = async () => {
-    if (!attemptReason.trim()) { showToast('Please provide a reason for the failed delivery attempt.', true); return; }
+    if (!attemptReason.trim()) { showToastMsg('Please provide a reason for the failed delivery attempt.', true); return; }
     setIsAttempting(true);
     try {
       const { error } = await supabase.from('orders').update({ status: 'attempted', cancellation_reason: attemptReason.trim(), updated_at: new Date().toISOString() }).eq('id', attemptingOrder.id);
       if (error) throw error;
-      setOrders(orders.filter(o => o.id !== attemptingOrder.id)); window.dispatchEvent(new Event('orderStatusChanged')); closeAttemptModal(); showToast('Order marked as attempted.', false); 
-    } catch (error) { console.error('Attempt Error:', error.message); showToast('Failed to mark delivery as attempted.', true); } finally { setIsAttempting(false); }
+      setOrders(orders.filter(o => o.id !== attemptingOrder.id)); 
+      window.dispatchEvent(new Event('orderStatusChanged')); 
+      closeAttemptModal(); 
+      showToastMsg('Order marked as attempted.', false); 
+    } catch (error) { 
+      console.error('Attempt Error:', error.message); 
+      showToastMsg('Failed to mark delivery as attempted.', true); 
+    } finally { 
+      setIsAttempting(false); 
+    }
   };
 
   const closeModal = () => { setActiveOrder(null); setPhotoFile(null); setPhotoPreview(null); setReceivedBy(''); setDeliveredQuantities({}); };
@@ -935,12 +937,12 @@ export default function DriverRoutes() {
         </div>
       )}
 
-      {toast.show && (
+      {toastAlert.show && (
         <div className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-[120] flex items-center gap-3 bg-slate-900 text-white px-5 py-4 rounded-2xl shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-300">
-          <div className={`p-1.5 rounded-full ${toast.isError ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
-            {toast.isError ? <AlertTriangle size={18} strokeWidth={2.5} /> : <CheckCircle2 size={18} strokeWidth={2.5} />}
+          <div className={`p-1.5 rounded-full ${toastAlert.isError ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+            {toastAlert.isError ? <AlertTriangle size={18} strokeWidth={2.5} /> : <CheckCircle2 size={18} strokeWidth={2.5} />}
           </div>
-          <p className="text-sm font-bold pr-2">{toast.message}</p>
+          <p className="text-sm font-bold pr-2">{toastAlert.message}</p>
         </div>
       )}
     </div>
