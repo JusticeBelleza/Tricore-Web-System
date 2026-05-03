@@ -990,7 +990,7 @@ export default function Home() {
             
             <div className="flex flex-col items-center sm:items-start text-center sm:text-left">
               <Link to="/" className="block mb-6 sm:mb-8">
-                <img src="/images/tricore-logo2.png" alt="Tricore Medical Logo" className="h-10 sm:h-10 w-auto object-contain" />
+                <img src="/images/tricore-logo2.png" alt="Tricore Medical Logo" className="h-12 sm:h-17 w-auto object-contain" />
               </Link>
               <div className="flex items-center gap-3 sm:gap-4 group">
                 <img src="/images/accreditation.webp" alt="ACHC Accredited" className="h-14 sm:h-16 w-auto object-contain drop-shadow-md group-hover:scale-105 transition-transform duration-300 shrink-0" />
