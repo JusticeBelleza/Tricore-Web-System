@@ -5,7 +5,6 @@ import { supabase } from './lib/supabase';
 import { useMetricsStore } from './store/useMetricsStore';
 import { AlertCircle, CheckCircle2, XCircle, X, Share, PlusSquare } from "lucide-react"; 
 
-// 🚀 IMPORT OUR NEW COMPONENTS
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 
@@ -54,6 +53,9 @@ export default function Layout() {
     window.addEventListener('dispatchViewed', handleUpdate);
 
     let alertSub = null;
+    let adminOrdersSub = null;
+    let adminOrderItemsSub = null;
+
     if (isCustomer) {
       alertSub = supabase.channel('customer_ui_alerts')
         .on('postgres_changes', { 
@@ -78,11 +80,26 @@ export default function Layout() {
               setTimeout(() => setCustomerAlert(prev => ({...prev, show: false})), 8000);
             }
         }).subscribe();
+    } else {
+      // 🚀 THE FIX: Global real-time listeners for BOTH orders and order_items
+      // This forces the sidebar badges to instantly refresh if a whole order changes OR if a single item is restocked/cancelled!
+      
+      adminOrdersSub = supabase.channel('global_admin_orders')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+          fetchBadges(profile);
+        }).subscribe();
+
+      adminOrderItemsSub = supabase.channel('global_admin_order_items')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, () => {
+          fetchBadges(profile);
+        }).subscribe();
     }
 
     return () => {
       cleanupRealtime();
       if (alertSub) supabase.removeChannel(alertSub);
+      if (adminOrdersSub) supabase.removeChannel(adminOrdersSub);
+      if (adminOrderItemsSub) supabase.removeChannel(adminOrderItemsSub);
       window.removeEventListener('orderStatusChanged', handleUpdate);
       window.removeEventListener('podViewed', handleUpdate);
       window.removeEventListener('pendingViewed', handleUpdate);

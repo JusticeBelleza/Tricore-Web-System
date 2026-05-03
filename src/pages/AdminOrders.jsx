@@ -232,7 +232,6 @@ export default function AdminOrders() {
         updatePayload.cancelled_at = new Date().toISOString();
         updatePayload.cancellation_reason = reason; 
 
-        // 🚀 FIX: Ignore restocked items too!
         const activeItems = currentOrder.order_items.filter(item => item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'restocked');
         
         for (const item of activeItems) {
@@ -283,7 +282,6 @@ export default function AdminOrders() {
       let newSubtotal = 0;
       order.order_items.forEach(oi => {
         if (oi.id === item.id) newSubtotal += newLineTotal;
-        // 🚀 FIX: Ignore restocked items in substitution total math
         else if (oi.status !== 'cancelled' && oi.status !== 'rejected' && oi.status !== 'restocked') newSubtotal += Number(oi.line_total || 0);
       });
 
@@ -291,20 +289,19 @@ export default function AdminOrders() {
       const newTaxAmount = newSubtotal * taxRate;
       const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
 
-      const { error: itemError } = await supabase.from('order_items')
-        .update({ 
-          product_variant_id: selectedSubstitute.id, 
-          unit_price: newUnitPrice, 
-          line_total: newLineTotal, 
-          quantity_variants: qty,
-          total_base_units: qty * (selectedSubstitute.multiplier || 1)
-        }).eq('id', item.id); 
+      // 🚀 USE THE NEW DATABASE FUNCTION FOR STRICT INVENTORY MATH
+      const { error: itemError } = await supabase.rpc('substitute_order_item', {
+        p_item_id: item.id,
+        p_new_variant_id: selectedSubstitute.id,
+        p_new_qty: qty
+      });
       if (itemError) throw itemError;
       
+      // Update order-level financial totals manually
       const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
       if (orderError) throw orderError;
 
-      toast.success('Product successfully substituted!');
+      toast.success('Product substituted and inventory recalculated!');
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
       setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' });
       setSelectedSubstitute(null);
@@ -355,7 +352,6 @@ export default function AdminOrders() {
       const orderNum = order.id.substring(0, 8).toUpperCase();
       const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-      // 🚀 FIX: Ignore restocked items in PDF calculations so totals match exactly!
       const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected' || item.status === 'restocked').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
       const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
       
@@ -412,7 +408,6 @@ export default function AdminOrders() {
       if (shipEmail) { doc.text(`Email: ${shipEmail}`, 110, currentYShip); currentYShip += 5; }
 
       const maxAddressY = Math.max(currentYBill, currentYShip);
-      // 🚀 FIX: Ignore restocked items
       const activeItems = order.order_items?.filter(item => item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'restocked') || [];
       const tableRows = activeItems.map(item => [
         `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}`,
@@ -604,7 +599,6 @@ export default function AdminOrders() {
                     }
                   }
 
-                  // 🚀 FIX: Ensure restocked items are subtracted from gross totals too!
                   const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected' || item.status === 'restocked').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
                   const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
                   const finalTax = Number(order.tax_amount || 0);
@@ -771,7 +765,6 @@ export default function AdminOrders() {
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
                                           {order.order_items?.map((item) => {
-                                            // 🚀 FIX: Correctly flag restocked items so they receive the strikethrough!
                                             const isItemCancelled = item.status?.toLowerCase() === 'cancelled';
                                             const isItemRejected = item.status?.toLowerCase() === 'rejected';
                                             const isItemRestocked = item.status?.toLowerCase() === 'restocked';
@@ -795,7 +788,7 @@ export default function AdminOrders() {
                                                   <td className="px-5 py-4 text-right w-10">
                                                     <div className="flex items-center justify-end gap-1 transition-opacity">
                                                       <button title="Edit Quantity" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'edit', order, item, reason: '', newQty: item.quantity_variants, newVariantId: '', totalBaseUnits: '' })}} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
-                                                      <button title="Substitute" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'substitute', order, item, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' })}} className="p-1.5 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"><RefreshCw size={16} /></button>
+                                                      <button title="Substitute" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'substitute', order, item, reason: '', newQty: item.quantity_variants, newVariantId: '', totalBaseUnits: '' })}} className="p-1.5 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"><RefreshCw size={16} /></button>
                                                       <button title="Cancel Item" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'cancel', order, item, reason: '', newQty: '', newVariantId: '', totalBaseUnits: item.quantity_variants * (item.product_variants?.multiplier || 1) })}} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><XCircle size={16} /></button>
                                                     </div>
                                                   </td>
@@ -1077,12 +1070,18 @@ export default function AdminOrders() {
                     )}
                   </div>
                 ) : (
-                  <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl flex items-center justify-between shadow-sm">
-                    <div>
-                      <p className="font-bold text-purple-900 text-sm leading-tight">{selectedSubstitute.products?.name} - {selectedSubstitute.name}</p>
-                      <p className="text-[11px] font-bold text-purple-600 uppercase tracking-widest mt-1">SKU: {selectedSubstitute.sku || selectedSubstitute.products?.base_sku || 'N/A'} | ${Number(selectedSubstitute.price).toFixed(2)}</p>
+                  <div className="space-y-4">
+                    <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl flex items-center justify-between shadow-sm">
+                      <div>
+                        <p className="font-bold text-purple-900 text-sm leading-tight">{selectedSubstitute.products?.name} - {selectedSubstitute.name}</p>
+                        <p className="text-[11px] font-bold text-purple-600 uppercase tracking-widest mt-1">SKU: {selectedSubstitute.sku || selectedSubstitute.products?.base_sku || 'N/A'} | ${Number(selectedSubstitute.price).toFixed(2)}</p>
+                      </div>
+                      <button onClick={() => { setSelectedSubstitute(null); setSubstituteSearch(''); }} className="p-1.5 bg-white rounded-lg text-purple-400 hover:text-purple-600 hover:bg-purple-100 transition-colors shrink-0 shadow-sm"><X size={16} /></button>
                     </div>
-                    <button onClick={() => { setSelectedSubstitute(null); setSubstituteSearch(''); }} className="p-1.5 bg-white rounded-lg text-purple-400 hover:text-purple-600 hover:bg-purple-100 transition-colors shrink-0 shadow-sm"><X size={16} /></button>
+                    <div>
+                      <label className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 block">Quantity</label>
+                      <Input type="number" min="1" value={itemAction.newQty} onChange={(e) => setItemAction({...itemAction, newQty: e.target.value})} />
+                    </div>
                   </div>
                 )}
                 <p className="text-xs text-slate-400 mt-3 font-medium">The order subtotal and total amount will recalculate automatically based on the new item's price.</p>
@@ -1090,7 +1089,7 @@ export default function AdminOrders() {
               
               <div className="flex w-full flex-row justify-center gap-3 pt-6">
                 <Button variant="outline" className="w-[140px] py-6" onClick={() => { setItemAction({ show: false, type: '', order: null, item: null, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' }); setSelectedSubstitute(null); setSubstituteSearch(''); }}>Cancel</Button>
-                <Button className="w-[140px] py-6 bg-purple-600 hover:bg-purple-700" disabled={!selectedSubstitute} onClick={executeItemSubstitute}>Confirm Swap</Button>
+                <Button className="w-[140px] py-6 bg-purple-600 hover:bg-purple-700" disabled={!selectedSubstitute || !itemAction.newQty || itemAction.newQty <= 0} onClick={executeItemSubstitute}>Confirm Swap</Button>
               </div>
             </>
           )}
