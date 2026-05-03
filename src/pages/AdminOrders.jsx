@@ -91,7 +91,6 @@ export default function AdminOrders() {
   const { data: ordersData, isLoading } = useQuery({
     queryKey: ['admin_orders', activeTab, debouncedSearch, page],
     queryFn: async () => {
-      // 🚀 FIX: Reverted to quantity_variants and total_base_units to match your schema exactly
       let query = supabase.from('orders').select(`
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
@@ -233,12 +232,11 @@ export default function AdminOrders() {
         updatePayload.cancelled_at = new Date().toISOString();
         updatePayload.cancellation_reason = reason; 
 
-        const activeItems = currentOrder.order_items.filter(item => item.status !== 'cancelled' && item.status !== 'rejected');
+        // 🚀 FIX: Ignore restocked items too!
+        const activeItems = currentOrder.order_items.filter(item => item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'restocked');
         
         for (const item of activeItems) {
-          // 🚀 FIX: Safely calculate using quantity_variants
           const calculatedBaseUnits = item.quantity_variants;
-
           await supabase.rpc('cancel_order_item', { 
             p_item_id: item.id, 
             p_reason: reason || 'Full Order Rejected',
@@ -279,20 +277,20 @@ export default function AdminOrders() {
       if (!selectedSubstitute) throw new Error("Please select a product to substitute.");
       
       const newUnitPrice = Number(selectedSubstitute.price || 0);
-      const qty = Number(item.quantity_variants || 1); // 🚀 FIX
+      const qty = Number(item.quantity_variants || 1); 
       const newLineTotal = qty * newUnitPrice;
 
       let newSubtotal = 0;
       order.order_items.forEach(oi => {
         if (oi.id === item.id) newSubtotal += newLineTotal;
-        else if (oi.status !== 'cancelled' && oi.status !== 'rejected') newSubtotal += Number(oi.line_total || 0);
+        // 🚀 FIX: Ignore restocked items in substitution total math
+        else if (oi.status !== 'cancelled' && oi.status !== 'rejected' && oi.status !== 'restocked') newSubtotal += Number(oi.line_total || 0);
       });
 
       const taxRate = Number(order.subtotal) > 0 ? (Number(order.tax_amount || 0) / Number(order.subtotal)) : 0;
       const newTaxAmount = newSubtotal * taxRate;
       const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
 
-      // 🚀 FIX: Update both quantity_variants and total_base_units perfectly
       const { error: itemError } = await supabase.from('order_items')
         .update({ 
           product_variant_id: selectedSubstitute.id, 
@@ -357,7 +355,8 @@ export default function AdminOrders() {
       const orderNum = order.id.substring(0, 8).toUpperCase();
       const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-      const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+      // 🚀 FIX: Ignore restocked items in PDF calculations so totals match exactly!
+      const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected' || item.status === 'restocked').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
       const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
       
       const finalTax = Number(order.tax_amount || 0);
@@ -413,10 +412,11 @@ export default function AdminOrders() {
       if (shipEmail) { doc.text(`Email: ${shipEmail}`, 110, currentYShip); currentYShip += 5; }
 
       const maxAddressY = Math.max(currentYBill, currentYShip);
-      const activeItems = order.order_items?.filter(item => item.status !== 'cancelled' && item.status !== 'rejected') || [];
+      // 🚀 FIX: Ignore restocked items
+      const activeItems = order.order_items?.filter(item => item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'restocked') || [];
       const tableRows = activeItems.map(item => [
         `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}`,
-        item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}` // 🚀 FIX: Reverted to quantity_variants
+        item.quantity_variants, `$${Number(item.unit_price || 0).toFixed(2)}`, `$${Number(item.line_total || 0).toFixed(2)}`
       ]);
 
       autoTable(doc, {
@@ -604,7 +604,8 @@ export default function AdminOrders() {
                     }
                   }
 
-                  const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
+                  // 🚀 FIX: Ensure restocked items are subtracted from gross totals too!
+                  const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected' || item.status === 'restocked').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
                   const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
                   const finalTax = Number(order.tax_amount || 0);
                   const finalTotal = Number(order.total_amount || 0);
@@ -770,9 +771,11 @@ export default function AdminOrders() {
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
                                           {order.order_items?.map((item) => {
+                                            // 🚀 FIX: Correctly flag restocked items so they receive the strikethrough!
                                             const isItemCancelled = item.status?.toLowerCase() === 'cancelled';
                                             const isItemRejected = item.status?.toLowerCase() === 'rejected';
-                                            const isVoided = isItemCancelled || isItemRejected;
+                                            const isItemRestocked = item.status?.toLowerCase() === 'restocked';
+                                            const isVoided = isItemCancelled || isItemRejected || isItemRestocked;
 
                                             return (
                                               <tr key={item.id} className={`hover:bg-slate-50 transition-colors group ${isVoided ? 'opacity-60 bg-slate-50/50' : ''}`}>
@@ -781,9 +784,9 @@ export default function AdminOrders() {
                                                   <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.sku || item.product_variants?.products?.base_sku || 'N/A'}</span></p>
                                                   {isItemCancelled && <p className="text-[10px] text-red-600 font-bold mt-1 uppercase tracking-widest flex items-center gap-1"><XCircle size={10}/> Cancelled: {item.cancellation_reason}</p>}
                                                   {isItemRejected && <p className="text-[10px] text-orange-600 font-bold mt-1 uppercase tracking-widest flex items-center gap-1"><XCircle size={10}/> Rejected at Delivery</p>}
+                                                  {isItemRestocked && <p className="text-[10px] text-slate-500 font-bold mt-1 uppercase tracking-widest flex items-center gap-1"><RefreshCw size={10}/> Returned & Restocked</p>}
                                                 </td>
                                                 <td className="px-5 py-4 text-center">
-                                                  {/* 🚀 FIX: Reverted to quantity_variants */}
                                                   <span className={`px-2.5 py-1 font-bold rounded-lg border shadow-sm ${isVoided ? 'bg-slate-100 text-slate-400 border-slate-200 line-through' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>{item.quantity_variants}</span>
                                                 </td>
                                                 <td className={`px-5 py-4 text-right font-extrabold ${isVoided ? 'text-slate-400 line-through' : 'text-slate-900'}`}>${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
@@ -791,7 +794,6 @@ export default function AdminOrders() {
                                                 {order.status === 'pending' && !isVoided && (
                                                   <td className="px-5 py-4 text-right w-10">
                                                     <div className="flex items-center justify-end gap-1 transition-opacity">
-                                                      {/* 🚀 FIX: Reverted to quantity_variants */}
                                                       <button title="Edit Quantity" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'edit', order, item, reason: '', newQty: item.quantity_variants, newVariantId: '', totalBaseUnits: '' })}} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
                                                       <button title="Substitute" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'substitute', order, item, reason: '', newQty: '', newVariantId: '', totalBaseUnits: '' })}} className="p-1.5 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"><RefreshCw size={16} /></button>
                                                       <button title="Cancel Item" onClick={(e) => { e.stopPropagation(); setItemAction({ show: true, type: 'cancel', order, item, reason: '', newQty: '', newVariantId: '', totalBaseUnits: item.quantity_variants * (item.product_variants?.multiplier || 1) })}} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><XCircle size={16} /></button>
