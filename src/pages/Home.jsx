@@ -7,7 +7,7 @@ import {
   Truck, ShieldCheck, Clock, ArrowRight, Package, Lock, 
   ShoppingCart, Search, ChevronLeft, ChevronRight, 
   User, LayoutDashboard, ChevronDown, MapPin, Mail, Phone, Users,
-  Menu, X, ArrowUp, PackageOpen, Plus, Minus, CheckCircle2, AlertTriangle, HeadphonesIcon, Building2
+  Menu, X, ArrowUp, PackageOpen, Plus, Minus, CheckCircle2, AlertTriangle, HeadphonesIcon, Building2, Sparkles
 } from 'lucide-react';
 
 import { toast } from "sonner";
@@ -24,10 +24,10 @@ const banners = [
 ];
 
 const placeholders = [
-  { id: 1, title: 'Front of the Warehouse', color: 'from-blue-600 to-cyan-500', icon: <Building2 size={36} className="text-white"/> },
-  { id: 2, title: 'Operations', color: 'from-indigo-600 to-purple-500', icon: <HeadphonesIcon size={36} className="text-white"/> },
-  { id: 3, title: 'Products', color: 'from-emerald-600 to-teal-500', icon: <Package size={36} className="text-white"/> },
-  { id: 4, title: 'Shelves', color: 'from-slate-700 to-slate-500', icon: <LayoutDashboard size={36} className="text-white"/> }
+  { id: 1, title: 'Front of the Warehouse', color: 'from-blue-600 to-cyan-500', icon: <Building2 size={56} className="text-white"/> },
+  { id: 2, title: 'Operations', color: 'from-indigo-600 to-purple-500', icon: <HeadphonesIcon size={56} className="text-white"/> },
+  { id: 3, title: 'Products', color: 'from-emerald-600 to-teal-500', icon: <Package size={56} className="text-white"/> },
+  { id: 4, title: 'Shelves', color: 'from-slate-700 to-slate-500', icon: <LayoutDashboard size={56} className="text-white"/> }
 ];
 
 // =========================================
@@ -126,9 +126,10 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
   return (
     <Card 
       onClick={onClick}
-      className={`group cursor-pointer hover:shadow-xl hover:-translate-y-1 active:scale-[0.98] transition-all duration-200 overflow-hidden flex flex-col ${preventPurchase ? 'opacity-80' : ''}`}
+      // 🚀 UI FIX: Added w-full and h-full to the base card so it expands properly inside sliders and grids
+      className={`group cursor-pointer hover:shadow-xl hover:-translate-y-1 active:scale-[0.98] transition-all duration-200 overflow-hidden flex flex-col w-full h-full ${preventPurchase ? 'opacity-80' : ''}`}
     >
-      <div className="w-full h-40 sm:h-48 bg-slate-50 relative p-4 border-b border-slate-100 flex items-center justify-center overflow-hidden">
+      <div className="w-full h-40 sm:h-48 bg-slate-50 relative p-4 border-b border-slate-100 flex items-center justify-center overflow-hidden shrink-0">
         <div className="absolute top-3 left-3 z-10 flex flex-col gap-1.5">
           {!isOutOfStock ? (
             <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-50">In Stock</Badge>
@@ -158,7 +159,7 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
         </div>
       </CardContent>
 
-      <CardFooter className="p-4 sm:p-5 pt-4 mt-auto border-t border-slate-100 flex items-center justify-between">
+      <CardFooter className="p-4 sm:p-5 pt-4 mt-auto border-t border-slate-100 flex items-center justify-between shrink-0">
         <div>
           {session ? (
             <>
@@ -298,6 +299,45 @@ export default function Home() {
 
   const pricingRules = b2bData?.rules || [];
 
+  // 🚀 FETCH FEATURED PRODUCTS QUERY
+  const { data: featuredData } = useQuery({
+    queryKey: ['featured-products'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('products')
+        .select('*, product_variants (*), inventory (*)')
+        .or('name.ilike.%UltraShield%,name.ilike.%SoftCore%,category.ilike.%Incontinence%')
+        .limit(30);
+      if (error) throw error;
+      const fetchedVariants = (data || []).flatMap(p => p.product_variants || []);
+      return { products: data || [], variants: fetchedVariants };
+    },
+    staleTime: 1000 * 60 * 60,
+  });
+
+  // Map featured products to families
+  const featuredFamilies = useMemo(() => {
+    const prods = featuredData?.products || [];
+    const groups = {};
+    prods.forEach(p => {
+      const familyName = p.name.split(' - ')[0].trim();
+      if (!groups[familyName]) groups[familyName] = [];
+      groups[familyName].push(p);
+    });
+    
+    // Ensure UltraShield and SoftCore appear first
+    const entries = Object.entries(groups);
+    entries.sort((a, b) => {
+        const aName = a[0].toLowerCase();
+        const bName = b[0].toLowerCase();
+        const aIsPriority = aName.includes('ultrashield') || aName.includes('softcore') ? 1 : 0;
+        const bIsPriority = bName.includes('ultrashield') || bName.includes('softcore') ? 1 : 0;
+        return bIsPriority - aIsPriority;
+    });
+    return entries.slice(0, 4); // Keep it to 1 clean row of 4
+  }, [featuredData]);
+
+
   const { data: catalogData, isPending: loading } = useQuery({
     queryKey: ['products', activeCategory, debouncedSearch],
     queryFn: async () => {
@@ -385,10 +425,11 @@ export default function Home() {
     };
   }, [viewingFamily]);
 
-  const openProductModal = (familyName, familyProducts) => {
+  // 🚀 UI FIX: Now dynamically accepts sourceVariants so it works for both the Catalog and the Featured grid!
+  const openProductModal = (familyName, familyProducts, sourceVariants = variants) => {
     const defaultProduct = familyProducts[0];
-    const defaultVariants = variants.filter(v => v.product_id === defaultProduct.id);
-    setViewingFamily({ familyName, familyProducts });
+    const defaultVariants = sourceVariants.filter(v => v.product_id === defaultProduct.id);
+    setViewingFamily({ familyName, familyProducts, sourceVariants });
     setSelectedProductId(defaultProduct.id);
     setSelectedVariantId(defaultVariants[0]?.id || '');
     setQuantity(1);
@@ -406,15 +447,19 @@ export default function Home() {
 
   const handleSizeChange = (newProductId) => {
     setSelectedProductId(newProductId);
-    const newVariants = variants.filter(v => v.product_id === newProductId);
+    const newVariants = (viewingFamily?.sourceVariants || variants).filter(v => v.product_id === newProductId);
     setSelectedVariantId(newVariants[0]?.id || '');
     setQuantity(1);
   };
 
   const handleAddToCart = () => {
     if (!selectedVariantId || quantity < 1) return;
-    const product = products.find(p => p.id === selectedProductId);
-    const variant = variants.find(v => v.id === selectedVariantId);
+    const currentVariants = viewingFamily?.sourceVariants || variants;
+    
+    // We look up the product within the passed-in family logic
+    const product = viewingFamily.familyProducts.find(p => p.id === selectedProductId);
+    const variant = currentVariants.find(v => v.id === selectedVariantId);
+    
     const { finalPrice: unitPrice } = getVariantPrice(product, variant);
 
     setIsAddingToCart(true);
@@ -506,7 +551,7 @@ export default function Home() {
   ];
 
   const activeProduct = viewingFamily ? viewingFamily.familyProducts.find(p => p.id === selectedProductId) : null;
-  const activeVariants = activeProduct ? variants.filter(v => v.product_id === activeProduct.id) : [];
+  const activeVariants = activeProduct ? (viewingFamily.sourceVariants || variants).filter(v => v.product_id === activeProduct.id) : [];
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
   const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
 
@@ -546,6 +591,7 @@ export default function Home() {
       </style>
 
       {/* 1. STICKY NAVIGATION BAR */}
+      {/* 🚀 UI Z-INDEX FIX: Ensuring this stays above EVERYTHING (z-50) */}
       <nav className="sticky top-0 z-50 w-full bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-sm transition-all">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-20 flex justify-between items-center">
           <div className="flex items-center gap-3 cursor-pointer shrink-0" onClick={(e) => scrollToSection(e, 'home')}>
@@ -697,77 +743,129 @@ export default function Home() {
         </div>
       </section>
 
-      {/* 4. CATALOG */}
-      <section id="catalog" className="bg-white max-w-7xl mx-auto px-6 py-16 sm:py-20 w-full flex-grow flex flex-col scroll-mt-24 border-b border-slate-200">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 shrink-0 relative z-10">
-          <div className="w-full md:w-auto">
-            <h2 className="text-3xl font-black text-slate-900 tracking-tight bg-white inline-block pr-4">Catalog</h2>
-            <p className="text-slate-500 mt-1 font-medium bg-white/80 inline-block pr-4">Browse our comprehensive medical catalog.</p>
+      {/* 🚀 NEW SECTION: 3.5 FEATURED PRODUCTS (NOW A MOBILE SLIDER) */}
+      {featuredFamilies.length > 0 && (
+        <section className="bg-white py-16 sm:py-20 border-b border-slate-200 relative z-20">
+          <div className="max-w-7xl mx-auto px-6">
+            <div className="flex flex-col md:flex-row justify-between items-end gap-6 mb-10">
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <Badge variant="secondary" className="bg-orange-50 text-orange-600 border-orange-200 uppercase tracking-widest text-[10px] font-black flex items-center gap-1.5 shadow-sm">
+                    <Sparkles size={12} /> Featured Products
+                  </Badge>
+                </div>
+                <h2 className="text-3xl lg:text-4xl font-black text-slate-900 tracking-tight">Premium Care Selections</h2>
+                <p className="text-slate-500 mt-2 font-medium">Top-rated clinical supplies requested most by healthcare professionals.</p>
+              </div>
+              <Button variant="outline" className="hidden md:flex bg-white hover:bg-slate-50 border-slate-200 rounded-xl font-bold shadow-sm" onClick={(e) => scrollToSection(e, 'catalog')}>
+                View Full Catalog <ArrowRight size={16} className="ml-2" />
+              </Button>
+            </div>
+            
+            {/* 🚀 Wrapped the Featured Products loop inside the MobileCarousel component */}
+            <MobileCarousel 
+              items={featuredFamilies} 
+              desktopGridClass="sm:grid-cols-2 lg:grid-cols-4" 
+              autoPlayInterval={5000} 
+              renderItem={(item) => {
+                const [familyName, familyProducts] = item;
+                return (
+                  <ProductFamilyCard 
+                    key={`featured-${familyName}`} 
+                    familyName={familyName} 
+                    familyProducts={familyProducts} 
+                    globalVariants={featuredData?.variants || []} 
+                    getVariantPrice={getVariantPrice} 
+                    onClick={() => openProductModal(familyName, familyProducts, featuredData?.variants || [])} 
+                    session={session} 
+                  />
+                );
+              }} 
+            />
+
+            <Button variant="outline" className="w-full mt-6 md:hidden bg-white hover:bg-slate-50 border-slate-200 rounded-xl font-bold shadow-sm" onClick={(e) => scrollToSection(e, 'catalog')}>
+              View Full Catalog <ArrowRight size={16} className="ml-2" />
+            </Button>
           </div>
-          <div className="flex flex-col sm:flex-row gap-4 w-full md:w-auto">
-            <div className="relative w-full sm:w-64 shrink-0" ref={dropdownRef}>
-              <button type="button" onClick={() => setIsDropdownOpen(!isDropdownOpen)} className="w-full flex justify-between items-center bg-white border border-slate-200 hover:border-slate-300 text-slate-700 font-bold py-3 pl-5 pr-4 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition-all text-left z-10 relative h-12">
-                <span className="truncate pr-2">{activeCategory === 'All' ? 'All Categories' : activeCategory}</span>
-                <ChevronDown className={`text-slate-400 shrink-0 transition-transform duration-300 ${isDropdownOpen ? 'rotate-180' : ''}`} size={18} />
-              </button>
-              <div className={`absolute z-50 w-full mt-2 bg-white border border-slate-100 rounded-xl shadow-xl overflow-hidden transition-all duration-200 origin-top ${isDropdownOpen ? 'opacity-100 translate-y-0 scale-100 visible pointer-events-auto' : 'opacity-0 -translate-y-2 scale-95 invisible pointer-events-none'}`}>
-                <ul className="max-h-64 overflow-y-auto divide-y divide-slate-50 py-1">
-                  {categories.map((category, idx) => (
-                    <li key={idx}><button type="button" onClick={() => { setActiveCategory(category); setIsDropdownOpen(false); }} className={`w-full text-left px-5 py-3 text-sm font-bold transition-colors ${activeCategory === category ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>{category === 'All' ? 'All Categories' : category}</button></li>
-                  ))}
-                </ul>
+        </section>
+      )}
+
+      {/* 4. CATALOG */}
+      <section id="catalog" className="bg-slate-50/50 py-16 sm:py-20 w-full flex-grow flex flex-col scroll-mt-24 border-b border-slate-200 relative">
+        <div className="max-w-7xl mx-auto px-6 w-full flex-grow flex flex-col">
+          
+          {/* 🚀 UI Z-INDEX FIX: Header wrapper is z-40 so the dropdown covers the z-10 grid, but safely tucks under the z-50 nav bar! */}
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 shrink-0 relative z-40">
+            <div className="w-full md:w-auto">
+              <h2 className="text-3xl font-black text-slate-900 tracking-tight bg-slate-50/50 inline-block pr-4">Catalog</h2>
+              <p className="text-slate-500 mt-1 font-medium bg-slate-50/80 inline-block pr-4">Browse our comprehensive medical catalog.</p>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-4 w-full md:w-auto">
+              <div className="relative w-full sm:w-64 shrink-0" ref={dropdownRef}>
+                <button type="button" onClick={() => setIsDropdownOpen(!isDropdownOpen)} className="w-full flex justify-between items-center bg-white border border-slate-200 hover:border-slate-300 text-slate-700 font-bold py-3 pl-5 pr-4 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition-all text-left z-10 relative h-12">
+                  <span className="truncate pr-2">{activeCategory === 'All' ? 'All Categories' : activeCategory}</span>
+                  <ChevronDown className={`text-slate-400 shrink-0 transition-transform duration-300 ${isDropdownOpen ? 'rotate-180' : ''}`} size={18} />
+                </button>
+                <div className={`absolute z-50 w-full mt-2 bg-white border border-slate-100 rounded-xl shadow-2xl overflow-hidden transition-all duration-200 origin-top ${isDropdownOpen ? 'opacity-100 translate-y-0 scale-100 visible pointer-events-auto' : 'opacity-0 -translate-y-2 scale-95 invisible pointer-events-none'}`}>
+                  <ul className="max-h-64 overflow-y-auto divide-y divide-slate-50 py-1">
+                    {categories.map((category, idx) => (
+                      <li key={idx}><button type="button" onClick={() => { setActiveCategory(category); setIsDropdownOpen(false); }} className={`w-full text-left px-5 py-3 text-sm font-bold transition-colors ${activeCategory === category ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>{category === 'All' ? 'All Categories' : category}</button></li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+              <div className="relative w-full sm:w-72 shrink-0">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                <Input 
+                  type="text" 
+                  placeholder="Search products..." 
+                  value={searchQuery} 
+                  onChange={(e) => setSearchQuery(e.target.value)} 
+                  className="w-full pl-11 pr-4 py-3 h-12 bg-white rounded-xl text-sm font-medium shadow-sm" 
+                />
               </div>
             </div>
-            <div className="relative w-full sm:w-72 shrink-0">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-              <Input 
-                type="text" 
-                placeholder="Search products..." 
-                value={searchQuery} 
-                onChange={(e) => setSearchQuery(e.target.value)} 
-                className="w-full pl-11 pr-4 py-3 h-12 bg-white rounded-xl text-sm font-medium shadow-sm" 
-              />
-            </div>
           </div>
-        </div>
 
-        {/* PRODUCT GRID USING PAGINATED FAMILIES */}
-        <div className="flex-grow min-h-[600px] lg:min-h-[750px] relative z-10">
-          {loading ? (
-            <div className="absolute inset-0 flex justify-center items-center"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>
-          ) : displayedFamilies.length === 0 ? (
-            <div className="text-center py-24 bg-white rounded-3xl border border-slate-200 shadow-sm mx-2">
-              <Package size={48} className="mx-auto text-slate-300 mb-4" strokeWidth={1.5} />
-              <h3 className="text-xl font-bold text-slate-900 mb-2">No products found</h3>
-              <p className="text-slate-500">Adjust your search or category filters to try again.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-              {displayedFamilies.map(([familyName, familyProducts]) => (
-                <ProductFamilyCard 
-                  key={familyName} 
-                  familyName={familyName} 
-                  familyProducts={familyProducts} 
-                  globalVariants={variants} 
-                  getVariantPrice={getVariantPrice} 
-                  onClick={() => openProductModal(familyName, familyProducts)} 
-                  session={session} 
-                />
-              ))}
+          {/* 🚀 UI Z-INDEX FIX: Grid is z-10, lower than the z-40 dropdown parent */}
+          <div className="flex-grow min-h-[600px] lg:min-h-[750px] relative z-10">
+            {loading ? (
+              <div className="absolute inset-0 flex justify-center items-center"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>
+            ) : displayedFamilies.length === 0 ? (
+              <div className="text-center py-24 bg-white rounded-3xl border border-slate-200 shadow-sm mx-2">
+                <Package size={48} className="mx-auto text-slate-300 mb-4" strokeWidth={1.5} />
+                <h3 className="text-xl font-bold text-slate-900 mb-2">No products found</h3>
+                <p className="text-slate-500">Adjust your search or category filters to try again.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+                {displayedFamilies.map(([familyName, familyProducts]) => (
+                  <ProductFamilyCard 
+                    key={familyName} 
+                    familyName={familyName} 
+                    familyProducts={familyProducts} 
+                    globalVariants={variants} 
+                    getVariantPrice={getVariantPrice} 
+                    onClick={() => openProductModal(familyName, familyProducts, variants)} 
+                    session={session} 
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {!loading && totalCount > 0 && (
+            <div className="mt-8 sm:mt-12 flex flex-col md:flex-row justify-between items-center gap-4 border-t border-slate-200 pt-6 shrink-0 relative z-10">
+              <p className="text-xs sm:text-sm text-slate-500 font-medium text-center md:text-left mb-2 md:mb-0">Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> items</p>
+              <div className="flex items-center gap-1 sm:gap-2 w-full md:w-auto justify-center">
+                <Button variant="outline" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="rounded-xl shadow-sm bg-white"><ChevronLeft size={18} /> <span className="hidden sm:inline ml-1">Prev</span></Button>
+                {getPageNumbers().map((p, index) => p === '...' ? (<span key={`dots-${index}`} className="px-1 sm:px-2 text-slate-400 font-bold">...</span>) : (<Button key={p} variant={page === p ? "default" : "outline"} onClick={() => setPage(p)} className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl p-0 shadow-sm ${page === p ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-white'}`}>{p + 1}</Button>))}
+                <Button variant="outline" onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1} className="rounded-xl shadow-sm bg-white"><span className="hidden sm:inline mr-1">Next</span> <ChevronRight size={18} /></Button>
+              </div>
             </div>
           )}
-        </div>
 
-        {!loading && totalCount > 0 && (
-          <div className="mt-8 sm:mt-12 flex flex-col md:flex-row justify-between items-center gap-4 border-t border-slate-200 pt-6 shrink-0 relative z-10 bg-white/80 rounded-xl p-2">
-            <p className="text-xs sm:text-sm text-slate-500 font-medium text-center md:text-left mb-2 md:mb-0">Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> items</p>
-            <div className="flex items-center gap-1 sm:gap-2 w-full md:w-auto justify-center">
-              <Button variant="outline" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="rounded-xl shadow-sm bg-white"><ChevronLeft size={18} /> <span className="hidden sm:inline ml-1">Prev</span></Button>
-              {getPageNumbers().map((p, index) => p === '...' ? (<span key={`dots-${index}`} className="px-1 sm:px-2 text-slate-400 font-bold">...</span>) : (<Button key={p} variant={page === p ? "default" : "outline"} onClick={() => setPage(p)} className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl p-0 shadow-sm ${page === p ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-white'}`}>{p + 1}</Button>))}
-              <Button variant="outline" onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1} className="rounded-xl shadow-sm bg-white"><span className="hidden sm:inline mr-1">Next</span> <ChevronRight size={18} /></Button>
-            </div>
-          </div>
-        )}
+        </div>
       </section>
 
       {/* 5. BRANDS */}
@@ -803,14 +901,14 @@ export default function Home() {
               </p>
               
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-4">
-                <div className="flex flex-col sm:items-start gap-3 text-left p-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                <div className="flex flex-col sm:items-start gap-3 text-left p-4 bg-slate-50 rounded-2xl border border-slate-100">
                   <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0 border border-blue-100"><ShieldCheck size={24} /></div>
                   <div>
                     <h4 className="font-bold text-slate-900 text-base">Certified Quality</h4>
                     <p className="text-sm text-slate-500 mt-1 font-medium leading-relaxed">All products meet stringent safety and clinical standards before they reach your facility.</p>
                   </div>
                 </div>
-                <div className="flex flex-col sm:items-start gap-3 text-left p-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                <div className="flex flex-col sm:items-start gap-3 text-left p-4 bg-slate-50 rounded-2xl border border-slate-100">
                   <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-100"><Truck size={24} /></div>
                   <div>
                     <h4 className="font-bold text-slate-900 text-base">Direct Delivery</h4>
@@ -821,27 +919,31 @@ export default function Home() {
             </div>
 
             {/* 3D Stack Card Slider */}
-            <div className="relative mt-8 lg:mt-0 h-[300px] sm:h-[400px] lg:h-[450px] w-full flex items-center justify-center overflow-hidden rounded-3xl bg-slate-100 border border-slate-200 shadow-inner">
-
-              <div className="relative w-[85%] max-w-[320px] sm:max-w-[380px] h-[200px] sm:h-[260px] z-20 perspective-[1000px]">
+            {/* 🚀 UI FIX: Increased container height to allow for bigger cards */}
+            <div className="relative mt-8 lg:mt-0 h-[320px] sm:h-[450px] lg:h-[500px] w-full flex items-center justify-center overflow-hidden rounded-3xl bg-slate-100 border border-slate-200 shadow-inner">
+              
+              {/* 🚀 UI FIX: Expanded the max-width and height of the actual cards inside the slider */}
+              <div className="relative w-[90%] max-w-[360px] sm:max-w-[450px] lg:max-w-[480px] h-[240px] sm:h-[320px] lg:h-[360px] z-20 perspective-[1000px]">
                 {placeholders.map((item, index) => {
                   const diff = (index - currentAboutSlide + placeholders.length) % placeholders.length;
                   
                   let cardClasses = "";
                   if (diff === 0) cardClasses = "translate-y-0 scale-100 opacity-100 z-30 shadow-2xl";
-                  else if (diff === 1) cardClasses = "translate-y-4 sm:translate-y-6 scale-[0.92] opacity-80 z-20 shadow-xl";
-                  else if (diff === 2) cardClasses = "translate-y-8 sm:translate-y-12 scale-[0.84] opacity-50 z-10 shadow-md";
-                  else cardClasses = "translate-y-12 sm:translate-y-16 scale-[0.76] opacity-0 z-0";
+                  else if (diff === 1) cardClasses = "translate-y-6 sm:translate-y-8 scale-[0.92] opacity-80 z-20 shadow-xl";
+                  else if (diff === 2) cardClasses = "translate-y-12 sm:translate-y-16 scale-[0.84] opacity-50 z-10 shadow-md";
+                  else cardClasses = "translate-y-16 sm:translate-y-20 scale-[0.76] opacity-0 z-0";
 
                   return (
                     <div 
                       key={item.id}
-                      className={`absolute inset-0 w-full h-full rounded-3xl transition-all duration-700 ease-in-out transform origin-top flex flex-col items-center justify-center text-center p-6 border border-white/20 ${cardClasses} bg-gradient-to-br ${item.color}`}
+                      className={`absolute inset-0 w-full h-full rounded-3xl transition-all duration-700 ease-in-out transform origin-top flex flex-col items-center justify-center text-center p-6 sm:p-8 border border-white/20 ${cardClasses} bg-gradient-to-br ${item.color}`}
                     >
-                      <div className="w-14 h-14 sm:w-16 sm:h-16 bg-white/20 rounded-full flex items-center justify-center mb-4 backdrop-blur-sm border border-white/30 shadow-inner">
+                      {/* 🚀 UI FIX: Enlarged the background circle so the size-56 icons breathe */}
+                      <div className="w-20 h-20 sm:w-24 sm:h-24 bg-white/20 rounded-full flex items-center justify-center mb-6 backdrop-blur-sm border border-white/30 shadow-inner">
                         {item.icon}
                       </div>
-                      <h3 className="text-xl sm:text-2xl font-black text-white drop-shadow-md tracking-tight leading-tight">
+                      {/* 🚀 UI FIX: Increased title text size to match the bigger icons */}
+                      <h3 className="text-2xl sm:text-3xl font-black text-white drop-shadow-md tracking-tight leading-tight">
                         {item.title}
                       </h3>
                     </div>
@@ -850,15 +952,15 @@ export default function Home() {
               </div>
               
               <div className="absolute bottom-4 right-4 z-30 hidden sm:flex gap-2">
-                <button onClick={prevAboutSlide} className="p-2 rounded-full bg-white/50 hover:bg-white/80 text-slate-800 backdrop-blur-md transition-colors shadow-sm"><ChevronLeft size={16} /></button>
-                <button onClick={nextAboutSlide} className="p-2 rounded-full bg-white/50 hover:bg-white/80 text-slate-800 backdrop-blur-md transition-colors shadow-sm"><ChevronRight size={16} /></button>
+                <button onClick={prevAboutSlide} className="p-2.5 rounded-full bg-white/50 hover:bg-white/80 text-slate-800 backdrop-blur-md transition-colors shadow-sm"><ChevronLeft size={20} /></button>
+                <button onClick={nextAboutSlide} className="p-2.5 rounded-full bg-white/50 hover:bg-white/80 text-slate-800 backdrop-blur-md transition-colors shadow-sm"><ChevronRight size={20} /></button>
               </div>
               <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex gap-2">
                 {placeholders.map((_, idx) => (
                   <button 
                     key={idx} 
                     onClick={() => setCurrentAboutSlide(idx)}
-                    className={`h-2 rounded-full transition-all ${idx === currentAboutSlide ? 'bg-blue-600 w-6 shadow-sm' : 'bg-slate-300 hover:bg-slate-400 w-2 shadow-sm'}`}
+                    className={`h-2.5 rounded-full transition-all ${idx === currentAboutSlide ? 'bg-blue-600 w-8 shadow-sm' : 'bg-slate-300 hover:bg-slate-400 w-2.5 shadow-sm'}`}
                   />
                 ))}
               </div>
@@ -884,12 +986,11 @@ export default function Home() {
       {/* 9. CLINICAL MEDICAL THEME FOOTER */}
       <footer className="bg-[#0f172a] text-slate-300 mt-auto border-t-4 border-blue-600">
         <div className="max-w-7xl mx-auto px-6 lg:px-8 py-12 sm:py-16">
-          {/* UI/UX FIX: Switched to a 2x2 grid on tablets (sm:grid-cols-2) and 4 cols on desktop (lg:grid-cols-4). Adjusted gap for mobile. */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-10 sm:gap-12 lg:gap-8">
             
             <div className="flex flex-col items-center sm:items-start text-center sm:text-left">
               <Link to="/" className="block mb-6 sm:mb-8">
-                <img src="/images/tricore-logo2.png" alt="Tricore Medical Logo" className="h-12 sm:h-17 w-auto object-contain" />
+                <img src="/images/tricore-logo2.png" alt="Tricore Medical Logo" className="h-10 sm:h-10 w-auto object-contain" />
               </Link>
               <div className="flex items-center gap-3 sm:gap-4 group">
                 <img src="/images/accreditation.webp" alt="ACHC Accredited" className="h-14 sm:h-16 w-auto object-contain drop-shadow-md group-hover:scale-105 transition-transform duration-300 shrink-0" />
