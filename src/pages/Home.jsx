@@ -5,17 +5,30 @@ import { supabase } from '../lib/supabase';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { 
   Truck, ShieldCheck, Clock, ArrowRight, Package, Lock, 
-  ShoppingCart, Search, UserPlus, ChevronLeft, ChevronRight, 
+  ShoppingCart, Search, ChevronLeft, ChevronRight, 
   User, LayoutDashboard, ChevronDown, MapPin, Mail, Phone, Users,
-  Menu, X, ArrowUp, PackageOpen, Plus, Minus, CheckCircle2, AlertTriangle, Building2
+  Menu, X, ArrowUp, PackageOpen, Plus, Minus, CheckCircle2, AlertTriangle, HeadphonesIcon, Building2
 } from 'lucide-react';
 
-// 🚀 SHADCN UI IMPORTS
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+
+const banners = [
+  '/images/banner-1.png',
+  '/images/banner-2.webp',
+  '/images/banner-3.webp',
+  '/images/banner-4.webp'
+];
+
+const placeholders = [
+  { id: 1, title: 'Front of the Warehouse', color: 'from-blue-600 to-cyan-500', icon: <Building2 size={36} className="text-white"/> },
+  { id: 2, title: 'Operations', color: 'from-indigo-600 to-purple-500', icon: <HeadphonesIcon size={36} className="text-white"/> },
+  { id: 3, title: 'Products', color: 'from-emerald-600 to-teal-500', icon: <Package size={36} className="text-white"/> },
+  { id: 4, title: 'Shelves', color: 'from-slate-700 to-slate-500', icon: <LayoutDashboard size={36} className="text-white"/> }
+];
 
 // =========================================
 // REUSABLE MOBILE AUTO-SLIDER COMPONENT
@@ -96,13 +109,17 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
   const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
 
   let stockAmount = 0;
-  if (Array.isArray(activeProduct?.inventory)) {
-    stockAmount = activeProduct.inventory.reduce((sum, item) => sum + (Number(item.base_units_on_hand) || 0), 0);
-  } else if (activeProduct?.inventory) {
-    stockAmount = Number(activeProduct.inventory.base_units_on_hand) || 0;
+  const inventoryData = activeProduct?.inventory;
+
+  if (Array.isArray(inventoryData) && inventoryData.length > 0) {
+    stockAmount = inventoryData.reduce((sum, item) => sum + (parseInt(item.base_units_on_hand) || parseInt(item.quantity) || parseInt(item.stock) || 0), 0);
+  } else if (inventoryData && !Array.isArray(inventoryData)) {
+    stockAmount = parseInt(inventoryData.base_units_on_hand) || parseInt(inventoryData.quantity) || parseInt(inventoryData.stock) || 0;
+  } else {
+    stockAmount = parseInt(activeVariant?.base_units_on_hand) || parseInt(activeProduct?.base_units_on_hand) || parseInt(activeVariant?.quantity) || parseInt(activeProduct?.quantity) || 0;
   }
 
-  const continueSelling = activeProduct?.continue_selling || false;
+  const continueSelling = activeProduct?.continue_selling === true || activeProduct?.continue_selling === 'true' || activeProduct?.continue_selling === 'TRUE';
   const isOutOfStock = stockAmount <= 0;
   const preventPurchase = isOutOfStock && !continueSelling;
 
@@ -173,9 +190,7 @@ export default function Home() {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
   
-  // Pagination State
   const [page, setPage] = useState(0);
-
   const [activeSection, setActiveSection] = useState('home');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
@@ -184,13 +199,31 @@ export default function Home() {
   const [cartLoaded, setCartLoaded] = useState(false);
   const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
   
-  // Original Modal State
   const [viewingFamily, setViewingFamily] = useState(null); 
   const [isClosing, setIsClosing] = useState(false); 
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState('');
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const [quantity, setQuantity] = useState(1);
+
+  const [currentHeroSlide, setCurrentHeroSlide] = useState(0);
+  const [currentAboutSlide, setCurrentAboutSlide] = useState(0);
+
+  useEffect(() => {
+    const heroTimer = setInterval(() => {
+      setCurrentHeroSlide((prev) => (prev === banners.length - 1 ? 0 : prev + 1));
+    }, 4000); 
+    const aboutTimer = setInterval(() => {
+      setCurrentAboutSlide((prev) => (prev === placeholders.length - 1 ? 0 : prev + 1));
+    }, 4000);
+    return () => { clearInterval(heroTimer); clearInterval(aboutTimer); }
+  }, []);
+
+  const nextHeroSlide = () => setCurrentHeroSlide((prev) => (prev === banners.length - 1 ? 0 : prev + 1));
+  const prevHeroSlide = () => setCurrentHeroSlide((prev) => (prev === 0 ? banners.length - 1 : prev - 1));
+
+  const nextAboutSlide = () => setCurrentAboutSlide((prev) => (prev === placeholders.length - 1 ? 0 : prev + 1));
+  const prevAboutSlide = () => setCurrentAboutSlide((prev) => (prev === 0 ? placeholders.length - 1 : prev - 1));
 
   useEffect(() => {
     if (profile?.id) {
@@ -238,8 +271,6 @@ export default function Home() {
 
   useEffect(() => { setPage(0); }, [activeCategory]);
 
-
-  // 🚀 REACT QUERY 1: Fetch Categories
   const { data: categories = ['All'] } = useQuery({
     queryKey: ['categories'],
     queryFn: async () => {
@@ -250,7 +281,6 @@ export default function Home() {
     staleTime: 1000 * 60 * 60,
   });
 
-  // 🚀 REACT QUERY 2: B2B Financials & Pricing Rules
   const { data: b2bData } = useQuery({
     queryKey: ['b2b-financials', profile?.company_id],
     enabled: !!(profile?.company_id && profile?.role?.toLowerCase() === 'b2b'),
@@ -268,7 +298,6 @@ export default function Home() {
 
   const pricingRules = b2bData?.rules || [];
 
-  // 🚀 REACT QUERY 3: Fetch ALL MATCHING Catalog Products
   const { data: catalogData, isPending: loading } = useQuery({
     queryKey: ['products', activeCategory, debouncedSearch],
     queryFn: async () => {
@@ -290,8 +319,6 @@ export default function Home() {
   const products = catalogData?.products || [];
   const variants = catalogData?.variants || [];
 
-
-  // --- PRICING CALCULATOR ---
   const getVariantPrice = (product, variant) => {
     if (!product) return { finalPrice: 0, hasRule: false };
     const baseRetail = Number(product.retail_base_price || 0);
@@ -306,7 +333,6 @@ export default function Home() {
     return { finalPrice: finalPrice, hasRule: finalPrice < variantRetail };
   };
 
-  // 🚀 GROUP ALL PRODUCTS INTO FAMILIES FIRST
   const allGroupedFamilies = useMemo(() => {
     const groups = {};
     products.forEach(p => {
@@ -336,7 +362,6 @@ export default function Home() {
     return Object.entries(groups);
   }, [products]);
 
-  // 🚀 PAGINATE THE FAMILIES LOCALLY
   const totalCount = allGroupedFamilies.length;
   const totalPages = Math.ceil(totalCount / pageSize);
 
@@ -345,7 +370,6 @@ export default function Home() {
     return allGroupedFamilies.slice(startIndex, startIndex + pageSize);
   }, [allGroupedFamilies, page, pageSize]);
 
-  // Anti-Jump Scroll Lock
   useEffect(() => {
     if (viewingFamily) {
       const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
@@ -361,7 +385,6 @@ export default function Home() {
     };
   }, [viewingFamily]);
 
-  // MODAL HANDLERS (ORIGINAL)
   const openProductModal = (familyName, familyProducts) => {
     const defaultProduct = familyProducts[0];
     const defaultVariants = variants.filter(v => v.product_id === defaultProduct.id);
@@ -417,7 +440,6 @@ export default function Home() {
     }, 600); 
   };
 
-  // Scroll Spy Logic
   useEffect(() => {
     const observerOptions = { root: null, rootMargin: '-100px 0px -60% 0px', threshold: 0 };
     const observerCallback = (entries) => {
@@ -479,11 +501,10 @@ export default function Home() {
 
   const valuePropItems = [
     { icon: <Truck size={28} />, title: "Dedicated CA Fleet", text: "Direct to your facility anywhere in California with our private, reliable drivers." },
-    { icon: <ShieldCheck size={28} />, title: "Flexible Net Terms", text: "Custom credit limits and negotiated pricing for approved partner accounts." },
-    { icon: <Clock size={28} />, title: "Real-Time Tracking", text: "Track your fleet deliveries instantly and manage patient orders from your dashboard." }
+    { icon: <Clock size={28} />, title: "Real-Time Tracking", text: "Track your fleet deliveries instantly and manage patient orders from your dashboard." },
+    { icon: <HeadphonesIcon size={28} />, title: "Dedicated Support", text: "Receive personalized assistance from our expert team for all your facility's needs." }
   ];
 
-  // Active Modal Data
   const activeProduct = viewingFamily ? viewingFamily.familyProducts.find(p => p.id === selectedProductId) : null;
   const activeVariants = activeProduct ? variants.filter(v => v.product_id === activeProduct.id) : [];
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
@@ -501,9 +522,8 @@ export default function Home() {
   const modalPreventPurchase = modalIsOutOfStock && !modalContinueSelling;
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col relative transition-all duration-300">
+    <div className="min-h-screen bg-white flex flex-col relative transition-all duration-300">
       
-      {/* 🚀 RESTORED ORIGINAL CSS ANIMATIONS FOR MODAL */}
       <style>
         {`
           @keyframes modalOverlayFade { from { opacity: 0; } to { opacity: 1; } }
@@ -526,10 +546,10 @@ export default function Home() {
       </style>
 
       {/* 1. STICKY NAVIGATION BAR */}
-      <nav className="sticky top-0 z-40 w-full bg-white/90 backdrop-blur-md border-b border-slate-200 shadow-sm transition-all">
+      <nav className="sticky top-0 z-50 w-full bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-sm transition-all">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-20 flex justify-between items-center">
           <div className="flex items-center gap-3 cursor-pointer shrink-0" onClick={(e) => scrollToSection(e, 'home')}>
-            <img src="/images/tricore-logo2.png" alt="Tricore Medical Logo" className="h-9 sm:h-10 md:h-12 w-auto object-contain" />
+            <img src="/images/tricore-logo2.png" alt="Tricore Medical Logo" className="h-10 sm:h-12 md:h-14 lg:h-16 w-auto object-contain drop-shadow-sm" />
           </div>
           <div className="hidden lg:flex items-center gap-8 font-bold text-sm">
             {navLinks.map((link) => {
@@ -544,7 +564,6 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-4 sm:gap-6">
             
-            {/* CART INDICATOR IN NAVBAR */}
             {session && (
               <div className="hidden sm:flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
                 <div className="text-right">
@@ -557,13 +576,20 @@ export default function Home() {
               </div>
             )}
 
+            <a 
+              href="mailto:info@tricoremedicalsupply.com?subject=Wholesale Quote Request" 
+              className="hidden sm:flex items-center justify-center px-4 py-2.5 text-sm border-2 border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 hover:border-slate-300 active:scale-95 transition-all"
+            >
+              Request a Quote
+            </a>
+
             {!session ? (
               <Link to="/login">
-                <Button className="font-bold rounded-xl h-10 px-4 sm:px-6 shadow-md"><User size={16} className="mr-2 hidden sm:block" /> Login</Button>
+                <Button className="font-bold rounded-xl h-10 px-4 sm:px-6 shadow-md bg-blue-600 hover:bg-blue-700 text-white"><User size={16} className="mr-2 hidden sm:block" /> Login</Button>
               </Link>
             ) : (
               <Link to="/dashboard">
-                <Button className="font-bold rounded-xl h-10 px-4 sm:px-6 shadow-md"><LayoutDashboard size={16} className="mr-2 hidden sm:block" /> Dashboard</Button>
+                <Button className="font-bold rounded-xl h-10 px-4 sm:px-6 shadow-md bg-blue-600 hover:bg-blue-700 text-white"><LayoutDashboard size={16} className="mr-2 hidden sm:block" /> Dashboard</Button>
               </Link>
             )}
             <button className="lg:hidden relative w-10 h-10 flex items-center justify-center text-slate-600 hover:bg-slate-100 hover:text-slate-900 rounded-xl transition-colors active:scale-95 overflow-hidden" onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
@@ -592,31 +618,77 @@ export default function Home() {
         </div>
       </nav>
 
-      {/* 2. HERO SECTION */}
-      <section id="home" className="bg-white border-b border-slate-200 relative overflow-hidden scroll-mt-24">
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]"></div>
-        <div className="max-w-7xl mx-auto px-6 py-16 sm:py-24 md:py-28 lg:py-32 relative z-10 flex flex-col items-center text-center">
-          <h1 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-black tracking-tight text-slate-900 mb-6 max-w-4xl leading-[1.1]">
-            Tricore Medical Supply <br />
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-cyan-500 block mt-2 text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-extrabold pb-2">built on reliability, driven by quality.</span>
-          </h1>
-          <p className="text-base sm:text-lg md:text-xl text-slate-500 mb-10 max-w-2xl leading-relaxed font-medium px-2">Supplying premium medical equipment throughout California. Browse our complete selection and discover more by logging in.</p>
-          <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
-            <Button size="lg" className="h-14 px-8 text-base rounded-xl bg-slate-900 hover:bg-slate-800 shadow-xl" onClick={(e) => scrollToSection(e, 'catalog')}>Explore Catalog <ArrowRight size={18} className="ml-2"/></Button>
-            {!session && (<Link to="/login"><Button variant="outline" size="lg" className="w-full sm:w-auto h-14 px-8 text-base rounded-xl border-slate-200 text-slate-700">Create Account</Button></Link>)}
+      {/* 2. SPLIT LAYOUT HERO SECTION WITH BANNERS */}
+      <section id="home" className="w-full bg-[#0B2447] scroll-mt-24 flex flex-col lg:flex-row lg:h-[550px] xl:h-[650px] overflow-hidden">
+        
+        {/* IMAGE BANNERS SIDE */}
+        <div className="w-full lg:w-[70%] relative h-[300px] sm:h-[450px] lg:h-full bg-[#0B2447] lg:p-6 xl:p-8 lg:pr-2 order-1 lg:order-1">
+          <div className="relative w-full h-full rounded-b-3xl lg:rounded-3xl overflow-hidden shadow-2xl border border-white/10 bg-[#061833]">
+            {banners.map((src, index) => (
+              <div 
+                key={index}
+                className={`absolute inset-0 w-full h-full transition-opacity duration-1000 ease-in-out ${index === currentHeroSlide ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}
+              >
+                <img 
+                  src={src} 
+                  alt={`Tricore Medical Supply Banner ${index + 1}`} 
+                  className="absolute inset-0 w-full h-full object-contain object-center"
+                />
+              </div>
+            ))}
+
+            <div className="absolute bottom-6 right-6 z-30 hidden sm:flex gap-2">
+              <button onClick={prevHeroSlide} className="p-2.5 rounded-full bg-slate-900/60 hover:bg-slate-900/80 text-white backdrop-blur-md transition-colors border border-white/20"><ChevronLeft size={18} /></button>
+              <button onClick={nextHeroSlide} className="p-2.5 rounded-full bg-slate-900/60 hover:bg-slate-900/80 text-white backdrop-blur-md transition-colors border border-white/20"><ChevronRight size={18} /></button>
+            </div>
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 flex gap-2">
+              {banners.map((_, idx) => (
+                <button 
+                  key={idx} 
+                  onClick={() => setCurrentHeroSlide(idx)}
+                  className={`h-2.5 rounded-full transition-all ${idx === currentHeroSlide ? 'bg-blue-500 w-8 shadow-sm' : 'bg-white/50 w-2.5 hover:bg-white shadow-sm'}`}
+                />
+              ))}
+            </div>
           </div>
         </div>
+
+        {/* TEXT SIDE */}
+        <div className="w-full lg:w-[30%] flex flex-col justify-center px-6 py-12 sm:py-16 lg:px-8 xl:px-12 z-20 bg-[#0B2447] order-2 lg:order-2">
+          <div className="max-w-md mx-auto w-full animate-in slide-in-from-bottom-8 fade-in duration-700 text-center lg:text-left">
+            <h1 className="text-4xl sm:text-5xl lg:text-[42px] xl:text-[50px] font-black tracking-tight text-white mb-4 sm:mb-6 leading-[1.05]">
+              Tricore Medical Supply <br className="hidden sm:block" />
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-300 to-cyan-200 block mt-2 text-3xl sm:text-4xl lg:text-[32px] xl:text-[40px] font-extrabold pb-2">built on reliability, driven by quality.</span>
+            </h1>
+            <p className="text-sm sm:text-base text-blue-100/90 mb-8 sm:mb-10 leading-relaxed font-medium">
+              Supplying premium medical equipment throughout California. Browse our complete selection and discover more by logging in.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 w-full sm:w-auto justify-center lg:justify-start">
+              <Button size="lg" className="w-full sm:w-auto h-12 sm:h-14 px-6 text-sm sm:text-base rounded-xl bg-blue-500 hover:bg-blue-400 text-white shadow-xl shadow-blue-900/20 border-0" onClick={(e) => scrollToSection(e, 'catalog')}>
+                Explore Catalog <ArrowRight size={18} className="ml-2"/>
+              </Button>
+              {!session && (
+                <Link to="/login" className="w-full sm:w-auto">
+                  <Button variant="outline" size="lg" className="w-full h-12 sm:h-14 px-6 text-sm sm:text-base rounded-xl border-blue-700 bg-blue-800 text-white hover:bg-blue-700 hover:text-white transition-colors">
+                    Create Account
+                  </Button>
+                </Link>
+              )}
+            </div>
+          </div>
+        </div>
+
       </section>
 
       {/* 3. WHY CHOOSE US */}
       <section className="bg-slate-50 py-16 sm:py-20 md:py-28 border-b border-slate-200 relative overflow-hidden">
-        <div className="max-w-7xl mx-auto px-6">
+        <div className="max-w-7xl mx-auto px-6 relative z-10">
           <div className="text-center mb-10 sm:mb-16">
             <h2 className="text-3xl lg:text-4xl font-black text-slate-900 tracking-tight">Why Choose Tricore?</h2>
             <div className="w-20 h-1.5 bg-blue-600 mx-auto mt-6 rounded-full"></div>
           </div>
           <MobileCarousel items={whyChooseItems} desktopGridClass="sm:grid-cols-2 lg:grid-cols-4" autoPlayInterval={3500} renderItem={(item) => (
-            <Card className="p-6 sm:p-8 rounded-3xl border-slate-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group w-full text-left cursor-default shadow-sm">
+            <Card className="p-6 sm:p-8 rounded-3xl border-slate-200 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group w-full text-left cursor-default shadow-sm bg-white">
               <div className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center mb-5 sm:mb-6 border group-hover:scale-110 transition-transform ${item.colorClass}`}>{item.icon}</div>
               <h3 className="font-bold text-lg sm:text-xl text-slate-900 mb-2 sm:mb-3 leading-tight">{item.title}</h3>
               <p className="text-slate-500 text-sm leading-relaxed font-medium">{item.text}</p>
@@ -626,11 +698,11 @@ export default function Home() {
       </section>
 
       {/* 4. CATALOG */}
-      <section id="catalog" className="max-w-7xl mx-auto px-6 py-16 sm:py-20 w-full flex-grow flex flex-col scroll-mt-24 border-b border-slate-200">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 shrink-0">
+      <section id="catalog" className="bg-white max-w-7xl mx-auto px-6 py-16 sm:py-20 w-full flex-grow flex flex-col scroll-mt-24 border-b border-slate-200">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 shrink-0 relative z-10">
           <div className="w-full md:w-auto">
-            <h2 className="text-3xl font-black text-slate-900 tracking-tight">Catalog</h2>
-            <p className="text-slate-500 mt-1 font-medium">Browse our comprehensive medical catalog.</p>
+            <h2 className="text-3xl font-black text-slate-900 tracking-tight bg-white inline-block pr-4">Catalog</h2>
+            <p className="text-slate-500 mt-1 font-medium bg-white/80 inline-block pr-4">Browse our comprehensive medical catalog.</p>
           </div>
           <div className="flex flex-col sm:flex-row gap-4 w-full md:w-auto">
             <div className="relative w-full sm:w-64 shrink-0" ref={dropdownRef}>
@@ -653,14 +725,14 @@ export default function Home() {
                 placeholder="Search products..." 
                 value={searchQuery} 
                 onChange={(e) => setSearchQuery(e.target.value)} 
-                className="w-full pl-11 pr-4 py-3 h-12 rounded-xl text-sm font-medium shadow-sm" 
+                className="w-full pl-11 pr-4 py-3 h-12 bg-white rounded-xl text-sm font-medium shadow-sm" 
               />
             </div>
           </div>
         </div>
 
         {/* PRODUCT GRID USING PAGINATED FAMILIES */}
-        <div className="flex-grow min-h-[600px] lg:min-h-[750px] relative">
+        <div className="flex-grow min-h-[600px] lg:min-h-[750px] relative z-10">
           {loading ? (
             <div className="absolute inset-0 flex justify-center items-center"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>
           ) : displayedFamilies.length === 0 ? (
@@ -687,27 +759,27 @@ export default function Home() {
         </div>
 
         {!loading && totalCount > 0 && (
-          <div className="mt-8 sm:mt-12 flex flex-col md:flex-row justify-between items-center gap-4 border-t border-slate-200 pt-6 shrink-0">
+          <div className="mt-8 sm:mt-12 flex flex-col md:flex-row justify-between items-center gap-4 border-t border-slate-200 pt-6 shrink-0 relative z-10 bg-white/80 rounded-xl p-2">
             <p className="text-xs sm:text-sm text-slate-500 font-medium text-center md:text-left mb-2 md:mb-0">Showing <span className="font-bold text-slate-900">{page * pageSize + 1}</span> to <span className="font-bold text-slate-900">{Math.min((page + 1) * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900">{totalCount}</span> items</p>
             <div className="flex items-center gap-1 sm:gap-2 w-full md:w-auto justify-center">
-              <Button variant="outline" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="rounded-xl shadow-sm"><ChevronLeft size={18} /> <span className="hidden sm:inline ml-1">Prev</span></Button>
-              {getPageNumbers().map((p, index) => p === '...' ? (<span key={`dots-${index}`} className="px-1 sm:px-2 text-slate-400 font-bold">...</span>) : (<Button key={p} variant={page === p ? "default" : "outline"} onClick={() => setPage(p)} className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl p-0 shadow-sm ${page === p ? 'bg-blue-600 text-white hover:bg-blue-700' : ''}`}>{p + 1}</Button>))}
-              <Button variant="outline" onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1} className="rounded-xl shadow-sm"><span className="hidden sm:inline mr-1">Next</span> <ChevronRight size={18} /></Button>
+              <Button variant="outline" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="rounded-xl shadow-sm bg-white"><ChevronLeft size={18} /> <span className="hidden sm:inline ml-1">Prev</span></Button>
+              {getPageNumbers().map((p, index) => p === '...' ? (<span key={`dots-${index}`} className="px-1 sm:px-2 text-slate-400 font-bold">...</span>) : (<Button key={p} variant={page === p ? "default" : "outline"} onClick={() => setPage(p)} className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl p-0 shadow-sm ${page === p ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-white'}`}>{p + 1}</Button>))}
+              <Button variant="outline" onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1} className="rounded-xl shadow-sm bg-white"><span className="hidden sm:inline mr-1">Next</span> <ChevronRight size={18} /></Button>
             </div>
           </div>
         )}
       </section>
 
       {/* 5. BRANDS */}
-      <section id="brands" className="bg-white py-16 sm:py-20 md:py-24 border-b border-slate-200 scroll-mt-24 overflow-hidden">
-        <div className="max-w-7xl mx-auto px-6">
+      <section id="brands" className="bg-slate-50 py-16 sm:py-20 md:py-24 border-b border-slate-200 scroll-mt-24 overflow-hidden relative">
+        <div className="max-w-7xl mx-auto px-6 relative z-10">
           <div className="text-center mb-10 sm:mb-16 max-w-3xl mx-auto">
             <h2 className="text-3xl lg:text-4xl font-black text-slate-900 tracking-tight mb-4">Brands We Carry</h2>
             <div className="w-20 h-1.5 bg-blue-600 mx-auto mt-2 mb-6 rounded-full"></div>
             <p className="text-base sm:text-lg text-slate-500 leading-relaxed font-medium px-2">Partnering with leading manufacturers to bring you reliable products.</p>
           </div>
           <MobileCarousel items={brandItems} desktopGridClass="sm:grid-cols-3" autoPlayInterval={4000} renderItem={(item) => (
-            <div className="flex flex-col items-center text-center p-6 sm:p-8 rounded-3xl hover:bg-slate-50 transition-colors border border-slate-200 sm:border-transparent sm:hover:border-slate-100 shadow-sm sm:shadow-none group w-full h-full cursor-default">
+            <div className="flex flex-col items-center text-center p-6 sm:p-8 rounded-3xl hover:bg-slate-100 transition-colors border border-slate-200 sm:border-transparent sm:hover:border-slate-200 shadow-sm sm:shadow-none group w-full h-full cursor-default bg-white sm:bg-transparent">
               <div className="h-16 sm:h-20 md:h-24 w-full flex items-center justify-center mb-6"><img src={item.img} alt={item.name} className="max-h-full max-w-[160px] sm:max-w-[200px] object-contain group-hover:scale-105 transition-transform duration-500" /></div>
               <h3 className="text-lg sm:text-xl font-bold text-slate-900 mb-3">{item.name}</h3>
               <p className="text-sm text-slate-500 leading-relaxed font-medium">{item.text}</p>
@@ -718,27 +790,89 @@ export default function Home() {
 
       {/* 6. ABOUT US */}
       <section id="about" className="bg-white border-t border-slate-200 py-16 sm:py-24 scroll-mt-24">
-        <div className="max-w-7xl mx-auto px-6">
+        <div className="max-w-7xl mx-auto px-6 relative z-10">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 sm:gap-16 items-center">
-            <div>
+            <div className="lg:pr-8 bg-white/80 p-4 sm:p-6 rounded-3xl backdrop-blur-sm shadow-sm border border-slate-100/50">
               <Badge variant="secondary" className="bg-blue-50 text-blue-700 text-[10px] font-extrabold uppercase tracking-widest mb-4 hover:bg-blue-50 border-blue-100">About Tricore</Badge>
               <h2 className="text-3xl lg:text-4xl font-black text-slate-900 tracking-tight mb-4 sm:mb-6 leading-tight">Committed to Healthcare Excellence.</h2>
-              <p className="text-base sm:text-lg text-slate-500 leading-relaxed mb-6 font-medium">Outfitting healthcare facilities, medical professionals, and individual patients with top-tier supplies.</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                <div className="flex sm:flex-col items-center sm:items-start gap-4 text-left"><div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0 border border-blue-100"><ShieldCheck size={24} /></div><div><h4 className="font-bold text-slate-900 text-base sm:text-lg">Certified Quality</h4></div></div>
-                <div className="flex sm:flex-col items-center sm:items-start gap-4 text-left"><div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-100"><Truck size={24} /></div><div><h4 className="font-bold text-slate-900 text-base sm:text-lg">Direct Delivery</h4></div></div>
+              <p className="text-base sm:text-lg text-slate-600 leading-relaxed mb-6 font-medium">
+                At TriCore Medical Supply, we pride ourselves on offering a wide range of high-quality medical products to meet your needs. Our curated selection includes items from top brands known for their reliability and effectiveness. We understand that when it comes to health, only the best will do. That’s why we meticulously choose each product to ensure it meets our high standards.
+              </p>
+              <p className="text-base sm:text-lg text-slate-600 leading-relaxed mb-8 font-medium">
+                <strong className="text-slate-900">More than just a distributor, we are a dedicated partner in your care journey.</strong> Based in California, our mission is to streamline your supply chain so you can focus entirely on what matters most—your patients. From our private delivery fleet to our exceptional customer support, we are committed to delivering not just supplies, but absolute peace of mind directly to your door.
+              </p>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-4">
+                <div className="flex flex-col sm:items-start gap-3 text-left p-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                  <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0 border border-blue-100"><ShieldCheck size={24} /></div>
+                  <div>
+                    <h4 className="font-bold text-slate-900 text-base">Certified Quality</h4>
+                    <p className="text-sm text-slate-500 mt-1 font-medium leading-relaxed">All products meet stringent safety and clinical standards before they reach your facility.</p>
+                  </div>
+                </div>
+                <div className="flex flex-col sm:items-start gap-3 text-left p-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                  <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-100"><Truck size={24} /></div>
+                  <div>
+                    <h4 className="font-bold text-slate-900 text-base">Direct Delivery</h4>
+                    <p className="text-sm text-slate-500 mt-1 font-medium leading-relaxed">Our dedicated California fleet ensures fast, secure, and fully trackable shipments.</p>
+                  </div>
+                </div>
               </div>
             </div>
-            <div className="relative mt-4 lg:mt-0"><div className="absolute -inset-4 bg-slate-100 rounded-3xl transform rotate-3 hidden sm:block"></div><img src="https://images.unsplash.com/photo-1586773860418-d37222d8fce3?auto=format&fit=crop&w=1000&q=80" alt="Tricore Medical Logistics" className="relative rounded-2xl shadow-xl object-cover w-full h-[300px] sm:h-[400px] lg:h-[450px] border border-slate-200"/></div>
+
+            {/* 3D Stack Card Slider */}
+            <div className="relative mt-8 lg:mt-0 h-[300px] sm:h-[400px] lg:h-[450px] w-full flex items-center justify-center overflow-hidden rounded-3xl bg-slate-100 border border-slate-200 shadow-inner">
+
+              <div className="relative w-[85%] max-w-[320px] sm:max-w-[380px] h-[200px] sm:h-[260px] z-20 perspective-[1000px]">
+                {placeholders.map((item, index) => {
+                  const diff = (index - currentAboutSlide + placeholders.length) % placeholders.length;
+                  
+                  let cardClasses = "";
+                  if (diff === 0) cardClasses = "translate-y-0 scale-100 opacity-100 z-30 shadow-2xl";
+                  else if (diff === 1) cardClasses = "translate-y-4 sm:translate-y-6 scale-[0.92] opacity-80 z-20 shadow-xl";
+                  else if (diff === 2) cardClasses = "translate-y-8 sm:translate-y-12 scale-[0.84] opacity-50 z-10 shadow-md";
+                  else cardClasses = "translate-y-12 sm:translate-y-16 scale-[0.76] opacity-0 z-0";
+
+                  return (
+                    <div 
+                      key={item.id}
+                      className={`absolute inset-0 w-full h-full rounded-3xl transition-all duration-700 ease-in-out transform origin-top flex flex-col items-center justify-center text-center p-6 border border-white/20 ${cardClasses} bg-gradient-to-br ${item.color}`}
+                    >
+                      <div className="w-14 h-14 sm:w-16 sm:h-16 bg-white/20 rounded-full flex items-center justify-center mb-4 backdrop-blur-sm border border-white/30 shadow-inner">
+                        {item.icon}
+                      </div>
+                      <h3 className="text-xl sm:text-2xl font-black text-white drop-shadow-md tracking-tight leading-tight">
+                        {item.title}
+                      </h3>
+                    </div>
+                  );
+                })}
+              </div>
+              
+              <div className="absolute bottom-4 right-4 z-30 hidden sm:flex gap-2">
+                <button onClick={prevAboutSlide} className="p-2 rounded-full bg-white/50 hover:bg-white/80 text-slate-800 backdrop-blur-md transition-colors shadow-sm"><ChevronLeft size={16} /></button>
+                <button onClick={nextAboutSlide} className="p-2 rounded-full bg-white/50 hover:bg-white/80 text-slate-800 backdrop-blur-md transition-colors shadow-sm"><ChevronRight size={16} /></button>
+              </div>
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex gap-2">
+                {placeholders.map((_, idx) => (
+                  <button 
+                    key={idx} 
+                    onClick={() => setCurrentAboutSlide(idx)}
+                    className={`h-2 rounded-full transition-all ${idx === currentAboutSlide ? 'bg-blue-600 w-6 shadow-sm' : 'bg-slate-300 hover:bg-slate-400 w-2 shadow-sm'}`}
+                  />
+                ))}
+              </div>
+            </div>
+            
           </div>
         </div>
       </section>
 
       {/* 7. VALUE PROPS */}
-      <section className="bg-slate-50 border-t border-slate-200 py-16 overflow-hidden">
-        <div className="max-w-7xl mx-auto px-6">
+      <section className="bg-slate-50 border-t border-slate-200 py-16 overflow-hidden relative">
+        <div className="max-w-7xl mx-auto px-6 relative z-10">
           <MobileCarousel items={valuePropItems} desktopGridClass="sm:grid-cols-3 text-center" autoPlayInterval={4500} renderItem={(item) => (
-            <div className="flex flex-col items-center text-center bg-white sm:bg-transparent p-6 sm:p-0 rounded-3xl border border-slate-200 sm:border-none shadow-sm sm:shadow-none w-full h-full cursor-default">
+            <div className="flex flex-col items-center text-center bg-white p-6 rounded-3xl border border-slate-200 shadow-sm w-full h-full cursor-default">
               <div className="w-16 h-16 rounded-2xl bg-blue-50 flex items-center justify-center mb-5 border border-blue-100 text-blue-600">{item.icon}</div>
               <h3 className="font-bold text-slate-900 text-xl mb-2 tracking-tight">{item.title}</h3>
               <p className="text-slate-500 text-sm leading-relaxed max-w-xs">{item.text}</p>
@@ -747,28 +881,75 @@ export default function Home() {
         </div>
       </section>
 
-      {/* 8. CTA */}
-      <section className="bg-blue-600 relative overflow-hidden shrink-0 border-t border-blue-700">
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,#ffffff1a_1px,transparent_1px),linear-gradient(to_bottom,#ffffff1a_1px,transparent_1px)] bg-[size:24px_24px]"></div>
-        <div className="max-w-7xl mx-auto px-6 py-12 sm:py-16 md:py-20 relative z-10 flex flex-col lg:flex-row items-center justify-between text-center lg:text-left gap-8 sm:gap-10">
-          <div className="max-w-2xl"><h2 className="text-2xl sm:text-3xl md:text-4xl font-black text-white tracking-tight mb-3 sm:mb-4">Partner with a supply you can rely on.</h2><p className="text-blue-100 text-base sm:text-lg md:text-xl font-medium">Secure your medical supply with confidence.</p></div>
-          <div className="shrink-0 w-full sm:w-auto"><a href="mailto:info@tricoremedicalsupply.com?subject=Wholesale%20Quote%20Request" className="flex w-full sm:w-auto px-6 sm:px-8 py-3.5 sm:py-4 bg-white text-blue-600 font-extrabold rounded-xl hover:bg-slate-50 transition-all shadow-xl hover:shadow-2xl active:scale-95 items-center justify-center gap-2 text-base sm:text-lg border border-blue-50"><Mail size={20} strokeWidth={2.5} /> Request a Quote</a></div>
-        </div>
-      </section>
-
-      {/* 9. FOOTER */}
-      <footer className="bg-slate-900 text-slate-300 py-12 sm:py-16">
-        <div className="max-w-7xl mx-auto px-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10 sm:gap-12 mb-10 sm:mb-12">
-            <div className="lg:col-span-2">
-              <img src="/images/tricore-logo2.png" alt="Tricore Medical Logo" className="h-10 sm:h-12 w-auto object-contain mb-5 sm:mb-6 brightness-0 invert" />
-              <p className="text-sm leading-relaxed max-w-md">Equipping California's healthcare facilities with reliable medical supplies.</p>
-              <div className="mt-8 flex items-center gap-4 bg-white p-4 rounded-2xl w-fit shadow-md border border-slate-200 group"><img src="/images/accreditation.webp" alt="ACHC Accredited" className="h-12 sm:h-14 w-auto object-contain group-hover:scale-105 transition-transform" /><div className="text-xs text-slate-600 max-w-[200px] leading-snug"><span className="font-black text-slate-900 block mb-0.5 text-sm">ACHC Accredited</span>Upholding highest national standards.</div></div>
+      {/* 9. CLINICAL MEDICAL THEME FOOTER */}
+      <footer className="bg-[#0f172a] text-slate-300 mt-auto border-t-4 border-blue-600">
+        <div className="max-w-7xl mx-auto px-6 lg:px-8 py-12 sm:py-16">
+          {/* UI/UX FIX: Switched to a 2x2 grid on tablets (sm:grid-cols-2) and 4 cols on desktop (lg:grid-cols-4). Adjusted gap for mobile. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-10 sm:gap-12 lg:gap-8">
+            
+            <div className="flex flex-col items-center sm:items-start text-center sm:text-left">
+              <Link to="/" className="block mb-6 sm:mb-8">
+                <img src="/images/tricore-logo2.png" alt="Tricore Medical Logo" className="h-12 sm:h-17 w-auto object-contain" />
+              </Link>
+              <div className="flex items-center gap-3 sm:gap-4 group">
+                <img src="/images/accreditation.webp" alt="ACHC Accredited" className="h-14 sm:h-16 w-auto object-contain drop-shadow-md group-hover:scale-105 transition-transform duration-300 shrink-0" />
+                <div className="text-[11px] sm:text-xs text-slate-400 leading-relaxed border-l border-slate-700 pl-3 sm:pl-4 py-1 text-left">
+                  <span className="font-bold text-white block text-[13px] sm:text-sm tracking-wide mb-0.5">ACHC Accredited</span>
+                  Upholding highest<br className="hidden sm:block"/>national standards.
+                </div>
+              </div>
             </div>
-            <div><h4 className="text-white font-bold text-lg mb-5 sm:mb-6">Contact Us</h4><ul className="space-y-3 sm:space-y-4 text-sm"><li className="flex items-start gap-3"><MapPin size={18} className="text-blue-500 shrink-0 mt-0.5" /><span>2169 Harbor St.<br />Pittsburg, CA 94565</span></li><li className="flex items-center gap-3"><Mail size={18} className="text-blue-500 shrink-0" /><a href="mailto:info@tricoremedicalsupply.com" className="hover:text-white transition-colors">info@tricoremedicalsupply.com</a></li><li className="flex items-center gap-3"><Phone size={18} className="text-blue-500 shrink-0" /><a href="tel:5106912694" className="hover:text-white transition-colors">510-691-2694</a></li></ul></div>
-            <div><h4 className="text-white font-bold text-lg mb-5 sm:mb-6">Quick Links</h4><ul className="space-y-3 text-sm flex flex-col items-start"><li><Link to="/login" className="hover:text-white transition-colors">Login</Link></li><li><a href="#about" onClick={(e) => scrollToSection(e, 'about')} className="hover:text-white transition-colors cursor-pointer">About Us</a></li><li><a href="#catalog" onClick={(e) => scrollToSection(e, 'catalog')} className="hover:text-white transition-colors cursor-pointer">Catalog</a></li><li><a href="#brands" onClick={(e) => scrollToSection(e, 'brands')} className="hover:text-white transition-colors cursor-pointer">Our Brands</a></li></ul></div>
+
+            <div className="text-center sm:text-left">
+              <h4 className="text-white font-bold mb-4 sm:mb-6 tracking-wide">Company</h4>
+              <ul className="space-y-3 text-sm font-medium">
+                <li><Link to="/about" className="hover:text-blue-400 transition-colors">About Us</Link></li>
+                <li><a href="#catalog" onClick={(e) => scrollToSection(e, 'catalog')} className="hover:text-blue-400 transition-colors cursor-pointer">Catalog</a></li>
+                <li><Link to="/login" className="hover:text-blue-400 transition-colors">Client Portal</Link></li>
+              </ul>
+            </div>
+
+            <div className="text-center sm:text-left">
+              <h4 className="text-white font-bold mb-4 sm:mb-6 tracking-wide">Support</h4>
+              <ul className="space-y-3 text-sm font-medium">
+                <li><Link to="/faq" className="hover:text-blue-400 transition-colors">FAQ</Link></li>
+                <li><Link to="/shipping" className="hover:text-blue-400 transition-colors">Shipping & Returns</Link></li>
+                <li><Link to="/privacy" className="hover:text-blue-400 transition-colors">Privacy Policy</Link></li>
+                <li><Link to="/terms" className="hover:text-blue-400 transition-colors">Terms of Service</Link></li>
+              </ul>
+            </div>
+
+            <div className="text-center sm:text-left flex flex-col items-center sm:items-start">
+              <h4 className="text-white font-bold mb-4 sm:mb-6 tracking-wide">Contact Us</h4>
+              <ul className="space-y-4 text-sm font-medium w-full max-w-[250px] sm:max-w-none">
+                <li className="flex items-start justify-center sm:justify-start gap-3">
+                  <MapPin size={18} className="text-blue-500 shrink-0 mt-0.5" />
+                  <span className="text-slate-400">2169 Harbor St,<br />Pittsburg CA 94565</span>
+                </li>
+                <li className="flex items-center justify-center sm:justify-start gap-3">
+                  <Phone size={18} className="text-blue-500 shrink-0" />
+                  <a href="tel:5106912694" className="hover:text-blue-400 transition-colors text-slate-400">510-691-2694</a>
+                </li>
+                <li className="flex items-start justify-center sm:justify-start gap-3">
+                  <Mail size={18} className="text-blue-500 shrink-0 mt-0.5" />
+                  <a href="mailto:info@tricoremedicalsupply.com" className="hover:text-blue-400 transition-colors text-slate-400 break-all text-left">info@tricoremedicalsupply.com</a>
+                </li>
+              </ul>
+            </div>
+
           </div>
-          <div className="pt-6 sm:pt-8 border-t border-slate-800 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs sm:text-sm font-medium text-center sm:text-left"><p>© {new Date().getFullYear()} Tricore Medical Supply. All rights reserved.</p></div>
+        </div>
+
+        <div className="bg-[#0b1121] py-6 border-t border-slate-800">
+          <div className="max-w-7xl mx-auto px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-4 text-center md:text-left">
+            <p className="text-xs text-slate-500 font-medium">
+              &copy; {new Date().getFullYear()} TriCore Medical Supply. All rights reserved.
+            </p>
+            <div className="flex gap-4 text-xs font-medium text-slate-500 justify-center">
+              <span>Secure Checkout</span>
+              <span>HIPAA Compliant Protocol</span>
+            </div>
+          </div>
         </div>
       </footer>
 
