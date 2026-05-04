@@ -8,12 +8,12 @@ import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
-// 🚀 IMPORTED SIGNATURE CANVAS
+// 🚀 SIGNATURE CANVAS LIBRARY
 import SignatureCanvas from 'react-signature-canvas';
 
 const WAREHOUSE_ADDRESS = "2169 Harbor St, Pittsburg CA 94565";
 
-// 🚀 ADDED IMAGE COMPRESSION HELPER
+// 🚀 IMAGE COMPRESSION HELPER (Saves bandwidth & prevents timeouts)
 const compressImage = (file, maxWidth = 800) => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -231,7 +231,7 @@ export default function DriverRoutes() {
   const [currentLocation, setCurrentLocation] = useState(null);
   const [triggerMapOpen, setTriggerMapOpen] = useState(0);
 
-  // 🚀 REPLACED: New Signature Canvas Reference
+  // 🚀 Signature Canvas Reference
   const sigCanvasRef = useRef(null);
 
   // 🚀 FIXED: Throttled GPS Battery Saver
@@ -270,6 +270,37 @@ export default function DriverRoutes() {
 
     return () => { navigator.geolocation.clearWatch(watchId); clearInterval(syncInterval); };
   }, [profile?.id, profile?.role]);
+
+  // 🚀 FIXED: Realtime Dispatch Updates Listener
+  useEffect(() => {
+    if (!profile?.full_name) return;
+
+    const channel = supabase.channel('driver-dispatch-updates')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'orders' 
+      }, (payload) => {
+        const isMyOrder = 
+          payload.new?.driver_name?.includes(profile.full_name) || 
+          payload.old?.driver_name?.includes(profile.full_name);
+                          
+        if (isMyOrder) {
+          console.log("New dispatch update received! Refreshing routes...");
+          fetchMyRoutes();
+          
+          if (payload.eventType === 'INSERT' || (payload.eventType === 'UPDATE' && payload.new.status === 'ready_for_delivery')) {
+            showToastMsg("New order assigned to your route!");
+            toast.success("New order assigned to your route!"); // Sonner global toast
+          }
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [profile?.full_name]);
 
   useEffect(() => {
     if (profile?.id && profile?.full_name) {
@@ -363,7 +394,6 @@ export default function DriverRoutes() {
     if (file) { setPhotoFile(file); setPhotoPreview(URL.createObjectURL(file)); }
   };
 
-  // 🚀 FIXED: New Clear Signature Function
   const clearSignature = () => { 
     if (sigCanvasRef.current) {
       sigCanvasRef.current.clear();
@@ -409,7 +439,6 @@ export default function DriverRoutes() {
     const isTotalRejection = totalDeliveredQty === 0;
     const isPartialRejection = totalDeliveredQty > 0 && totalDeliveredQty < totalOriginalQty;
     
-    // 🚀 FIXED: New Signature Validation
     if (totalDeliveredQty > 0) {
       if (!sigCanvasRef.current || sigCanvasRef.current.isEmpty()) { 
         showToastMsg('Please have the customer sign to confirm delivery.', true); 
@@ -423,7 +452,7 @@ export default function DriverRoutes() {
       let signatureUrlStr = null; 
       const uniquePrefix = `${Date.now()}-${activeOrder.id}`;
       
-      // 🚀 FIXED: Compress Photo Before Upload
+      // 🚀 Compressed Photo Upload
       if (photoFile) {
         const compressedFile = await compressImage(photoFile); 
         const photoPath = `pod-photos/${uniquePrefix}.jpg`;
@@ -432,7 +461,7 @@ export default function DriverRoutes() {
         photoUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(photoPath).data.publicUrl;
       }
       
-      // 🚀 FIXED: Signature Data Extraction
+      // 🚀 FIXED: Signature Extraction with .getCanvas() to prevent Vite build errors
       if (totalDeliveredQty > 0 && sigCanvasRef.current && !sigCanvasRef.current.isEmpty()) {
         const signatureDataUrl = sigCanvasRef.current.getCanvas().toDataURL('image/png');
         const signatureBlob = await (await fetch(signatureDataUrl)).blob();
@@ -517,11 +546,12 @@ export default function DriverRoutes() {
       
       window.dispatchEvent(new Event('orderStatusChanged')); 
       closeModal(); 
-      showToastMsg(isTotalRejection ? 'Order marked as attempted (All items rejected).' : 'Delivery completed successfully!');
+      
+      toast.success(isTotalRejection ? 'Order marked as attempted (All items rejected).' : 'Delivery completed successfully!');
       
     } catch (error) { 
       console.error('Delivery Error:', error.message); 
-      showToastMsg('Failed to upload delivery proof. Check your connection.', true); 
+      toast.error('Failed to upload delivery proof. Check your connection.'); 
     } finally { 
       setIsSubmitting(false); 
     }
@@ -541,10 +571,10 @@ export default function DriverRoutes() {
       setOrders(orders.filter(o => o.id !== cancellingOrder.id)); 
       window.dispatchEvent(new Event('orderStatusChanged')); 
       closeCancelModal(); 
-      showToastMsg('Order cancelled and items successfully restocked!', false); 
+      toast.success('Order cancelled and items successfully restocked!'); 
     } catch (error) { 
       console.error('Cancellation Error:', error.message); 
-      showToastMsg('Failed to cancel the delivery. Please try again.', true); 
+      toast.error('Failed to cancel the delivery. Please try again.'); 
     } finally { 
       setIsCancelling(false); 
     }
@@ -559,10 +589,10 @@ export default function DriverRoutes() {
       setOrders(orders.filter(o => o.id !== attemptingOrder.id)); 
       window.dispatchEvent(new Event('orderStatusChanged')); 
       closeAttemptModal(); 
-      showToastMsg('Order marked as attempted.', false); 
+      toast.success('Order marked as attempted.'); 
     } catch (error) { 
       console.error('Attempt Error:', error.message); 
-      showToastMsg('Failed to mark delivery as attempted.', true); 
+      toast.error('Failed to mark delivery as attempted.'); 
     } finally { 
       setIsAttempting(false); 
     }
@@ -931,7 +961,6 @@ export default function DriverRoutes() {
                   <button onClick={clearSignature} className="text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-slate-100 px-3 py-1.5 rounded-lg active:scale-95 hover:bg-slate-200 transition-colors">Clear</button>
                 </div>
                 
-                {/* 🚀 REPLACED CUSTOM CANVAS WITH REACT-SIGNATURE-CANVAS */}
                 <div className="relative w-full h-40 border-2 border-slate-200 rounded-2xl bg-white overflow-hidden shadow-inner touch-none">
                   <SignatureCanvas 
                     ref={sigCanvasRef} 
