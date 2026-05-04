@@ -3,8 +3,9 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './Layout';
 import { useAuth } from './lib/AuthContext';
 import { ErrorBoundary } from './components/ErrorBoundary'; 
+import { Toaster } from "@/components/ui/sonner"; // 🚀 1. IMPORT ADDED HERE
 
-// 🚀 1. LAZY LOAD THE PAGES
+// LAZY LOAD THE PAGES
 const Home = React.lazy(() => import('./pages/Home'));
 const Login = React.lazy(() => import('./pages/Login'));
 const Catalog = React.lazy(() => import('./pages/Catalog'));
@@ -23,7 +24,7 @@ const Profile = React.lazy(() => import('./pages/Profile'));
 const Products = React.lazy(() => import('./pages/Products'));
 const PurchaseOrders = React.lazy(() => import('./pages/PurchaseOrders'));
 
-// 🚀 2. CREATE A SUSPENSE FALLBACK UI
+// CREATE A SUSPENSE FALLBACK UI
 const PageLoader = () => (
   <div className="min-h-[60vh] flex items-center justify-center flex-1">
     <div className="flex flex-col items-center gap-4">
@@ -89,8 +90,10 @@ const DashboardRouter = () => {
 export default function App() {
   return (
     <ErrorBoundary>
+      {/* 🚀 2. TOASTER COMPONENT ADDED HERE TO CATCH ALL NOTIFICATIONS */}
+      <Toaster position="bottom-right" richColors /> 
+      
       <BrowserRouter>
-        {/* 🚀 3. WRAP YOUR ROUTES IN THE SUSPENSE BOUNDARY */}
         <Suspense fallback={<PageLoader />}>
           <Routes>
             

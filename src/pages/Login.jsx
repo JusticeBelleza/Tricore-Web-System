@@ -56,40 +56,72 @@ export default function Login() {
     setLoading(true);
 
     try {
-      if (!captchaToken) throw new Error('Please wait for security verification to complete.');
+      // 1. Handle Captcha gracefully without throwing an error that crashes the block
+      if (!captchaToken) {
+        toast.error('Please wait for security verification to complete.');
+        setLoading(false);
+        return; 
+      }
 
       if (isLogin) {
         const { error: signInError } = await supabase.auth.signInWithPassword({
-          email, password, options: { captchaToken }
+          email, 
+          password, 
+          options: { captchaToken }
         });
         
-        if (signInError) throw signInError;
+        // 2. Safely parse the Supabase error
+        if (signInError) {
+          console.error("Supabase Raw Error:", signInError); 
+          
+          const errMsg = signInError?.message?.toLowerCase() || '';
+          if (errMsg.includes('invalid login') || errMsg.includes('credentials')) {
+            throw new Error('Incorrect email or password.');
+          } else {
+            throw new Error(signInError?.message || 'Failed to sign in.');
+          }
+        }
+        
         toast.success("Successfully logged in!");
-        // We do NOT navigate here. The useEffect above handles it perfectly.
         
       } else {
         if (password !== confirmPassword) throw new Error('Passwords do not match.');
         if (password.length < 6) throw new Error('Password must be at least 6 characters long.');
         
         const { error: signUpError } = await supabase.auth.signUp({
-          email, password, options: { data: { full_name: fullName }, captchaToken } 
+          email, 
+          password, 
+          options: { data: { full_name: fullName }, captchaToken } 
         });
         
-        if (signUpError) throw signUpError;
+        if (signUpError) {
+           console.error("Supabase Signup Error:", signUpError);
+           throw new Error(signUpError?.message || 'Failed to create account.');
+        }
         
         toast.success('Registration successful! You can now log in.');
         setIsLogin(true);
         setPassword('');
         setConfirmPassword('');
         setCaptchaToken(null);
-        if (turnstileRef.current) turnstileRef.current.reset();
+        if (turnstileRef.current) turnstileRef.current?.reset();
       }
     } catch (err) {
-      toast.error(err.message);
-      if (turnstileRef.current) {
-        turnstileRef.current.reset();
-        setCaptchaToken(null);
+      console.error("Catch Block Error:", err); 
+      
+      // 3. Guarantee a string is always passed to the toast so it never crashes
+      const finalMessage = err?.message || (typeof err === 'string' ? err : 'An unexpected error occurred.');
+      toast.error(finalMessage);
+      
+      // 4. Safely reset the form
+      try {
+        if (turnstileRef.current) turnstileRef.current.reset();
+      } catch (e) {
+        console.warn("Turnstile reset skipped:", e);
       }
+      
+      setCaptchaToken(null);
+      setPassword(''); 
     } finally {
       setLoading(false);
     }
@@ -115,7 +147,7 @@ export default function Login() {
     } catch (err) {
       toast.error(err.message);
       if (resetTurnstileRef.current) {
-        resetTurnstileRef.current.reset();
+        resetTurnstileRef.current?.reset();
         setResetCaptchaToken(null);
       }
     } finally {
@@ -283,7 +315,7 @@ export default function Login() {
                 setPassword('');
                 setConfirmPassword('');
                 setCaptchaToken(null); 
-                if (turnstileRef.current) turnstileRef.current.reset();
+                if (turnstileRef.current) turnstileRef.current?.reset();
               }}
               className="text-blue-600 font-bold hover:text-blue-700 hover:underline underline-offset-4 transition-all bg-transparent border-none"
             >

@@ -3,13 +3,38 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { GoogleMap, useJsApiLoader, DirectionsRenderer, Marker, Polyline } from '@react-google-maps/api';
-// 🚀 FIX: Added PackageCheck and Route to the import list!
 import { Truck, MapPin, Phone, User, CheckCircle2, AlertTriangle, XCircle, Navigation, Package, DollarSign, Clock, Check, X, PenTool, UploadCloud, Map, Minus, Plus, PackageCheck, Route, Camera } from 'lucide-react';
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
+// 🚀 IMPORTED SIGNATURE CANVAS
+import SignatureCanvas from 'react-signature-canvas';
+
 const WAREHOUSE_ADDRESS = "2169 Harbor St, Pittsburg CA 94565";
+
+// 🚀 ADDED IMAGE COMPRESSION HELPER
+const compressImage = (file, maxWidth = 800) => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ratio = maxWidth / img.width;
+        canvas.width = maxWidth;
+        canvas.height = img.height * ratio;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => {
+          resolve(new File([blob], file.name, { type: 'image/jpeg', lastModified: Date.now() }));
+        }, 'image/jpeg', 0.7); // 70% quality compression
+      };
+    };
+  });
+};
 
 function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger }) {
   const { isLoaded } = useJsApiLoader({
@@ -206,11 +231,16 @@ export default function DriverRoutes() {
   const [currentLocation, setCurrentLocation] = useState(null);
   const [triggerMapOpen, setTriggerMapOpen] = useState(0);
 
-  const canvasRef = useRef(null);
+  // 🚀 REPLACED: New Signature Canvas Reference
+  const sigCanvasRef = useRef(null);
 
+  // 🚀 FIXED: Throttled GPS Battery Saver
   useEffect(() => {
     if (!profile?.id || profile?.role?.toLowerCase() !== 'driver') return;
+    
     let latestCoords = null;
+    let lastSyncedCoords = null; 
+
     const watchId = navigator.geolocation.watchPosition(
       (position) => { 
         latestCoords = { lat: position.coords.latitude, lng: position.coords.longitude }; 
@@ -219,11 +249,25 @@ export default function DriverRoutes() {
       (err) => console.warn("GPS Tracking Error:", err.message),
       { enableHighAccuracy: true, maximumAge: 10000, timeout: 5000 }
     );
+
     const syncInterval = setInterval(async () => {
       if (latestCoords) {
-        await supabase.from('user_profiles').update({ current_lat: latestCoords.lat, current_lng: latestCoords.lng, last_location_update: new Date().toISOString() }).eq('id', profile.id);
+        const hasMoved = !lastSyncedCoords || 
+          Math.abs(latestCoords.lat - lastSyncedCoords.lat) > 0.0001 || 
+          Math.abs(latestCoords.lng - lastSyncedCoords.lng) > 0.0001;
+
+        if (hasMoved) {
+          await supabase.from('user_profiles').update({ 
+            current_lat: latestCoords.lat, 
+            current_lng: latestCoords.lng, 
+            last_location_update: new Date().toISOString() 
+          }).eq('id', profile.id);
+          
+          lastSyncedCoords = { ...latestCoords };
+        }
       }
     }, 15000); 
+
     return () => { navigator.geolocation.clearWatch(watchId); clearInterval(syncInterval); };
   }, [profile?.id, profile?.role]);
 
@@ -319,47 +363,12 @@ export default function DriverRoutes() {
     if (file) { setPhotoFile(file); setPhotoPreview(URL.createObjectURL(file)); }
   };
 
-  useEffect(() => {
-    if (!activeOrder || !canvasRef.current) return;
-    const timer = setTimeout(() => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      const rect = canvas.getBoundingClientRect();
-      
-      canvas.width = (rect.width || 350) * 2; 
-      canvas.height = (rect.height || 160) * 2;
-      ctx.scale(2, 2); 
-      ctx.lineWidth = 3;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = '#0f172a'; 
-
-      let isDrawing = false;
-      const getPos = (e) => {
-        const r = canvas.getBoundingClientRect();
-        const clientX = e.touches && e.touches.length > 0 ? e.touches[0].clientX : e.clientX;
-        const clientY = e.touches && e.touches.length > 0 ? e.touches[0].clientY : e.clientY;
-        return { x: clientX - r.left, y: clientY - r.top };
-      };
-
-      const startPos = (e) => { e.preventDefault(); isDrawing = true; const pos = getPos(e); ctx.beginPath(); ctx.moveTo(pos.x, pos.y); };
-      const movePos = (e) => { e.preventDefault(); if (!isDrawing) return; const pos = getPos(e); ctx.lineTo(pos.x, pos.y); ctx.stroke(); };
-      const stopPos = (e) => { e.preventDefault(); isDrawing = false; };
-
-      canvas.onmousedown = startPos;
-      canvas.onmousemove = movePos;
-      canvas.onmouseup = stopPos;
-      canvas.onmouseleave = stopPos;
-      canvas.ontouchstart = startPos;
-      canvas.ontouchmove = movePos;
-      canvas.ontouchend = stopPos;
-      canvas.ontouchcancel = stopPos;
-    }, 200);
-    return () => clearTimeout(timer);
-  }, [activeOrder]);
-
-  const clearSignature = () => { const canvas = canvasRef.current; if (!canvas) return; const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); };
+  // 🚀 FIXED: New Clear Signature Function
+  const clearSignature = () => { 
+    if (sigCanvasRef.current) {
+      sigCanvasRef.current.clear();
+    }
+  };
 
   const updateOrderStatus = async (orderId, newStatus) => {
     setOrders(currentOrders => 
@@ -400,12 +409,12 @@ export default function DriverRoutes() {
     const isTotalRejection = totalDeliveredQty === 0;
     const isPartialRejection = totalDeliveredQty > 0 && totalDeliveredQty < totalOriginalQty;
     
+    // 🚀 FIXED: New Signature Validation
     if (totalDeliveredQty > 0) {
-      const canvas = canvasRef.current; 
-      const blank = document.createElement('canvas'); 
-      blank.width = canvas.width; 
-      blank.height = canvas.height;
-      if (canvas.toDataURL() === blank.toDataURL()) { showToastMsg('Please have the customer sign to confirm delivery.', true); return; }
+      if (!sigCanvasRef.current || sigCanvasRef.current.isEmpty()) { 
+        showToastMsg('Please have the customer sign to confirm delivery.', true); 
+        return; 
+      }
     }
 
     setIsSubmitting(true);
@@ -414,15 +423,19 @@ export default function DriverRoutes() {
       let signatureUrlStr = null; 
       const uniquePrefix = `${Date.now()}-${activeOrder.id}`;
       
+      // 🚀 FIXED: Compress Photo Before Upload
       if (photoFile) {
+        const compressedFile = await compressImage(photoFile); 
         const photoPath = `pod-photos/${uniquePrefix}.jpg`;
-        const { error: photoErr } = await supabase.storage.from('delivery-proofs').upload(photoPath, photoFile);
+        const { error: photoErr } = await supabase.storage.from('delivery-proofs').upload(photoPath, compressedFile);
         if (photoErr) throw photoErr;
         photoUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(photoPath).data.publicUrl;
       }
       
-      if (totalDeliveredQty > 0 && canvasRef.current) {
-        const signatureBlob = await (await fetch(canvasRef.current.toDataURL('image/png'))).blob();
+      // 🚀 FIXED: Signature Data Extraction
+      if (totalDeliveredQty > 0 && sigCanvasRef.current && !sigCanvasRef.current.isEmpty()) {
+        const signatureDataUrl = sigCanvasRef.current.getCanvas().toDataURL('image/png');
+        const signatureBlob = await (await fetch(signatureDataUrl)).blob();
         const sigPath = `pod-signatures/${uniquePrefix}.png`;
         const { error: sigErr } = await supabase.storage.from('delivery-proofs').upload(sigPath, signatureBlob);
         if (sigErr) throw sigErr;
@@ -518,7 +531,6 @@ export default function DriverRoutes() {
     if (!cancelReason.trim()) { showToastMsg('Please provide a reason for cancelling this delivery.', true); return; }
     setIsCancelling(true);
     try {
-      // 🚀 Calls our foolproof RPC to handle exactly how many base_units get restocked!
       const { error } = await supabase.rpc('reject_full_order', {
         p_order_id: cancellingOrder.id,
         p_reason: cancelReason.trim(),
@@ -690,7 +702,6 @@ export default function DriverRoutes() {
 
                 <div className="space-y-2 bg-slate-50 p-3.5 rounded-2xl border border-slate-100">
                   
-                  {/* 🚀 CLICKABLE INDIVIDUAL ADDRESS */}
                   <a 
                     href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(shipAddress + ', ' + shipCityState)}&travelmode=driving`}
                     target="_blank"
@@ -742,7 +753,6 @@ export default function DriverRoutes() {
         </div>
       )}
 
-      {/* MODALS RETAINED EXACTLY AS THEY WERE */}
       {attemptingOrder && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/70 backdrop-blur-sm animate-in fade-in duration-200 p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 sm:p-8 animate-in zoom-in-95 duration-200 border border-slate-100 relative">
@@ -918,12 +928,23 @@ export default function DriverRoutes() {
                     <div className="w-5 h-5 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center text-[10px]">5</div>
                     Customer Signature
                   </label>
-                  <button onClick={clearSignature} className="text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-slate-100 px-3 py-1.5 rounded-lg active:scale-95">Clear</button>
+                  <button onClick={clearSignature} className="text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-slate-100 px-3 py-1.5 rounded-lg active:scale-95 hover:bg-slate-200 transition-colors">Clear</button>
                 </div>
-                <div className="relative w-full h-40 border-2 border-slate-200 rounded-2xl bg-slate-50 overflow-hidden shadow-inner">
-                  <canvas ref={canvasRef} className="absolute inset-0 w-full h-full cursor-crosshair" style={{ touchAction: 'none' }} />
-                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-10"><PenTool size={48} /></div>
+                
+                {/* 🚀 REPLACED CUSTOM CANVAS WITH REACT-SIGNATURE-CANVAS */}
+                <div className="relative w-full h-40 border-2 border-slate-200 rounded-2xl bg-white overflow-hidden shadow-inner touch-none">
+                  <SignatureCanvas 
+                    ref={sigCanvasRef} 
+                    canvasProps={{ className: "absolute inset-0 w-full h-full cursor-crosshair touch-none" }}
+                    minWidth={2}
+                    maxWidth={4}
+                    penColor="#0f172a"
+                  />
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-[0.03]">
+                    <PenTool size={64} />
+                  </div>
                 </div>
+
               </div>
             </div>
 
