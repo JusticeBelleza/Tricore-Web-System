@@ -5,7 +5,7 @@ import { useAuth } from './lib/AuthContext';
 import { ErrorBoundary } from './components/ErrorBoundary'; 
 
 // 🚀 1. LAZY LOAD THE PAGES
-const Home = React.lazy(() => import('./pages/Home')); // <-- The Public Storefront
+const Home = React.lazy(() => import('./pages/Home'));
 const Login = React.lazy(() => import('./pages/Login'));
 const Catalog = React.lazy(() => import('./pages/Catalog'));
 const Checkout = React.lazy(() => import('./pages/Checkout'));
@@ -35,19 +35,16 @@ const PageLoader = () => (
   </div>
 );
 
-// Component to protect routes - redirects to login if there is no active session
+// Component to protect routes
 export const ProtectedRoute = ({ children }) => {
   const { user, profile, loading } = useAuth();
   
+  // MUST wait for loading to finish to prevent false kick-outs
   if (loading || (user && !profile)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-4">
-          <img 
-            src="/images/tricore-logo.png" 
-            alt="Tricore Loading" 
-            className="w-12 h-12 animate-spin drop-shadow-sm" 
-          />
+          <img src="/images/tricore-logo.png" alt="Tricore Loading" className="w-12 h-12 animate-spin drop-shadow-sm" />
           <span className="text-sm font-bold text-slate-500 tracking-wider uppercase animate-pulse">
             Authenticating...
           </span>
@@ -56,18 +53,19 @@ export const ProtectedRoute = ({ children }) => {
     );
   }
   
-  if (!user) {
-    return <Navigate to="/login" replace />;
-  }
+  if (!user) return <Navigate to="/login" replace />;
   
   return children;
 };
 
-// Component to strictly enforce Role-Based Access Control (RBAC)
+// Component to strictly enforce Role-Based Access Control
 export const RoleProtectedRoute = ({ allowedRoles, children }) => {
-  const { profile } = useAuth();
-  const userRole = profile?.role || 'user'; 
+  const { user, profile, loading } = useAuth();
+  
+  if (loading) return <PageLoader />;
+  if (!user) return <Navigate to="/login" replace />;
 
+  const userRole = profile?.role || 'user'; 
   if (!allowedRoles.includes(userRole)) {
     return <Navigate to="/dashboard" replace />;
   }
@@ -77,16 +75,13 @@ export const RoleProtectedRoute = ({ allowedRoles, children }) => {
 
 // Component to handle Dashboard routing based on Role
 const DashboardRouter = () => {
-    const { profile } = useAuth();
+    const { profile, loading } = useAuth();
+    
+    if (loading) return <PageLoader />;
+
     const role = profile?.role;
-
-    if (role === 'driver') {
-        return <Navigate to="/driver" replace />;
-    }
-
-    if (role === 'b2b' || role === 'agency_admin') {
-        return <AgencyDashboard />;
-    }
+    if (role === 'driver') return <Navigate to="/driver" replace />;
+    if (role === 'b2b' || role === 'agency_admin') return <AgencyDashboard />;
 
     return <Dashboard />;
 };
@@ -98,20 +93,12 @@ export default function App() {
         {/* 🚀 3. WRAP YOUR ROUTES IN THE SUSPENSE BOUNDARY */}
         <Suspense fallback={<PageLoader />}>
           <Routes>
-            {/* ==========================================
-                PUBLIC ROUTES (Accessible without logging in)
-                ========================================== */}
             
-            {/* 🚀 Make the Storefront the default landing page */}
             <Route path="/" element={<Home />} />
-            
-            {/* If they accidentally type /home, invisibly bounce them to the main URL */}
             <Route path="/home" element={<Navigate to="/" replace />} />
             <Route path="/login" element={<Login />} />
             
-            {/* ==========================================
-                PROTECTED ROUTES (Requires Login & Layout)
-                ========================================== */}
+            {/* PROTECTED ROUTES */}
             <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
               
               <Route path="/dashboard" element={<DashboardRouter />} />
@@ -132,7 +119,6 @@ export default function App() {
               <Route path="/driver" element={<RoleProtectedRoute allowedRoles={['admin', 'driver']}><DriverRoutes /></RoleProtectedRoute>} />
             </Route>
 
-            {/* Ultimate Catch-all: If someone types a completely random URL, send them to the Home page */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

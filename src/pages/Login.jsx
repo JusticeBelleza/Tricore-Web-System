@@ -1,10 +1,9 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../lib/AuthContext';
 import { Mail, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight, ShieldCheck, X, Key, CheckCircle2 } from 'lucide-react';
 import { Turnstile } from '@marsidev/react-turnstile';
-
-// 🚀 SHADCN UI IMPORTS
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,28 +18,31 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   
-  // Turnstile Tokens & Refs
   const [captchaToken, setCaptchaToken] = useState(null);
   const [resetCaptchaToken, setResetCaptchaToken] = useState(null);
   const turnstileRef = useRef(null); 
   const resetTurnstileRef = useRef(null);
 
-  // Forgot Password State
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
   const [resetLoading, setResetLoading] = useState(false);
 
   const navigate = useNavigate();
+  const { user } = useAuth(); // Globally tracked user
 
-  // 🚀 GOOGLE OAUTH SIGN-IN
+  // Automatically navigate once the context says we are logged in
+  useEffect(() => {
+    if (user) {
+      navigate('/dashboard', { replace: true });
+    }
+  }, [user, navigate]);
+
   const handleGoogleSignIn = async () => {
     setLoading(true);
     try {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: {
-          redirectTo: `${window.location.origin}/dashboard` 
-        }
+        options: { redirectTo: `${window.location.origin}/dashboard` }
       });
       if (error) throw error;
     } catch (err) {
@@ -49,38 +51,28 @@ export default function Login() {
     }
   };
 
-  // STANDARD EMAIL/PASSWORD SUBMIT
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
 
     try {
-      if (!captchaToken) {
-        throw new Error('Please wait for security verification to complete.');
-      }
+      if (!captchaToken) throw new Error('Please wait for security verification to complete.');
 
       if (isLogin) {
         const { error: signInError } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-          options: { captchaToken }
+          email, password, options: { captchaToken }
         });
         
         if (signInError) throw signInError;
         toast.success("Successfully logged in!");
-        navigate('/dashboard');
+        // We do NOT navigate here. The useEffect above handles it perfectly.
         
       } else {
         if (password !== confirmPassword) throw new Error('Passwords do not match.');
         if (password.length < 6) throw new Error('Password must be at least 6 characters long.');
         
         const { error: signUpError } = await supabase.auth.signUp({
-          email,
-          password,
-          options: { 
-            data: { full_name: fullName },
-            captchaToken 
-          } 
+          email, password, options: { data: { full_name: fullName }, captchaToken } 
         });
         
         if (signUpError) throw signUpError;
@@ -108,9 +100,7 @@ export default function Login() {
     setResetLoading(true);
 
     try {
-      if (!resetCaptchaToken) {
-        throw new Error('Please wait for security verification.');
-      }
+      if (!resetCaptchaToken) throw new Error('Please wait for security verification.');
 
       const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
         redirectTo: `${window.location.origin}/profile`,
@@ -226,7 +216,6 @@ export default function Login() {
             </div>
           )}
 
-          {/* TURNSTILE WIDGET */}
           <div className="flex justify-center pt-2 pb-1 animate-in fade-in duration-300 min-h-[65px]">
             <Turnstile 
               ref={turnstileRef}
@@ -262,7 +251,6 @@ export default function Login() {
             )}
           </Button>
 
-          {/* 🚀 GOOGLE BUTTON SEPARATOR & BUTTON */}
           <div className="mt-6 pt-5 border-t border-slate-100 animate-in fade-in duration-500 relative">
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none -top-5">
               <span className="bg-white px-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Or continue with</span>
@@ -284,7 +272,6 @@ export default function Login() {
               Google
             </Button>
           </div>
-
         </form>
 
         <div className="mt-6 pt-6 border-t border-slate-100 text-center">
@@ -339,7 +326,6 @@ export default function Login() {
                 <label htmlFor="resetEmail" className={floatingLabelClass}>Email Address</label>
               </div>
 
-              {/* Turnstile for Password Reset */}
               <div className="flex justify-center py-2 min-h-[65px]">
                 <Turnstile 
                   ref={resetTurnstileRef}

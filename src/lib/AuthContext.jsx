@@ -56,12 +56,20 @@ export function AuthProvider({ children }) {
     if (error) throw error;
   };
 
+  const value = { user, profile, loading, signIn, signOut };
+
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signIn, signOut }}>
-      {!loading && children}
+    <AuthContext.Provider value={value}>
+      {children}
     </AuthContext.Provider>
   );
 }
 
-// Make sure this exact line is at the very bottom of the file!
-export const useAuth = () => useContext(AuthContext);
+// Export the hook separately to prevent Vite Fast Refresh errors
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+};
