@@ -27,7 +27,7 @@
     "papaparse": "^5.5.3",
     "radix-ui": "^1.4.3",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0",
+    "react-dom": "^19.2.5",
     "react-router-dom": "^7.13.1",
     "react-signature-canvas": "^1.1.0-alpha.2",
     "recharts": "^3.7.0",
