@@ -3,17 +3,16 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { GoogleMap, useJsApiLoader, DirectionsRenderer, Marker, Polyline } from '@react-google-maps/api';
-import { Truck, MapPin, Phone, User, CheckCircle2, AlertTriangle, XCircle, Navigation, Package, DollarSign, Clock, Check, X, PenTool, UploadCloud, Map, Minus, Plus, PackageCheck, Route, Camera } from 'lucide-react';
+// 🚀 ADDED: RefreshCw to the imports
+import { Truck, MapPin, Phone, User, CheckCircle2, AlertTriangle, XCircle, Navigation, Package, DollarSign, Clock, Check, X, PenTool, UploadCloud, Map, Minus, Plus, PackageCheck, Route, Camera, RefreshCw } from 'lucide-react';
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
-// 🚀 SIGNATURE CANVAS LIBRARY
 import SignatureCanvas from 'react-signature-canvas';
 
 const WAREHOUSE_ADDRESS = "2169 Harbor St, Pittsburg CA 94565";
 
-// 🚀 IMAGE COMPRESSION HELPER (Saves bandwidth & prevents timeouts)
 const compressImage = (file, maxWidth = 800) => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -30,7 +29,7 @@ const compressImage = (file, maxWidth = 800) => {
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         canvas.toBlob((blob) => {
           resolve(new File([blob], file.name, { type: 'image/jpeg', lastModified: Date.now() }));
-        }, 'image/jpeg', 0.7); // 70% quality compression
+        }, 'image/jpeg', 0.7); 
       };
     };
   });
@@ -209,6 +208,9 @@ export default function DriverRoutes() {
   const [completedThisWeek, setCompletedThisWeek] = useState(0);
   const [loading, setLoading] = useState(true);
   const [licenseAlert, setLicenseAlert] = useState(null);
+  
+  // 🚀 ADDED: Track last refresh time
+  const [lastRefreshed, setLastRefreshed] = useState(new Date());
 
   const [activeOrder, setActiveOrder] = useState(null); 
   const [photoPreview, setPhotoPreview] = useState(null);
@@ -231,10 +233,8 @@ export default function DriverRoutes() {
   const [currentLocation, setCurrentLocation] = useState(null);
   const [triggerMapOpen, setTriggerMapOpen] = useState(0);
 
-  // 🚀 Signature Canvas Reference
   const sigCanvasRef = useRef(null);
 
-  // 🚀 FIXED: Throttled GPS Battery Saver
   useEffect(() => {
     if (!profile?.id || profile?.role?.toLowerCase() !== 'driver') return;
     
@@ -271,7 +271,6 @@ export default function DriverRoutes() {
     return () => { navigator.geolocation.clearWatch(watchId); clearInterval(syncInterval); };
   }, [profile?.id, profile?.role]);
 
-  // 🚀 FIXED: Realtime Dispatch Updates Listener
   useEffect(() => {
     if (!profile?.full_name) return;
 
@@ -290,8 +289,7 @@ export default function DriverRoutes() {
           fetchMyRoutes();
           
           if (payload.eventType === 'INSERT' || (payload.eventType === 'UPDATE' && payload.new.status === 'ready_for_delivery')) {
-            showToastMsg("New order assigned to your route!");
-            toast.success("New order assigned to your route!"); // Sonner global toast
+            toast.success("New order assigned to your route!"); 
           }
         }
       })
@@ -366,9 +364,10 @@ export default function DriverRoutes() {
 
       setOrders(pendingData || []);
       setCompletedThisWeek(completedCount || 0);
+      setLastRefreshed(new Date()); // 🚀 Record the exact time we refreshed
     } catch (error) {
       console.error('Error fetching routes:', error.message);
-      showToastMsg('Failed to load routes.', true);
+      toast.error('Failed to load routes.');
     } finally {
       setLoading(false);
     }
@@ -386,7 +385,7 @@ export default function DriverRoutes() {
     }));
     const completelySortedOrders = [...sortedRouteOrders, ...remainingOrders];
     setOrders(completelySortedOrders);
-    showToastMsg("Route Optimized for Fastest Round Trip!");
+    toast.success("Route Optimized for Fastest Round Trip!");
   };
 
   const handlePhotoCapture = (e) => {
@@ -419,12 +418,12 @@ export default function DriverRoutes() {
         .eq('id', orderId);
       if (error) throw error;
     } catch (error) { 
-      showToastMsg("Failed to sync status to database.", true); 
+      toast.error("Failed to sync status to database."); 
     }
   };
 
   const submitDelivery = async () => {
-    if (!receivedBy.trim()) { showToastMsg('Please enter the full name of the person receiving the order.', true); return; }
+    if (!receivedBy.trim()) { toast.error('Please enter the full name of the person receiving the order.'); return; }
     
     const activeItems = activeOrder.order_items?.filter(item => item.status === 'active') || [];
     
@@ -441,7 +440,7 @@ export default function DriverRoutes() {
     
     if (totalDeliveredQty > 0) {
       if (!sigCanvasRef.current || sigCanvasRef.current.isEmpty()) { 
-        showToastMsg('Please have the customer sign to confirm delivery.', true); 
+        toast.error('Please have the customer sign to confirm delivery.'); 
         return; 
       }
     }
@@ -452,7 +451,6 @@ export default function DriverRoutes() {
       let signatureUrlStr = null; 
       const uniquePrefix = `${Date.now()}-${activeOrder.id}`;
       
-      // 🚀 Compressed Photo Upload
       if (photoFile) {
         const compressedFile = await compressImage(photoFile); 
         const photoPath = `pod-photos/${uniquePrefix}.jpg`;
@@ -461,7 +459,6 @@ export default function DriverRoutes() {
         photoUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(photoPath).data.publicUrl;
       }
       
-      // 🚀 FIXED: Signature Extraction with .getCanvas() to prevent Vite build errors
       if (totalDeliveredQty > 0 && sigCanvasRef.current && !sigCanvasRef.current.isEmpty()) {
         const signatureDataUrl = sigCanvasRef.current.getCanvas().toDataURL('image/png');
         const signatureBlob = await (await fetch(signatureDataUrl)).blob();
@@ -558,7 +555,7 @@ export default function DriverRoutes() {
   };
 
   const submitCancellation = async () => {
-    if (!cancelReason.trim()) { showToastMsg('Please provide a reason for cancelling this delivery.', true); return; }
+    if (!cancelReason.trim()) { toast.error('Please provide a reason for cancelling this delivery.'); return; }
     setIsCancelling(true);
     try {
       const { error } = await supabase.rpc('reject_full_order', {
@@ -581,7 +578,7 @@ export default function DriverRoutes() {
   };
 
   const submitAttempted = async () => {
-    if (!attemptReason.trim()) { showToastMsg('Please provide a reason for the failed delivery attempt.', true); return; }
+    if (!attemptReason.trim()) { toast.error('Please provide a reason for the failed delivery attempt.'); return; }
     setIsAttempting(true);
     try {
       const { error } = await supabase.from('orders').update({ status: 'attempted', cancellation_reason: attemptReason.trim(), updated_at: new Date().toISOString() }).eq('id', attemptingOrder.id);
@@ -635,10 +632,27 @@ export default function DriverRoutes() {
       )}
 
       <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-lg relative overflow-hidden mt-4">
-        <div className="relative z-10">
-          <p className="text-emerald-400 font-bold tracking-widest uppercase text-[10px] mb-1">Driver Dashboard</p>
-          <h2 className="text-2xl font-extrabold tracking-tight">Welcome, {profile?.full_name?.split(' ')[0] || 'Driver'}</h2>
+        
+        {/* 🚀 FIXED: Added the manual Refresh button to the top right of the dashboard card */}
+        <div className="flex justify-between items-start relative z-10">
+          <div>
+            <p className="text-emerald-400 font-bold tracking-widest uppercase text-[10px] mb-1">Driver Dashboard</p>
+            <h2 className="text-2xl font-extrabold tracking-tight">Welcome, {profile?.full_name?.split(' ')[0] || 'Driver'}</h2>
+          </div>
           
+          <button 
+            onClick={fetchMyRoutes} 
+            disabled={loading}
+            className="flex flex-col items-center gap-1.5 p-2 bg-white/10 hover:bg-white/20 active:scale-95 transition-all rounded-xl border border-white/10 min-w-[64px]"
+          >
+            <RefreshCw size={18} className={loading ? "animate-spin text-emerald-400" : "text-slate-300"} />
+            <span className="text-[8px] font-black tracking-widest uppercase text-slate-300">
+              {loading ? 'Syncing' : 'Refresh'}
+            </span>
+          </button>
+        </div>
+        
+        <div className="relative z-10">
           <div className="flex gap-3 mt-5">
             <div className="bg-white/10 backdrop-blur border border-white/10 rounded-2xl p-4 flex-1">
               <div className="flex items-center gap-1.5 text-slate-300 mb-1">
@@ -655,7 +669,13 @@ export default function DriverRoutes() {
               <p className="text-3xl font-black text-emerald-400">{completedThisWeek}</p>
             </div>
           </div>
+          
+          {/* 🚀 Shows the driver exactly when the screen was last updated */}
+          <div className="mt-4 flex items-center justify-center gap-1.5 text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-slate-800/50 py-1.5 rounded-lg border border-white/5">
+            <Clock size={10} /> Last synced: {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </div>
         </div>
+
         <Truck className="absolute -right-8 -bottom-8 text-white/5" size={160} strokeWidth={1} />
       </div>
 
