@@ -7,7 +7,8 @@ import {
   Truck, ShieldCheck, Clock, ArrowRight, Package, Lock, 
   ShoppingCart, Search, ChevronLeft, ChevronRight, 
   User, LayoutDashboard, ChevronDown, MapPin, Mail, Phone, Users,
-  Menu, X, ArrowUp, PackageOpen, Plus, Minus, CheckCircle2, AlertTriangle, HeadphonesIcon, Building2, Sparkles
+  Menu, X, ArrowUp, PackageOpen, Plus, Minus, CheckCircle2, AlertTriangle, HeadphonesIcon, Building2, Sparkles,
+  CreditCard, Globe, Database
 } from 'lucide-react';
 
 import { toast } from "sonner";
@@ -126,7 +127,6 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
   return (
     <Card 
       onClick={onClick}
-      // 🚀 UI FIX: Added w-full and h-full to the base card so it expands properly inside sliders and grids
       className={`group cursor-pointer hover:shadow-xl hover:-translate-y-1 active:scale-[0.98] transition-all duration-200 overflow-hidden flex flex-col w-full h-full ${preventPurchase ? 'opacity-80' : ''}`}
     >
       <div className="w-full h-40 sm:h-48 bg-slate-50 relative p-4 border-b border-slate-100 flex items-center justify-center overflow-hidden shrink-0">
@@ -299,7 +299,6 @@ export default function Home() {
 
   const pricingRules = b2bData?.rules || [];
 
-  // 🚀 FETCH FEATURED PRODUCTS QUERY
   const { data: featuredData } = useQuery({
     queryKey: ['featured-products'],
     queryFn: async () => {
@@ -315,7 +314,6 @@ export default function Home() {
     staleTime: 1000 * 60 * 60,
   });
 
-  // Map featured products to families
   const featuredFamilies = useMemo(() => {
     const prods = featuredData?.products || [];
     const groups = {};
@@ -325,7 +323,6 @@ export default function Home() {
       groups[familyName].push(p);
     });
     
-    // Ensure UltraShield and SoftCore appear first
     const entries = Object.entries(groups);
     entries.sort((a, b) => {
         const aName = a[0].toLowerCase();
@@ -334,7 +331,7 @@ export default function Home() {
         const bIsPriority = bName.includes('ultrashield') || bName.includes('softcore') ? 1 : 0;
         return bIsPriority - aIsPriority;
     });
-    return entries.slice(0, 4); // Keep it to 1 clean row of 4
+    return entries.slice(0, 4); 
   }, [featuredData]);
 
 
@@ -425,7 +422,6 @@ export default function Home() {
     };
   }, [viewingFamily]);
 
-  // 🚀 UI FIX: Now dynamically accepts sourceVariants so it works for both the Catalog and the Featured grid!
   const openProductModal = (familyName, familyProducts, sourceVariants = variants) => {
     const defaultProduct = familyProducts[0];
     const defaultVariants = sourceVariants.filter(v => v.product_id === defaultProduct.id);
@@ -456,7 +452,6 @@ export default function Home() {
     if (!selectedVariantId || quantity < 1) return;
     const currentVariants = viewingFamily?.sourceVariants || variants;
     
-    // We look up the product within the passed-in family logic
     const product = viewingFamily.familyProducts.find(p => p.id === selectedProductId);
     const variant = currentVariants.find(v => v.id === selectedVariantId);
     
@@ -591,7 +586,6 @@ export default function Home() {
       </style>
 
       {/* 1. STICKY NAVIGATION BAR */}
-      {/* 🚀 UI Z-INDEX FIX: Ensuring this stays above EVERYTHING (z-50) */}
       <nav className="sticky top-0 z-50 w-full bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-sm transition-all">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-20 flex justify-between items-center">
           <div className="flex items-center gap-3 cursor-pointer shrink-0" onClick={(e) => scrollToSection(e, 'home')}>
@@ -1041,14 +1035,34 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="bg-[#0b1121] py-6 border-t border-slate-800">
-          <div className="max-w-7xl mx-auto px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-4 text-center md:text-left">
-            <p className="text-xs text-slate-500 font-medium">
+        <div className="bg-[#0b1121] py-5 border-t border-slate-800">
+          <div className="max-w-7xl mx-auto px-6 lg:px-8 flex flex-col lg:flex-row items-center justify-between gap-4 text-center lg:text-left">
+            <p className="text-xs text-slate-500 font-medium shrink-0">
               &copy; {new Date().getFullYear()} TriCore Medical Supply. All rights reserved.
             </p>
-            <div className="flex gap-4 text-xs font-medium text-slate-500 justify-center">
-              <span>Secure Checkout</span>
-              <span>HIPAA Compliant Protocol</span>
+            
+            {/* COMPLIANCE BADGES MOVED TO THE BOTTOM BAR */}
+            <div className="flex flex-wrap justify-center lg:justify-end items-center gap-x-4 sm:gap-x-5 gap-y-2">
+              <div className="flex items-center gap-1.5 text-slate-500 hover:text-slate-300 transition-colors cursor-default">
+                <ShieldCheck size={14} />
+                <span className="text-[10px] sm:text-xs font-medium tracking-wide">ISO 27001</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-slate-500 hover:text-slate-300 transition-colors cursor-default">
+                <Lock size={14} />
+                <span className="text-[10px] sm:text-xs font-medium tracking-wide">SOC 2 Type II</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-slate-500 hover:text-slate-300 transition-colors cursor-default">
+                <CreditCard size={14} />
+                <span className="text-[10px] sm:text-xs font-medium tracking-wide">PCI DSS</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-slate-500 hover:text-slate-300 transition-colors cursor-default">
+                <Globe size={14} />
+                <span className="text-[10px] sm:text-xs font-medium tracking-wide">GDPR</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-slate-500 hover:text-slate-300 transition-colors cursor-default">
+                <Database size={14} />
+                <span className="text-[10px] sm:text-xs font-medium tracking-wide">DPF Certified</span>
+              </div>
             </div>
           </div>
         </div>
