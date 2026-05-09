@@ -698,7 +698,7 @@ export default function Home() {
           <div className="max-w-md mx-auto w-full animate-in slide-in-from-bottom-8 fade-in duration-700 text-center lg:text-left">
             <h1 className="text-4xl sm:text-5xl lg:text-[42px] xl:text-[50px] font-black tracking-tight text-white mb-4 sm:mb-6 leading-[1.05]">
               Tricore Medical Supply <br className="hidden sm:block" />
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-300 to-cyan-200 block mt-2 text-3xl sm:text-4xl lg:text-[32px] xl:text-[40px] font-extrabold pb-2">built on reliability, driven by quality.</span>
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-300 to-cyan-200 block mt-2 text-3xl sm:text-4xl lg:text-[32px] xl:text-[40px] font-extrabold pb-2">Built on reliability, Driven by quality.</span>
             </h1>
             <p className="text-sm sm:text-base text-blue-100/90 mb-8 sm:mb-10 leading-relaxed font-medium">
               Supplying premium medical equipment throughout California. Browse our complete selection and discover more by logging in.
