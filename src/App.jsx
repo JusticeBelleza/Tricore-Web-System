@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './Layout';
 import { useAuth } from './lib/AuthContext';
 import { ErrorBoundary } from './components/ErrorBoundary'; 
-import { Toaster } from "@/components/ui/sonner"; // 🚀 1. IMPORT ADDED HERE
+import { Toaster } from "@/components/ui/sonner"; 
 
 // LAZY LOAD THE PAGES
 const Home = React.lazy(() => import('./pages/Home'));
@@ -23,6 +23,10 @@ const DispatchMonitor = React.lazy(() => import('./pages/DispatchMonitor'));
 const Profile = React.lazy(() => import('./pages/Profile'));
 const Products = React.lazy(() => import('./pages/Products'));
 const PurchaseOrders = React.lazy(() => import('./pages/PurchaseOrders'));
+
+// 🚀 LAZY LOAD POLICIES
+const PrivacyPolicy = React.lazy(() => import('./pages/PrivacyPolicy'));
+const TermsOfService = React.lazy(() => import('./pages/TermsOfService'));
 
 // CREATE A SUSPENSE FALLBACK UI
 const PageLoader = () => (
@@ -90,16 +94,20 @@ const DashboardRouter = () => {
 export default function App() {
   return (
     <ErrorBoundary>
-      {/* 🚀 2. TOASTER COMPONENT ADDED HERE TO CATCH ALL NOTIFICATIONS */}
       <Toaster position="bottom-right" richColors /> 
       
       <BrowserRouter>
         <Suspense fallback={<PageLoader />}>
           <Routes>
             
+            {/* PUBLIC ROUTES */}
             <Route path="/" element={<Home />} />
             <Route path="/home" element={<Navigate to="/" replace />} />
             <Route path="/login" element={<Login />} />
+            
+            {/* 🚀 POLICY ROUTES */}
+            <Route path="/privacy" element={<PrivacyPolicy />} />
+            <Route path="/terms" element={<TermsOfService />} />
             
             {/* PROTECTED ROUTES */}
             <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
