@@ -207,6 +207,9 @@ export default function Home() {
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const [quantity, setQuantity] = useState(1);
 
+  // 🚀 ADDED IMAGE INDEX STATE FOR THE MODAL SLIDER
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
+
   const [currentHeroSlide, setCurrentHeroSlide] = useState(0);
   const [currentAboutSlide, setCurrentAboutSlide] = useState(0);
 
@@ -431,6 +434,7 @@ export default function Home() {
     setQuantity(1);
     setIsAddingToCart(false); 
     setIsClosing(false); 
+    setCurrentImageIndex(0); // 🚀 RESET INDEX WHEN OPENING MODAL
   };
 
   const handleCloseModal = () => {
@@ -1070,7 +1074,7 @@ export default function Home() {
 
       <button onClick={scrollToTop} className={`fixed bottom-6 right-6 sm:bottom-8 sm:right-8 p-3 sm:p-4 bg-slate-900 text-white rounded-full shadow-2xl hover:bg-blue-600 hover:-translate-y-1 transition-all duration-300 z-50 flex items-center justify-center group ${showBackToTop ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10 pointer-events-none'}`}><ArrowUp size={24} className="group-hover:animate-bounce" /></button>
 
-      {/* 🚀 RESTORED ORIGINAL CUSTOM HTML PRODUCT DETAILS MODAL */}
+      {/* 🚀 RESTORED ORIGINAL CUSTOM HTML PRODUCT DETAILS MODAL WITH SLIDER */}
       {viewingFamily && activeProduct && (
         <div className={`fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm sm:p-4 pb-0 sm:pb-4 ${isClosing ? 'modal-overlay-close-anim' : 'modal-overlay-anim'}`} onClick={handleCloseModal}>
           <div className={`bg-white w-full max-w-4xl h-[90dvh] sm:h-auto sm:max-h-[85dvh] flex flex-col sm:flex-row rounded-t-[2rem] sm:rounded-3xl shadow-2xl overflow-hidden relative border-t sm:border border-slate-100 ${isClosing ? 'modal-content-close-anim' : 'modal-content-anim'}`} onClick={e => e.stopPropagation()}>
@@ -1078,14 +1082,48 @@ export default function Home() {
               <X size={18} />
             </button>
             <div className="w-full sm:w-1/2 bg-slate-50/50 flex flex-col justify-center items-center p-6 sm:p-8 border-b sm:border-b-0 sm:border-r border-slate-100 h-[35dvh] sm:h-auto sm:min-h-[400px] shrink-0 relative">
-              {activeProduct.image_urls?.[0] ? (
-                <img src={activeProduct.image_urls[0]} alt="" className={`max-w-full max-h-full object-contain mix-blend-multiply ${modalPreventPurchase ? 'grayscale opacity-75' : ''}`} />
+              
+              {/* 🚀 DYNAMIC IMAGE SLIDER REPLACES THE SINGLE IMAGE */}
+              {activeProduct.image_urls?.length > 0 ? (
+                <div className="relative w-full h-full flex items-center justify-center group">
+                  <img 
+                    src={activeProduct.image_urls[currentImageIndex]} 
+                    alt={activeProduct.name} 
+                    className={`max-w-full max-h-full object-contain mix-blend-multiply transition-opacity duration-300 ${modalPreventPurchase ? 'grayscale opacity-75' : ''}`} 
+                  />
+                  
+                  {/* Next / Prev Arrow Buttons */}
+                  {activeProduct.image_urls.length > 1 && (
+                    <>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); setCurrentImageIndex(prev => prev === 0 ? activeProduct.image_urls.length - 1 : prev - 1); }}
+                        className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-8 h-8 sm:w-10 sm:h-10 bg-white/80 hover:bg-white text-slate-800 rounded-full shadow-md flex items-center justify-center backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-all border border-slate-200"
+                      >
+                        <ChevronLeft size={20} />
+                      </button>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); setCurrentImageIndex(prev => prev === activeProduct.image_urls.length - 1 ? 0 : prev + 1); }}
+                        className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 w-8 h-8 sm:w-10 sm:h-10 bg-white/80 hover:bg-white text-slate-800 rounded-full shadow-md flex items-center justify-center backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-all border border-slate-200"
+                      >
+                        <ChevronRight size={20} />
+                      </button>
+                      
+                      {/* Image Dots */}
+                      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-1.5 bg-white/50 backdrop-blur-md px-2 py-1 rounded-full border border-white/40">
+                        {activeProduct.image_urls.map((_, idx) => (
+                          <div key={idx} className={`w-1.5 h-1.5 rounded-full transition-all ${idx === currentImageIndex ? 'bg-slate-800 w-3' : 'bg-slate-400'}`} />
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
               ) : (
                 <div className="text-slate-300 flex flex-col items-center gap-2 sm:gap-3">
                   <PackageOpen size={40} strokeWidth={1.5} className="sm:w-16 sm:h-16" />
                   <span className="text-[10px] sm:text-xs font-semibold uppercase tracking-widest">No Image</span>
                 </div>
               )}
+
             </div>
             <div className="w-full sm:w-1/2 flex flex-col flex-1 overflow-y-auto min-h-0 bg-white">
               <div className="p-5 sm:p-8 flex-1 space-y-5 sm:space-y-6">

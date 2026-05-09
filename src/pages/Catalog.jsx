@@ -291,6 +291,9 @@ export default function Catalog() {
   const [selectedProductId, setSelectedProductId] = useState('');
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const [quantity, setQuantity] = useState(1);
+  
+  // 🚀 ADDED IMAGE INDEX STATE
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
 
   const openProductModal = (familyName, familyProducts) => {
     const defaultProduct = familyProducts[0];
@@ -301,6 +304,7 @@ export default function Catalog() {
     setQuantity(1);
     setIsAddingToCart(false); 
     setIsClosing(false); 
+    setCurrentImageIndex(0); // 🚀 RESET INDEX
   };
 
   const handleCloseModal = () => {
@@ -550,8 +554,41 @@ export default function Catalog() {
             </button>
             
             <div className="w-full sm:w-1/2 bg-slate-50/50 flex flex-col justify-center items-center p-6 sm:p-8 border-b sm:border-b-0 sm:border-r border-slate-100 h-[35dvh] sm:h-auto sm:min-h-[400px] shrink-0 relative">
-              {activeProduct.image_urls?.[0] ? (
-                <img src={activeProduct.image_urls[0]} alt="" className={`max-w-full max-h-full object-contain mix-blend-multiply ${modalPreventPurchase ? 'grayscale opacity-75' : ''}`} />
+              
+              {/* 🚀 DYNAMIC IMAGE SLIDER */}
+              {activeProduct.image_urls?.length > 0 ? (
+                <div className="relative w-full h-full flex items-center justify-center group">
+                  <img 
+                    src={activeProduct.image_urls[currentImageIndex]} 
+                    alt={activeProduct.name} 
+                    className={`max-w-full max-h-full object-contain mix-blend-multiply transition-opacity duration-300 ${modalPreventPurchase ? 'grayscale opacity-75' : ''}`} 
+                  />
+                  
+                  {/* Next / Prev Arrow Buttons */}
+                  {activeProduct.image_urls.length > 1 && (
+                    <>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); setCurrentImageIndex(prev => prev === 0 ? activeProduct.image_urls.length - 1 : prev - 1); }}
+                        className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-8 h-8 sm:w-10 sm:h-10 bg-white/80 hover:bg-white text-slate-800 rounded-full shadow-md flex items-center justify-center backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-all border border-slate-200"
+                      >
+                        <ChevronLeft size={20} />
+                      </button>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); setCurrentImageIndex(prev => prev === activeProduct.image_urls.length - 1 ? 0 : prev + 1); }}
+                        className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 w-8 h-8 sm:w-10 sm:h-10 bg-white/80 hover:bg-white text-slate-800 rounded-full shadow-md flex items-center justify-center backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-all border border-slate-200"
+                      >
+                        <ChevronRight size={20} />
+                      </button>
+                      
+                      {/* Image Dots */}
+                      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-1.5 bg-white/50 backdrop-blur-md px-2 py-1 rounded-full border border-white/40">
+                        {activeProduct.image_urls.map((_, idx) => (
+                          <div key={idx} className={`w-1.5 h-1.5 rounded-full transition-all ${idx === currentImageIndex ? 'bg-slate-800 w-3' : 'bg-slate-400'}`} />
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
               ) : (
                 <div className="text-slate-300 flex flex-col items-center gap-2 sm:gap-3">
                   <PackageOpen size={40} strokeWidth={1.5} className="sm:w-16 sm:h-16" />
