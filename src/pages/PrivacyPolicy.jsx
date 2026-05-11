@@ -103,7 +103,7 @@ export default function PrivacyPolicy() {
             <h2 className="text-2xl text-slate-900 mt-10 mb-4">5. Data Security and Infrastructure Alignment</h2>
             <p>We implement robust, industry-standard security measures tailored to our system architecture. Data is encrypted in transit (via TLS/SSL) and at rest. We utilize strict Row Level Security (RLS) policies within our database infrastructure to ensure that retail users and agency accounts can only access data explicitly authorized for their role.</p>
 
-            <h2 className="text-2xl text-slate-900 mt-10 mb-4">6. Dat Retention</h2>
+            <h2 className="text-2xl text-slate-900 mt-10 mb-4">6. Data Retention</h2>
             <p>We retain Personal Information only for as long as necessary to fulfill the purposes outlined in this Policy, including satisfying any legal, accounting, or reporting requirements. Once data is no longer necessary for operational fulfillment or compliance, it is securely deleted or anonymized.</p>
 
             <h2 className="text-2xl text-slate-900 mt-10 mb-4">7. Changes to this Privacy Policy</h2>
