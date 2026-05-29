@@ -25,10 +25,12 @@ const banners = [
 ];
 
 const placeholders = [
-  { id: 1, title: 'Front of the Warehouse', color: 'from-blue-600 to-cyan-500', icon: <Building2 size={56} className="text-white"/> },
-  { id: 2, title: 'Operations', color: 'from-indigo-600 to-purple-500', icon: <HeadphonesIcon size={56} className="text-white"/> },
-  { id: 3, title: 'Products', color: 'from-emerald-600 to-teal-500', icon: <Package size={56} className="text-white"/> },
-  { id: 4, title: 'Shelves', color: 'from-slate-700 to-slate-500', icon: <LayoutDashboard size={56} className="text-white"/> }
+  { id: 1, title: 'Front of the Warehouse', image: '/images/aboutus.JPG' },
+  { id: 2, title: 'Operations', image: '/images/aboutus1.JPG' },
+  { id: 3, title: 'Products', image: '/images/aboutus2.JPG' },
+  { id: 4, title: 'Shelves', image: '/images/aboutus3.JPG' },
+  { id: 5, title: 'Facility', image: '/images/aboutus4.JPG' },
+  { id: 6, title: 'Logistics', image: '/images/aboutus5.JPG' }
 ];
 
 // =========================================
@@ -917,33 +919,33 @@ export default function Home() {
             </div>
 
             {/* 3D Stack Card Slider */}
-            {/* 🚀 UI FIX: Increased container height to allow for bigger cards */}
-            <div className="relative mt-8 lg:mt-0 h-[320px] sm:h-[450px] lg:h-[500px] w-full flex items-center justify-center overflow-hidden rounded-3xl bg-slate-100 border border-slate-200 shadow-inner">
+            {/* 🚀 UI FIX: Increased container height across all breakpoints to give the bigger cards room to breathe */}
+            <div className="relative mt-8 lg:mt-0 h-[380px] sm:h-[500px] lg:h-[580px] w-full flex items-center justify-center overflow-hidden rounded-3xl bg-slate-100 border border-slate-200 shadow-inner">
               
-              {/* 🚀 UI FIX: Expanded the max-width and height of the actual cards inside the slider */}
-              <div className="relative w-[90%] max-w-[360px] sm:max-w-[450px] lg:max-w-[480px] h-[240px] sm:h-[320px] lg:h-[360px] z-20 perspective-[1000px]">
+              {/* 🚀 UI FIX: Expanded max-width/height & adjusted mobile percentage from w-[90%] to w-[95%] */}
+              <div className="relative w-[95%] sm:w-[90%] max-w-[380px] sm:max-w-[500px] lg:max-w-[560px] h-[280px] sm:h-[380px] lg:h-[440px] z-20 perspective-[1000px]">
                 {placeholders.map((item, index) => {
                   const diff = (index - currentAboutSlide + placeholders.length) % placeholders.length;
                   
                   let cardClasses = "";
+                  // 🚀 UI FIX: Slightly adjusted the translation values so the larger background cards don't bleed out of the container
                   if (diff === 0) cardClasses = "translate-y-0 scale-100 opacity-100 z-30 shadow-2xl";
-                  else if (diff === 1) cardClasses = "translate-y-6 sm:translate-y-8 scale-[0.92] opacity-80 z-20 shadow-xl";
-                  else if (diff === 2) cardClasses = "translate-y-12 sm:translate-y-16 scale-[0.84] opacity-50 z-10 shadow-md";
-                  else cardClasses = "translate-y-16 sm:translate-y-20 scale-[0.76] opacity-0 z-0";
+                  else if (diff === 1) cardClasses = "translate-y-8 sm:translate-y-10 scale-[0.94] opacity-80 z-20 shadow-xl";
+                  else if (diff === 2) cardClasses = "translate-y-16 sm:translate-y-20 scale-[0.88] opacity-50 z-10 shadow-md";
+                  else cardClasses = "translate-y-20 sm:translate-y-24 scale-[0.82] opacity-0 z-0";
 
                   return (
                     <div 
                       key={item.id}
-                      className={`absolute inset-0 w-full h-full rounded-3xl transition-all duration-700 ease-in-out transform origin-top flex flex-col items-center justify-center text-center p-6 sm:p-8 border border-white/20 ${cardClasses} bg-gradient-to-br ${item.color}`}
+                      className={`absolute inset-0 w-full h-full rounded-3xl transition-all duration-700 ease-in-out transform origin-top overflow-hidden border border-slate-200/50 ${cardClasses} bg-slate-900`}
                     >
-                      {/* 🚀 UI FIX: Enlarged the background circle so the size-56 icons breathe */}
-                      <div className="w-20 h-20 sm:w-24 sm:h-24 bg-white/20 rounded-full flex items-center justify-center mb-6 backdrop-blur-sm border border-white/30 shadow-inner">
-                        {item.icon}
-                      </div>
-                      {/* 🚀 UI FIX: Increased title text size to match the bigger icons */}
-                      <h3 className="text-2xl sm:text-3xl font-black text-white drop-shadow-md tracking-tight leading-tight">
-                        {item.title}
-                      </h3>
+                      {/* 🚀 UI FIX: Added hardware acceleration (will-change, backface-visibility) for crisper rendering during transitions */}
+                      <img 
+                        src={item.image} 
+                        alt={item.title || "Facility Detail"} 
+                        className="absolute inset-0 w-full h-full object-cover object-center transition-transform duration-700 hover:scale-105 will-change-transform"
+                        style={{ WebkitBackfaceVisibility: 'hidden', backfaceVisibility: 'hidden' }}
+                      />
                     </div>
                   );
                 })}
