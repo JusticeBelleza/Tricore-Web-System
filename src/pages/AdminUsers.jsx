@@ -10,8 +10,6 @@ import {
   DownloadCloud, Save, ChevronLeft, ChevronRight, Package, ChevronDown, Wallet, MoreVertical, Edit, Truck, User, UserMinus
 } from 'lucide-react';
 
-// 🚀 THE FIX: Create the secondary client exactly ONCE outside the component 
-// to prevent the "Multiple GoTrueClient instances" memory warning.
 const adminAuthClient = createClient(
   import.meta.env.VITE_SUPABASE_URL, 
   import.meta.env.VITE_SUPABASE_ANON_KEY, 
@@ -20,7 +18,7 @@ const adminAuthClient = createClient(
       persistSession: false, 
       autoRefreshToken: false,
       detectSessionInUrl: false,
-      storageKey: 'tricore-admin-temp-key' // 🚀 Adding this completely kills the warning!
+      storageKey: 'tricore-admin-temp-key' 
     } 
   }
 );
@@ -31,23 +29,19 @@ export default function AdminUsers() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [loading, setLoading] = useState(true);
   
-  // --- CAPTCHA STATE ---
   const [captchaToken, setCaptchaToken] = useState(null);
   const turnstileRef = useRef(null);
 
-  // --- SERVER-SIDE PAGINATION STATE ---
   const [users, setUsers] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(10); 
   
-  // KPI & Secondary Data
   const [kpiData, setKpiData] = useState({ b2b: 0, retail: 0, staff: 0, outstanding: 0 });
   const [companyBalances, setCompanyBalances] = useState({});
   const [agencyPatientCounts, setAgencyPatientCounts] = useState({}); 
   const [activeMenuId, setActiveMenuId] = useState(null); 
 
-  // Modals
   const [showAddStaffModal, setShowAddStaffModal] = useState(false);
   const [showAddB2bModal, setShowAddB2bModal] = useState(false);
   const [showAddRetailModal, setShowAddRetailModal] = useState(false);
@@ -55,7 +49,6 @@ export default function AdminUsers() {
   const [creditLimitModal, setCreditLimitModal] = useState({ show: false, companyId: null, companyName: '', limit: '' });
   const [shippingFeeModal, setShippingFeeModal] = useState({ show: false, companyId: null, companyName: '', fee: '' });
   
-  // Pricing Modal States
   const [showPricingModal, setShowPricingModal] = useState(false);
   const [activeCompany, setActiveCompany] = useState(null);
   const [catalogProducts, setCatalogProducts] = useState([]);
@@ -72,13 +65,11 @@ export default function AdminUsers() {
   const [confirmAction, setConfirmAction] = useState({ show: false, type: '', title: '', message: '', data: null });
   const [toast, setToast] = useState({ show: false, message: '', isError: false });
 
-  // Forms
   const [staffForm, setStaffForm] = useState({ full_name: '', email: '', contact_number: '', role: 'Warehouse', password: '', confirm_password: '', license_number: '', license_expiry: '' });
   const [b2bForm, setB2bForm] = useState({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '', shipping_fee: '' });
   const [retailForm, setRetailForm] = useState({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '', password: '', confirm_password: '' });
   const [editAgencyForm, setEditAgencyForm] = useState({ userId: '', companyId: '', company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_phone: '' });
 
-  // Helper to reset captcha manually when closing modals
   const resetCaptcha = () => {
     setCaptchaToken(null);
     if (turnstileRef.current) turnstileRef.current.reset();
@@ -219,7 +210,6 @@ export default function AdminUsers() {
     setTimeout(() => setToast({ show: false, message: '', isError: false }), 4000);
   };
 
-  // --- ACTIONS ---
   const triggerAddStaffConfirm = (e) => {
     e.preventDefault();
     if (!captchaToken) return showToast("Please wait for security verification.", true);
@@ -286,18 +276,33 @@ export default function AdminUsers() {
     try {
       if (!captchaToken) throw new Error("Security verification missing.");
       
+      // 1. Create a Company Record bound to this Retail Customer
+      const { data: company, error: companyError } = await supabase.from('companies').insert([{
+        name: confirmAction.data.full_name || 'Retail Customer',
+        address: confirmAction.data.address || null,
+        city: confirmAction.data.city || null,
+        state: confirmAction.data.state || null,
+        zip: confirmAction.data.zip || null,
+        phone: confirmAction.data.contact_number || null,
+        email: confirmAction.data.email,
+        account_type: 'Retail',
+        shipping_fee: 0
+      }]).select().single();
+      
+      if (companyError) throw companyError;
+
       const { data, error: authError } = await adminAuthClient.auth.signUp({ 
         email: confirmAction.data.email, password: confirmAction.data.password, 
         options: { 
           captchaToken,
-          data: { full_name: confirmAction.data.full_name, role: 'retail', contact_number: confirmAction.data.contact_number, status: 'active' } 
+          data: { full_name: confirmAction.data.full_name, role: 'retail', contact_number: confirmAction.data.contact_number, company_id: company.id, status: 'active' } 
         } 
       });
       if (authError) throw authError;
 
       if (data?.user?.id) {
         await supabase.from('user_profiles').update({
-          address: confirmAction.data.address, city: confirmAction.data.city, state: confirmAction.data.state, zip: confirmAction.data.zip
+          address: confirmAction.data.address, city: confirmAction.data.city, state: confirmAction.data.state, zip: confirmAction.data.zip, company_id: company.id
         }).eq('id', data.user.id);
       }
 
@@ -330,13 +335,11 @@ export default function AdminUsers() {
       const rawLimit = Number(confirmAction.data.credit_limit.replace(/,/g, '')) || 0; 
       const rawShippingFee = Number(confirmAction.data.shipping_fee.replace(/,/g, '')) || 0; 
       
-      // 1. Create the Company Record
       const { data: company, error: companyError } = await supabase.from('companies').insert([{
         name: confirmAction.data.company_name, address: confirmAction.data.address, city: confirmAction.data.city, state: confirmAction.data.state, zip: confirmAction.data.zip, phone: confirmAction.data.admin_phone, email: confirmAction.data.admin_email, account_type: 'B2B', credit_limit: rawLimit, shipping_fee: rawShippingFee
       }]).select().single();
       if (companyError) throw companyError;
 
-      // 2. Create the Auth User
       const { data: authData, error: authError } = await adminAuthClient.auth.signUp({ 
         email: confirmAction.data.admin_email, password: confirmAction.data.password, 
         options: { 
@@ -346,7 +349,6 @@ export default function AdminUsers() {
       });
       if (authError) throw authError;
 
-      // 3. Explicitly link the new User to the new Company in user_profiles
       if (authData?.user?.id) {
         const { error: updateError } = await supabase.from('user_profiles').update({
           company_id: company.id
@@ -424,9 +426,81 @@ export default function AdminUsers() {
       const newFee = Number(shippingFeeModal.fee.replace(/,/g, '')); 
       const { error } = await supabase.from('companies').update({ shipping_fee: newFee }).eq('id', shippingFeeModal.companyId);
       if (error) throw error;
-      setUsers(prev => prev.map(u => { if (u.companies?.id === shippingFeeModal.companyId) { return { ...u, companies: { ...u.companies, shipping_fee: newFee } }; } return u; }));
-      showToast('Shipping fee updated successfully!'); setShippingFeeModal({ show: false, companyId: null, companyName: '', fee: '' });
-    } catch (err) { showToast('Failed to update: ' + err.message, true); } finally { setIsSubmitting(false); }
+      
+      // Update the Local State so the UI refreshes instantly
+      setUsers(prev => prev.map(u => { 
+        if (u.companies?.id === shippingFeeModal.companyId) { 
+          return { ...u, companies: { ...u.companies, shipping_fee: newFee } }; 
+        } 
+        return u; 
+      }));
+      
+      showToast('Shipping fee updated successfully!'); 
+      setShippingFeeModal({ show: false, companyId: null, companyName: '', fee: '' });
+    } catch (err) { 
+      showToast('Failed to update: ' + err.message, true); 
+    } finally { 
+      setIsSubmitting(false); 
+    }
+  };
+
+  // --- RETAIL HELPERS (For auto-generating legacy retail companies) ---
+  const handleRetailPricing = async (user) => {
+    let company = user.companies;
+    if (!company) {
+      setIsSubmitting(true);
+      const { data: newCompany, error } = await supabase.from('companies').insert([{
+        name: user.full_name || user.email || 'Retail Customer', 
+        address: user.address || null, 
+        city: user.city || null, 
+        state: user.state || null, 
+        zip: user.zip || null,
+        account_type: 'Retail', 
+        email: user.email || null, 
+        phone: user.contact_number || null, 
+        shipping_fee: 0
+      }]).select().single();
+      
+      if (error) {
+        setIsSubmitting(false);
+        return showToast('Failed to initialize retail profile: ' + error.message, true);
+      }
+      
+      await supabase.from('user_profiles').update({ company_id: newCompany.id }).eq('id', user.id);
+      company = newCompany;
+      setUsers(prev => prev.map(u => u.id === user.id ? { ...u, companies: company } : u));
+      setIsSubmitting(false);
+    }
+    openPricingModal(company);
+  };
+
+  const handleRetailShipping = async (user) => {
+    let company = user.companies;
+    if (!company) {
+      setIsSubmitting(true);
+      const { data: newCompany, error } = await supabase.from('companies').insert([{
+        name: user.full_name || user.email || 'Retail Customer', 
+        address: user.address || null, 
+        city: user.city || null, 
+        state: user.state || null, 
+        zip: user.zip || null,
+        account_type: 'Retail', 
+        email: user.email || null, 
+        phone: user.contact_number || null, 
+        shipping_fee: 0
+      }]).select().single();
+      
+      if (error) {
+        setIsSubmitting(false);
+        return showToast('Failed to initialize shipping profile: ' + error.message, true);
+      }
+      
+      await supabase.from('user_profiles').update({ company_id: newCompany.id }).eq('id', user.id);
+      company = newCompany;
+      setUsers(prev => prev.map(u => u.id === user.id ? { ...u, companies: company } : u));
+      setIsSubmitting(false);
+    }
+    setShippingFeeModal({ show: true, companyId: company.id, companyName: company.name, fee: formatNumberInput((company.shipping_fee || 0).toString()) });
   };
 
   // --- PRICING RULES LOGIC ---
@@ -692,7 +766,8 @@ export default function AdminUsers() {
                     <>
                       <th className="px-6 py-4 font-bold tracking-tight">User Profile</th>
                       <th className="px-6 py-4 font-bold tracking-tight">Shipping Address</th>
-                      <th className="px-6 py-4 font-bold tracking-tight">Role Type</th>
+                      {/* 🚀 ADDED A COLUMN TO DISPLAY RETAIL SETTINGS VISUALLY */}
+                      <th className="px-6 py-4 font-bold tracking-tight">Retail Settings</th>
                     </>
                   ) : (
                     <>
@@ -769,7 +844,20 @@ export default function AdminUsers() {
                             <span className="text-xs text-slate-400 italic">No address on file</span>
                           )}
                         </td>
-                        <td className="px-6 py-4">{renderRole(user.role)}</td>
+                        
+                        {/* 🚀 VISUAL CONFIRMATION IT IS SAVING TO THE "COMPANIES" TABLE */}
+                        <td className="px-6 py-4">
+                          {user.companies ? (
+                            <div className="flex flex-col gap-1.5">
+                              <span className="text-xs font-bold text-slate-700 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200 w-max shadow-sm flex items-center gap-1.5">
+                                <Truck size={14} className="text-slate-400"/>
+                                Shipping Fee: ${Number(user.companies.shipping_fee || 0).toFixed(2)}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-400 font-medium italic">Standard Rates</span>
+                          )}
+                        </td>
                       </>
                     ) : (
                       <>
@@ -833,6 +921,16 @@ export default function AdminUsers() {
                               <div className="h-px w-full bg-slate-100 my-1"></div>
                             </>
                           )}
+                          
+                          {/* 🚀 ADDED RETAIL PRICING/SHIPPING OPTIONS */}
+                          {activeTab === 'retail' && (
+                            <>
+                              <button onClick={() => { setActiveMenuId(null); handleRetailPricing(user); }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-3"><DollarSign size={16} className="text-slate-400" /> Manage Pricing</button>
+                              <button onClick={() => { setActiveMenuId(null); handleRetailShipping(user); }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-3"><Truck size={16} className="text-slate-400" /> Edit Shipping Fee</button>
+                              <div className="h-px w-full bg-slate-100 my-1"></div>
+                            </>
+                          )}
+                          
                           <button onClick={() => triggerDeleteConfirmation(user.id, user.full_name)} className="w-full px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100 transition-colors flex items-center gap-3"><UserMinus size={16} /> Deactivate Account</button>
                         </div>
                       )}

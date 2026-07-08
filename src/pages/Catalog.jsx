@@ -22,7 +22,7 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
   }, [selectedProductId, globalVariants]);
 
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
-  const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
+  const { finalPrice: displayPrice, hasRule } = getVariantPrice(activeProduct, activeVariant);
 
   let stockAmount = 0;
   if (Array.isArray(activeProduct?.inventory)) {
@@ -75,7 +75,9 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
 
         <div className="mt-auto pt-2 sm:pt-4 flex items-center sm:items-end justify-between border-t border-slate-100">
           <div>
-            <p className="text-base sm:text-xl font-bold text-slate-900 tracking-tight leading-none">${displayPrice.toFixed(2)}</p>
+            <p className="text-base sm:text-xl font-bold text-slate-900 tracking-tight leading-none">
+              ${displayPrice.toFixed(2)}
+            </p>
           </div>
           <button onClick={onClick} className="px-3 py-1.5 sm:px-3.5 sm:py-1.5 bg-slate-900 text-white sm:bg-white sm:border sm:border-slate-200 sm:text-slate-900 text-[10px] sm:text-[11px] font-bold rounded-lg sm:hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
             {preventPurchase ? 'Details' : 'View Options'}
@@ -155,37 +157,57 @@ export default function Catalog() {
   });
 
   // ==========================================
-  // 🚀 REACT QUERY 2: FETCH B2B FINANCIALS & RULES
+  // 🚀 REACT QUERY 2: FETCH PRICING RULES & FINANCIALS
   // ==========================================
-  const { data: b2bData } = useQuery({
-    queryKey: ['b2b-financials', profile?.company_id],
-    enabled: !!(profile?.company_id && profile?.role?.toLowerCase() === 'b2b'),
+  const { data: companyData } = useQuery({
+    queryKey: ['company-data', profile?.company_id],
+    enabled: !!profile?.company_id, 
     queryFn: async () => {
-      const [rulesRes, unpaidRes] = await Promise.all([
-        supabase.from('pricing_rules').select('*').eq('company_id', profile.company_id),
-        supabase.from('orders').select('total_amount').eq('company_id', profile.company_id).eq('payment_status', 'unpaid')
-      ]);
-      if (rulesRes.error) throw rulesRes.error;
+      const isB2b = profile?.role?.toLowerCase() === 'b2b';
       
-      const limit = Number(profile?.companies?.credit_limit || 0);
-      const outstanding = unpaidRes.data?.reduce((sum, order) => sum + Number(order.total_amount), 0) || 0;
+      const queries = [
+        supabase.from('pricing_rules').select('*').eq('company_id', profile.company_id)
+      ];
+      
+      // Only query unpaid totals for B2B accounts to save database load
+      if (isB2b) {
+        queries.push(
+          supabase.from('orders').select('total_amount').eq('company_id', profile.company_id).eq('payment_status', 'unpaid')
+        );
+      }
+      
+      const results = await Promise.all(queries);
+      const rulesRes = results[0];
+      const unpaidRes = isB2b ? results[1] : null;
+
+      if (rulesRes.error) throw rulesRes.error;
+      if (unpaidRes?.error) throw unpaidRes.error;
+      
+      let limit = 0;
+      let outstanding = 0;
+      
+      if (isB2b && unpaidRes) {
+        limit = Number(profile?.companies?.credit_limit || 0);
+        outstanding = unpaidRes.data?.reduce((sum, order) => sum + Number(order.total_amount), 0) || 0;
+      }
+      
+      // 🚀 DEBUG LOG: Check browser console to ensure rules are loading!
+      console.log(`Fetched ${rulesRes.data?.length || 0} custom pricing rules for company ID:`, profile.company_id);
       
       return { rules: rulesRes.data || [], financials: { limit, outstanding, available: limit - outstanding } };
     },
     staleTime: 1000 * 60 * 5,
   });
 
-  const pricingRules = b2bData?.rules || [];
-  const financials = b2bData?.financials || { limit: 0, outstanding: 0, available: 0 };
+  const pricingRules = companyData?.rules || [];
+  const financials = companyData?.financials || { limit: 0, outstanding: 0, available: 0 };
 
   // ==========================================
   // 🚀 REACT QUERY 3: FETCH ALL MATCHING PRODUCTS
   // ==========================================
   const { data: catalogData, isPending: loading } = useQuery({
-    queryKey: ['catalog-products', debouncedSearch, selectedCategory], // Notice `page` is removed from key
+    queryKey: ['catalog-products', debouncedSearch, selectedCategory], 
     queryFn: async () => {
-      // 🚀 We fetch the filtered results without .range()
-      // This allows React to perfectly group ALL matching products before paginating
       let query = supabase.from('products').select(`*, product_variants (*), inventory (*)`);
 
       if (debouncedSearch) {
@@ -195,7 +217,7 @@ export default function Catalog() {
         query = query.eq('category', selectedCategory);
       }
 
-      query = query.order('name').limit(1500); // Failsafe limit for performance
+      query = query.order('name').limit(1500); 
 
       const { data, error } = await query;
       if (error) throw error;
@@ -223,7 +245,8 @@ export default function Catalog() {
     if (applicableRule.rule_type === 'percentage') finalPrice = variantRetail * (1 - (ruleValue / 100));
     else if (applicableRule.rule_type === 'fixed') finalPrice = ruleValue;
 
-    return { finalPrice: finalPrice, hasRule: finalPrice < variantRetail };
+    // 🚀 FIX: Check if price is DIFFERENT, not just less than. Allows highlighting price increases ($1 to $10)
+    return { finalPrice: finalPrice, hasRule: finalPrice !== variantRetail };
   };
 
   // ==========================================
