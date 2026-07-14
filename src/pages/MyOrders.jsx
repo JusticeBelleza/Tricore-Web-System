@@ -6,7 +6,7 @@ import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-quer
 import { 
   Package, Receipt, ChevronDown, Calendar, Hash, MapPin, Mail,
   CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2,
-  ChevronLeft, ChevronRight, PackageCheck, XCircle, Clock, AlertTriangle, RefreshCw 
+  ChevronLeft, ChevronRight, PackageCheck, XCircle, Clock, AlertTriangle, RefreshCw, ShieldCheck 
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -49,11 +49,20 @@ export default function MyOrders() {
       const thresholdDate = new Date();
       thresholdDate.setDate(thresholdDate.getDate() - 25);
 
-      // Base query restricted to JUST this user or company
+      // 🚀 THE FIX: Intelligently query for Proxy B2B vs Retail orders
       const baseQuery = () => {
         let q = supabase.from('orders').select('*', { count: 'exact', head: true });
-        if (profile?.company_id) q = q.eq('company_id', profile.company_id);
-        else if (profile?.id) q = q.eq('user_id', profile.id);
+        
+        if (profile?.role?.toLowerCase() === 'b2b' && profile?.company_id) {
+          q = q.eq('company_id', profile.company_id);
+        } else {
+          if (profile?.company_id) {
+            q = q.or(`user_id.eq.${profile.id},company_id.eq.${profile.company_id}`);
+          } else if (profile?.id) {
+            q = q.eq('user_id', profile.id);
+          }
+        }
+        
         return q;
       };
 
@@ -84,26 +93,31 @@ export default function MyOrders() {
   const { data: ordersData, isLoading } = useQuery({
     queryKey: ['my_orders', activeTab, page, profile?.id, profile?.company_id],
     queryFn: async () => {
-      // Notice: NO { count: 'exact' } here
+      // 🚀 Added user_id and role to the select string for Proxy Detection
       let query = supabase
         .from('orders')
         .select(`
-          id, status, created_at, updated_at, processing_at, shipped_at, delivered_at, cancelled_at, cancellation_reason, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
+          id, user_id, status, created_at, updated_at, processing_at, shipped_at, delivered_at, cancelled_at, cancellation_reason, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
           driver_name, vehicle_name, vehicle_license,
           shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, company_id,
           companies ( name, address, city, state, zip, phone, email ),
           agency_patients ( contact_number, email ),
-          user_profiles ( full_name, contact_number, email ),
+          user_profiles ( full_name, contact_number, email, role ),
           order_items (
             id, quantity_variants, unit_price, line_total, status, cancellation_reason,
             product_variants ( name, sku, products ( name, base_sku ) ) 
           )
         `);
 
-      if (profile?.company_id) {
+      // 🚀 THE FIX: Link B2B and Retail Orders correctly
+      if (profile?.role?.toLowerCase() === 'b2b' && profile?.company_id) {
         query = query.eq('company_id', profile.company_id);
-      } else if (profile?.id) {
-        query = query.eq('user_id', profile.id);
+      } else {
+        if (profile?.company_id) {
+          query = query.or(`user_id.eq.${profile.id},company_id.eq.${profile.company_id}`);
+        } else if (profile?.id) {
+          query = query.eq('user_id', profile.id);
+        }
       }
 
       if (activeTab === 'delivered') {
@@ -224,8 +238,6 @@ export default function MyOrders() {
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
     // 🚀 DYNAMIC CALCULATIONS FOR PDF
-    // The DB already holds the exact final Net Subtotal, Final Tax, and Final Total. 
-    // We just need to sum all items to display the original gross subtotal!
     const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
     const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
     
@@ -425,6 +437,9 @@ export default function MyOrders() {
                   const shortId = order.id.split('-')[0].toUpperCase();
                   const isB2B = !!order.company_id || !!profile?.company_id;
                   
+                  // 🚀 DETECT PROXY ORDERS
+                  const isProxyOrder = order.user_id !== profile.id;
+
                   const hasAdjustments = order.order_items?.some(item => item.status === 'cancelled' || item.status === 'rejected');
 
                   const rawDriverName = order.driver_name || '';
@@ -487,6 +502,13 @@ export default function MyOrders() {
                             <div>
                               <p className="font-mono font-bold text-slate-900 text-sm tracking-tight">{shortId}</p>
                               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Hash size={10}/> Order ID</p>
+                              
+                              {/* 🚀 THE PROXY BADGE */}
+                              {isProxyOrder && (
+                                <span className="mt-1 flex items-center gap-1 px-1.5 py-0.5 bg-slate-800 text-white text-[9px] font-bold uppercase tracking-wider rounded shadow-sm w-max">
+                                  <ShieldCheck size={10} /> By Support
+                                </span>
+                              )}
                             </div>
                           </div>
                         </td>

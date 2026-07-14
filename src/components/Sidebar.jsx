@@ -2,7 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { 
   LayoutDashboard, Package, ShoppingCart, Truck, Warehouse, 
-  Users, BarChart3, ClipboardList, LogOut, X, Car, Navigation
+  Users, BarChart3, ClipboardList, LogOut, X, Car, Navigation, ShoppingBag
 } from "lucide-react"; 
 
 export default function Sidebar({ isMobileMenuOpen, closeMobileMenu, profile, badges, isCustomer, handleLogout, location }) {
@@ -76,6 +76,13 @@ export default function Sidebar({ isMobileMenuOpen, closeMobileMenu, profile, ba
                   <div className="pt-4 pb-2">
                     <p className="px-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Operations</p>
                   </div>
+                  
+                  {/* 🚀 NEW CREATE ORDER LINK */}
+                  <Link to="/admin/create-order" onClick={closeMobileMenu} className={navItemClass('/admin/create-order')}>
+                    <ShoppingBag size={18} /> 
+                    <span className="flex-1">Create Order</span>
+                  </Link>
+
                   <Link to="/admin/orders" onClick={closeMobileMenu} className={navItemClass('/admin/orders')}>
                     <ShoppingCart size={18} /> 
                     <span className="flex-1">All Orders</span>

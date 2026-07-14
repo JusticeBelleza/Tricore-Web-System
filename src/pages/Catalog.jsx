@@ -3,10 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, Building2 } from 'lucide-react';
+import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, Building2, User } from 'lucide-react';
 
 // ==========================================
-// 🚀 RESTORED PRODUCT FAMILY CARD
+// 🚀 PRODUCT FAMILY CARD
 // ==========================================
 function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVariantPrice, onClick }) {
   const [selectedProductId, setSelectedProductId] = useState(familyProducts[0].id);
@@ -22,7 +22,7 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
   }, [selectedProductId, globalVariants]);
 
   const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
-  const { finalPrice: displayPrice, hasRule } = getVariantPrice(activeProduct, activeVariant);
+  const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
 
   let stockAmount = 0;
   if (Array.isArray(activeProduct?.inventory)) {
@@ -75,9 +75,7 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
 
         <div className="mt-auto pt-2 sm:pt-4 flex items-center sm:items-end justify-between border-t border-slate-100">
           <div>
-            <p className="text-base sm:text-xl font-bold text-slate-900 tracking-tight leading-none">
-              ${displayPrice.toFixed(2)}
-            </p>
+            <p className="text-base sm:text-xl font-bold text-slate-900 tracking-tight leading-none">${displayPrice.toFixed(2)}</p>
           </div>
           <button onClick={onClick} className="px-3 py-1.5 sm:px-3.5 sm:py-1.5 bg-slate-900 text-white sm:bg-white sm:border sm:border-slate-200 sm:text-slate-900 text-[10px] sm:text-[11px] font-bold rounded-lg sm:hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
             {preventPurchase ? 'Details' : 'View Options'}
@@ -93,7 +91,7 @@ export default function Catalog() {
   const navigate = useNavigate();
   
   const [page, setPage] = useState(0);
-  const pageSize = 12; // 🚀 Always exactly 12 cards per page
+  const pageSize = 12; 
   const [searchTerm, setSearchTerm] = useState('');
   
   const [selectedCategory, setSelectedCategory] = useState('All Categories');
@@ -105,7 +103,28 @@ export default function Catalog() {
   const [cart, setCart] = useState([]);
   const [cartLoaded, setCartLoaded] = useState(false);
 
-  const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
+  // ==========================================
+  // 🚀 PROXY SESSION DETECTION & SECURITY
+  // ==========================================
+  const isStaff = profile?.role === 'admin' || profile?.role === 'warehouse';
+  const rawProxy = JSON.parse(localStorage.getItem('tricore_proxy_session') || 'null');
+  
+  // Only allow staff to hold a proxy session
+  const proxySession = (isStaff && rawProxy) ? rawProxy : null;
+
+  useEffect(() => {
+    // If a customer logs in and a proxy session bled over, destroy it instantly
+    if (profile && !isStaff && localStorage.getItem('tricore_proxy_session')) {
+      localStorage.removeItem('tricore_proxy_session');
+    }
+  }, [profile, isStaff]);
+
+  const activeCompanyId = proxySession?.isProxyOrder ? proxySession.targetCompanyId : profile?.company_id;
+  const isB2bMode = proxySession?.isProxyOrder ? proxySession.orderType === 'b2b' : profile?.role?.toLowerCase() === 'b2b';
+
+  const cartKey = proxySession?.isProxyOrder 
+    ? (proxySession.targetCompanyId ? `tricore_cart_agency_${proxySession.targetCompanyId}` : `tricore_cart_user_${proxySession.targetUserId}`)
+    : (profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`);
 
   // Close custom dropdown on outside click
   useEffect(() => {
@@ -144,7 +163,7 @@ export default function Catalog() {
   }, [cart, cartLoaded, profile?.id, cartKey]);
 
   // ==========================================
-  // 🚀 REACT QUERY 1: FETCH CATEGORIES (USING RPC)
+  // 🚀 REACT QUERY 1: FETCH CATEGORIES
   // ==========================================
   const { data: categories = [] } = useQuery({
     queryKey: ['catalog-categories'],
@@ -160,25 +179,24 @@ export default function Catalog() {
   // 🚀 REACT QUERY 2: FETCH PRICING RULES & FINANCIALS
   // ==========================================
   const { data: companyData } = useQuery({
-    queryKey: ['company-data', profile?.company_id],
-    enabled: !!profile?.company_id, 
+    queryKey: ['company-data', activeCompanyId],
+    enabled: !!activeCompanyId, 
     queryFn: async () => {
-      const isB2b = profile?.role?.toLowerCase() === 'b2b';
       
       const queries = [
-        supabase.from('pricing_rules').select('*').eq('company_id', profile.company_id)
+        supabase.from('pricing_rules').select('*').eq('company_id', activeCompanyId)
       ];
       
-      // Only query unpaid totals for B2B accounts to save database load
-      if (isB2b) {
+      // Only query unpaid totals for B2B accounts
+      if (isB2bMode) {
         queries.push(
-          supabase.from('orders').select('total_amount').eq('company_id', profile.company_id).eq('payment_status', 'unpaid')
+          supabase.from('orders').select('total_amount').eq('company_id', activeCompanyId).eq('payment_status', 'unpaid')
         );
       }
       
       const results = await Promise.all(queries);
       const rulesRes = results[0];
-      const unpaidRes = isB2b ? results[1] : null;
+      const unpaidRes = isB2bMode ? results[1] : null;
 
       if (rulesRes.error) throw rulesRes.error;
       if (unpaidRes?.error) throw unpaidRes.error;
@@ -186,13 +204,11 @@ export default function Catalog() {
       let limit = 0;
       let outstanding = 0;
       
-      if (isB2b && unpaidRes) {
-        limit = Number(profile?.companies?.credit_limit || 0);
+      if (isB2bMode && unpaidRes) {
+        const { data: comp } = await supabase.from('companies').select('credit_limit').eq('id', activeCompanyId).single();
+        limit = Number(comp?.credit_limit || 0);
         outstanding = unpaidRes.data?.reduce((sum, order) => sum + Number(order.total_amount), 0) || 0;
       }
-      
-      // 🚀 DEBUG LOG: Check browser console to ensure rules are loading!
-      console.log(`Fetched ${rulesRes.data?.length || 0} custom pricing rules for company ID:`, profile.company_id);
       
       return { rules: rulesRes.data || [], financials: { limit, outstanding, available: limit - outstanding } };
     },
@@ -234,7 +250,7 @@ export default function Catalog() {
     const baseRetail = Number(product.retail_base_price || 0);
     const variantRetail = (variant && Number(variant.price) > 0) ? Number(variant.price) : (baseRetail * (variant?.multiplier || 1));
     
-    if (!profile?.company_id || pricingRules.length === 0) return { finalPrice: variantRetail, hasRule: false };
+    if (!activeCompanyId || pricingRules.length === 0) return { finalPrice: variantRetail, hasRule: false };
 
     let applicableRule = pricingRules.find(r => r.variant_id === variant?.id);
     if (!applicableRule) return { finalPrice: variantRetail, hasRule: false };
@@ -245,19 +261,17 @@ export default function Catalog() {
     if (applicableRule.rule_type === 'percentage') finalPrice = variantRetail * (1 - (ruleValue / 100));
     else if (applicableRule.rule_type === 'fixed') finalPrice = ruleValue;
 
-    // 🚀 FIX: Check if price is DIFFERENT, not just less than. Allows highlighting price increases ($1 to $10)
     return { finalPrice: finalPrice, hasRule: finalPrice !== variantRetail };
   };
 
   // ==========================================
-  // 🚀 THE FIX: GROUP FIRST, PAGINATE SECOND
+  // 🚀 GROUP FIRST, PAGINATE SECOND
   // ==========================================
   const { groupedProducts, globalVariants } = useMemo(() => {
     const rawProducts = catalogData || [];
     const allVariants = rawProducts.flatMap(p => p.product_variants || []);
     const groups = {};
     
-    // 1. Group the products perfectly
     rawProducts.forEach(p => {
       const familyName = p.name.split(' - ')[0].trim();
       if (!groups[familyName]) groups[familyName] = [];
@@ -276,7 +290,6 @@ export default function Catalog() {
       return 99; 
     };
 
-    // 2. Sort the sizes within each family
     Object.values(groups).forEach(familyArray => {
       familyArray.sort((a, b) => {
         const weightA = getSizeWeight(a.name);
@@ -289,7 +302,7 @@ export default function Catalog() {
     return { groupedProducts: Object.entries(groups), globalVariants: allVariants };
   }, [catalogData]);
 
-  // 3. Exact 12-Card Pagination Math
+  // Exact Pagination Math
   const totalCount = groupedProducts.length;
   const totalPages = Math.ceil(totalCount / pageSize);
   const displayedFamilies = groupedProducts.slice(page * pageSize, (page * pageSize) + pageSize);
@@ -314,8 +327,6 @@ export default function Catalog() {
   const [selectedProductId, setSelectedProductId] = useState('');
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const [quantity, setQuantity] = useState(1);
-  
-  // 🚀 ADDED IMAGE INDEX STATE
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
 
   const openProductModal = (familyName, familyProducts) => {
@@ -327,7 +338,7 @@ export default function Catalog() {
     setQuantity(1);
     setIsAddingToCart(false); 
     setIsClosing(false); 
-    setCurrentImageIndex(0); // 🚀 RESET INDEX
+    setCurrentImageIndex(0); 
   };
 
   const handleCloseModal = () => {
@@ -396,7 +407,6 @@ export default function Catalog() {
   return (
     <div className="space-y-4 sm:space-y-6 pb-20 relative max-w-7xl mx-auto px-4 sm:px-6">
       
-      {/* CSS ANIMATIONS */}
       <style>
         {`
           @keyframes modalOverlayFade { from { opacity: 0; } to { opacity: 1; } }
@@ -424,7 +434,7 @@ export default function Catalog() {
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 sm:gap-6 pb-2 pt-4">
         <div>
           <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Catalog</h2>
-          {profile?.role?.toLowerCase() === 'b2b' ? (
+          {isB2bMode ? (
             <div className="mt-2 sm:mt-3 flex flex-wrap items-center gap-2 sm:gap-3">
               <span className="px-2.5 py-1 bg-blue-50 text-blue-700 text-[10px] sm:text-[11px] font-bold uppercase tracking-widest rounded-lg border border-blue-100 flex items-center gap-1.5">
                 <Building2 size={12}/> B2B Portal
@@ -436,6 +446,13 @@ export default function Catalog() {
                   ${financials.available.toLocaleString(undefined, {minimumFractionDigits: 2})}
                 </span>
               </div>
+            </div>
+          ) : proxySession?.isProxyOrder ? (
+            <div className="mt-2 sm:mt-3 flex flex-wrap items-center gap-2 sm:gap-3">
+               <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 text-[10px] sm:text-[11px] font-bold uppercase tracking-widest rounded-lg border border-emerald-100 flex items-center gap-1.5">
+                <User size={12}/> Retail Proxy Mode
+              </span>
+              <span className="text-sm text-slate-500 font-medium">Shopping for: <span className="font-bold text-slate-900">{proxySession.customerName}</span></span>
             </div>
           ) : (
             <p className="text-xs sm:text-sm text-slate-500 mt-1 sm:mt-2">Browse our complete catalog of clinical products.</p>
@@ -528,7 +545,6 @@ export default function Catalog() {
               ))}
             </div>
             
-            {/* 🚀 UPGRADED NUMBERED PAGINATION CONTROLS */}
             {totalCount > pageSize && (
               <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 sm:px-6 py-4 bg-white border border-slate-200 shadow-sm rounded-xl sm:rounded-2xl mt-4 sm:mt-6">
                 <span className="text-xs sm:text-sm font-medium text-slate-500">
@@ -578,7 +594,6 @@ export default function Catalog() {
             
             <div className="w-full sm:w-1/2 bg-slate-50/50 flex flex-col justify-center items-center p-6 sm:p-8 border-b sm:border-b-0 sm:border-r border-slate-100 h-[35dvh] sm:h-auto sm:min-h-[400px] shrink-0 relative">
               
-              {/* 🚀 DYNAMIC IMAGE SLIDER */}
               {activeProduct.image_urls?.length > 0 ? (
                 <div className="relative w-full h-full flex items-center justify-center group">
                   <img 
@@ -587,7 +602,6 @@ export default function Catalog() {
                     className={`max-w-full max-h-full object-contain mix-blend-multiply transition-opacity duration-300 ${modalPreventPurchase ? 'grayscale opacity-75' : ''}`} 
                   />
                   
-                  {/* Next / Prev Arrow Buttons */}
                   {activeProduct.image_urls.length > 1 && (
                     <>
                       <button 
@@ -603,7 +617,6 @@ export default function Catalog() {
                         <ChevronRight size={20} />
                       </button>
                       
-                      {/* Image Dots */}
                       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-1.5 bg-white/50 backdrop-blur-md px-2 py-1 rounded-full border border-white/40">
                         {activeProduct.image_urls.map((_, idx) => (
                           <div key={idx} className={`w-1.5 h-1.5 rounded-full transition-all ${idx === currentImageIndex ? 'bg-slate-800 w-3' : 'bg-slate-400'}`} />

@@ -24,6 +24,9 @@ const Profile = React.lazy(() => import('./pages/Profile'));
 const Products = React.lazy(() => import('./pages/Products'));
 const PurchaseOrders = React.lazy(() => import('./pages/PurchaseOrders'));
 
+// 🚀 LAZY LOAD THE NEW PROXY ORDER PAGE
+const AdminCreateOrder = React.lazy(() => import('./pages/AdminCreateOrder'));
+
 // 🚀 LAZY LOAD POLICIES
 const PrivacyPolicy = React.lazy(() => import('./pages/PrivacyPolicy'));
 const TermsOfService = React.lazy(() => import('./pages/TermsOfService'));
@@ -119,6 +122,10 @@ export default function App() {
               <Route path="/profile" element={<Profile />} />
               
               <Route path="/admin/orders" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><AdminOrders /></RoleProtectedRoute>} />
+              
+              {/* 🚀 NEW ADMIN CREATE ORDER ROUTE */}
+              <Route path="/admin/create-order" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><AdminCreateOrder /></RoleProtectedRoute>} />
+              
               <Route path="/warehouse" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Warehouse /></RoleProtectedRoute>} />
               <Route path="/dispatch" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><DispatchMonitor /></RoleProtectedRoute>} />
               <Route path="/admin/products" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Products /></RoleProtectedRoute>} />

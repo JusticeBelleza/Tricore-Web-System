@@ -5,7 +5,7 @@ import { useAuth } from '../lib/AuthContext';
 import { 
   ArrowLeft, CheckCircle2, Package, CreditCard, Receipt, 
   X, Building, MapPin, Search, User, Trash2, AlertCircle, 
-  ChevronDown, Mail, Phone, Edit2, Save, ChevronLeft, ChevronRight, AlertTriangle, Check
+  ChevronDown, Mail, Phone, Edit2, Save, ChevronLeft, ChevronRight, AlertTriangle, Check, Info
 } from 'lucide-react';
 
 export default function Checkout() {
@@ -20,22 +20,45 @@ export default function Checkout() {
   const [itemToDelete, setItemToDelete] = useState(null); 
   const ITEMS_PER_PAGE = 5;
 
-  const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
+  // ==========================================
+  // 🚀 PROXY SESSION DETECTION & SECURITY
+  // ==========================================
+  const isStaff = profile?.role === 'admin' || profile?.role === 'warehouse';
+  const rawProxy = JSON.parse(localStorage.getItem('tricore_proxy_session') || 'null');
+  const proxySession = (isStaff && rawProxy) ? rawProxy : null;
+  const isProxy = !!proxySession;
+
+  // Determine whose data we are looking at
+  const targetCompanyId = isProxy ? proxySession.targetCompanyId : profile?.company_id;
+  const targetUserId = isProxy ? proxySession.targetUserId : profile?.id;
+  const isB2B = isProxy ? proxySession.orderType === 'b2b' : !!profile?.company_id;
+
+  const cartKey = targetCompanyId ? `tricore_cart_agency_${targetCompanyId}` : `tricore_cart_user_${targetUserId}`;
+
+  // State to hold target company data if Admin is proxying
+  const [activeCompany, setActiveCompany] = useState(null);
 
   useEffect(() => {
-    if (profile?.id) {
+    // Destroy bleeding proxy sessions for regular customers
+    if (profile && !isStaff && localStorage.getItem('tricore_proxy_session')) {
+      localStorage.removeItem('tricore_proxy_session');
+    }
+  }, [profile, isStaff]);
+
+  useEffect(() => {
+    if (targetUserId || targetCompanyId) {
       const savedCart = localStorage.getItem(cartKey);
       if (savedCart) setCart(JSON.parse(savedCart));
       else setCart([]);
       setCartLoaded(true);
     }
-  }, [profile?.id, cartKey]);
+  }, [targetUserId, targetCompanyId, cartKey]);
 
   useEffect(() => {
-    if (cartLoaded && profile?.id) {
+    if (cartLoaded && (targetUserId || targetCompanyId)) {
       localStorage.setItem(cartKey, JSON.stringify(cart));
     }
-  }, [cart, cartLoaded, profile?.id, cartKey]);
+  }, [cart, cartLoaded, targetUserId, targetCompanyId, cartKey]);
 
   const totalCartPages = Math.ceil(cart.length / ITEMS_PER_PAGE);
   useEffect(() => {
@@ -44,8 +67,6 @@ export default function Checkout() {
     }
   }, [cart.length, totalCartPages, cartPage]);
   
-  const isB2B = !!profile?.company_id; 
-
   const [paymentMethod, setPaymentMethod] = useState('net_30');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -60,6 +81,7 @@ export default function Checkout() {
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef(null);
   const [financials, setFinancials] = useState({ limit: 0, outstanding: 0, available: 0 });
+  const [customShippingFee, setCustomShippingFee] = useState(null);
 
   const [isEditingRetail, setIsEditingRetail] = useState(false);
   const [saveToProfile, setSaveToProfile] = useState(true);
@@ -76,31 +98,35 @@ export default function Checkout() {
   const [taxLoading, setTaxLoading] = useState(false);
   const [showTaxBreakdown, setShowTaxBreakdown] = useState(false);
 
+  // 🚀 Fetch Retail User Data (handles Proxy vs Personal)
   useEffect(() => {
-    if (!isB2B && profile && user) {
-      const initEmail = user.email || profile.email || '';
-      const initPhone = profile.contact_number || profile.phone || '';
-      const initAddress = profile.address || '';
-      
-      setRetailInfo({
-        full_name: profile.full_name || '',
-        email: initEmail,
-        phone: initPhone,
-        address: initAddress,
-        city: profile.city || '',
-        state: profile.state || '',
-        zip: profile.zip || ''
-      });
-      
-      if (!initAddress || !initPhone) {
-        setIsEditingRetail(true);
-      }
+    if (!isB2B && targetUserId) {
+      const fetchRetail = async () => {
+        if (isProxy) {
+          const { data } = await supabase.from('user_profiles').select('*').eq('id', targetUserId).single();
+          if (data) {
+            setRetailInfo({
+              full_name: data.full_name || '', email: data.email || '', phone: data.contact_number || '',
+              address: data.address || '', city: data.city || '', state: data.state || '', zip: data.zip || ''
+            });
+            if (!data.address || !data.contact_number) setIsEditingRetail(true);
+          }
+        } else if (profile && user) {
+          setRetailInfo({
+            full_name: profile.full_name || '', email: user.email || profile.email || '', phone: profile.contact_number || profile.phone || '',
+            address: profile.address || '', city: profile.city || '', state: profile.state || '', zip: profile.zip || ''
+          });
+          if (!profile.address || !profile.contact_number) setIsEditingRetail(true);
+        }
+      };
+      fetchRetail();
     }
-  }, [profile, user, isB2B]);
+  }, [isB2B, targetUserId, isProxy, profile, user]);
 
+  // 🚀 Fetch B2B Data (handles Proxy vs Personal)
   useEffect(() => {
-    if (isB2B) fetchB2BData();
-  }, [isB2B, profile]);
+    if (isB2B && targetCompanyId) fetchB2BData();
+  }, [isB2B, targetCompanyId]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -112,33 +138,40 @@ export default function Checkout() {
 
   const fetchB2BData = async () => {
     try {
-      const [patientsRes, unpaidRes] = await Promise.all([
-        supabase.from('agency_patients').select('*').eq('agency_id', profile.company_id).order('full_name', { ascending: true }),
-        supabase.from('orders').select('total_amount').eq('company_id', profile.company_id).eq('payment_status', 'unpaid')
+      const [patientsRes, unpaidRes, companyRes] = await Promise.all([
+        supabase.from('agency_patients').select('*').eq('agency_id', targetCompanyId).order('full_name', { ascending: true }),
+        supabase.from('orders').select('total_amount').eq('company_id', targetCompanyId).eq('payment_status', 'unpaid'),
+        supabase.from('companies').select('*').eq('id', targetCompanyId).single()
       ]);
+      
       setPatients(patientsRes.data || []);
-      const limit = Number(profile?.companies?.credit_limit || 0);
-      const outstanding = unpaidRes.data?.reduce((sum, order) => sum + Number(order.total_amount), 0) || 0;
-      setFinancials({ limit, outstanding, available: limit - outstanding });
+      
+      if (companyRes.data) {
+        setActiveCompany(companyRes.data);
+        setCustomShippingFee(Number(companyRes.data.shipping_fee || 0));
+        const limit = Number(companyRes.data.credit_limit || 0);
+        const outstanding = unpaidRes.data?.reduce((sum, order) => sum + Number(order.total_amount), 0) || 0;
+        setFinancials({ limit, outstanding, available: limit - outstanding });
+      }
     } catch (err) { console.error(err); }
   };
 
   useEffect(() => {
-    const targetZip = isB2B 
-      ? (shipToAgency ? profile?.companies?.zip : selectedPatient?.zip) 
+    const activeZip = isB2B 
+      ? (shipToAgency ? activeCompany?.zip : selectedPatient?.zip) 
       : retailInfo?.zip;
     
-    if (isB2B && profile?.companies?.tax_exempt) {
+    if (isB2B && activeCompany?.tax_exempt) {
       setTaxData(null);
       return;
     }
 
-    if (!targetZip || targetZip.trim().length < 5) {
+    if (!activeZip || activeZip.trim().length < 5) {
       setTaxData(null);
       return;
     }
 
-    const cleanZip = targetZip.trim().substring(0, 5);
+    const cleanZip = activeZip.trim().substring(0, 5);
 
     const fetchTax = async () => {
       setTaxLoading(true);
@@ -161,7 +194,7 @@ export default function Checkout() {
 
     const timeoutId = setTimeout(() => { fetchTax(); }, 500);
     return () => clearTimeout(timeoutId);
-  }, [isB2B, profile?.companies?.tax_exempt, selectedPatient?.zip, retailInfo?.zip, shipToAgency, profile?.companies?.zip]);
+  }, [isB2B, activeCompany?.tax_exempt, selectedPatient?.zip, retailInfo?.zip, shipToAgency, activeCompany?.zip]);
 
   const filteredPatients = patients.filter(p => {
     const safeName = p.full_name || '';
@@ -188,9 +221,9 @@ export default function Checkout() {
   };
 
   const subtotal = cart.reduce((sum, item) => sum + item.line_total, 0);
-  const shippingFee = isB2B ? Number(profile?.companies?.shipping_fee || 0) : 10.00; 
+  const shippingFee = isB2B ? (customShippingFee !== null ? customShippingFee : 0) : 10.00; 
   
-  const taxRate = (isB2B && profile?.companies?.tax_exempt) ? 0 : (taxData ? Number(taxData.EstimatedCombinedRate) : 0);
+  const taxRate = (isB2B && activeCompany?.tax_exempt) ? 0 : (taxData ? Number(taxData.EstimatedCombinedRate) : 0);
   const taxAmount = subtotal * taxRate;
   const totalAmount = subtotal + shippingFee + taxAmount;
 
@@ -205,18 +238,18 @@ export default function Checkout() {
     setLoading(true); setError('');
 
     try {
-      const sName = isB2B ? (shipToAgency ? profile?.companies?.name : selectedPatient.full_name) : retailInfo.full_name;
-      const sAddress = isB2B ? (shipToAgency ? profile?.companies?.address : selectedPatient.address) : retailInfo.address;
-      const sCity = isB2B ? (shipToAgency ? profile?.companies?.city : selectedPatient.city) : retailInfo.city;
-      const sState = isB2B ? (shipToAgency ? profile?.companies?.state : selectedPatient.state) : retailInfo.state;
-      const sZip = isB2B ? (shipToAgency ? profile?.companies?.zip : selectedPatient.zip) : retailInfo.zip;
-      const sEmail = isB2B ? (shipToAgency ? profile?.companies?.email : selectedPatient.email) : retailInfo.email;
-      const sPhone = isB2B ? (shipToAgency ? (profile?.companies?.phone || profile?.contact_number) : (selectedPatient.phone || selectedPatient.contact_number)) : retailInfo.phone;
+      const sName = isB2B ? (shipToAgency ? activeCompany?.name : selectedPatient.full_name) : retailInfo.full_name;
+      const sAddress = isB2B ? (shipToAgency ? activeCompany?.address : selectedPatient.address) : retailInfo.address;
+      const sCity = isB2B ? (shipToAgency ? activeCompany?.city : selectedPatient.city) : retailInfo.city;
+      const sState = isB2B ? (shipToAgency ? activeCompany?.state : selectedPatient.state) : retailInfo.state;
+      const sZip = isB2B ? (shipToAgency ? activeCompany?.zip : selectedPatient.zip) : retailInfo.zip;
+      const sEmail = isB2B ? (shipToAgency ? activeCompany?.email : selectedPatient.email) : retailInfo.email;
+      const sPhone = isB2B ? (shipToAgency ? activeCompany?.phone : (selectedPatient.phone || selectedPatient.contact_number)) : retailInfo.phone;
 
-      // 1. Create the base order
+      // 1. Create the base order (🚀 WITH PROXY ID INJECTION)
       const { data: order, error: orderError } = await supabase.from('orders').insert({
-          user_id: profile.id, 
-          company_id: profile.company_id || null, 
+          user_id: targetUserId, 
+          company_id: targetCompanyId || null, 
           patient_id: (isB2B && !shipToAgency) ? selectedPatient.id : null,
           shipping_name: sName, 
           shipping_address: sAddress,
@@ -225,7 +258,9 @@ export default function Checkout() {
           shipping_zip: sZip,
           shipping_email: sEmail,
           shipping_phone: sPhone,
-          status: 'pending', payment_method: paymentMethod, payment_status: 'unpaid',
+          status: isProxy ? 'processing' : 'pending', // Auto-approve if proxy
+          payment_method: paymentMethod, 
+          payment_status: 'unpaid',
           subtotal, tax_amount: taxAmount, shipping_amount: shippingFee, total_amount: totalAmount,
         }).select().single();
 
@@ -248,8 +283,8 @@ export default function Checkout() {
         return {
           order_id: order.id, 
           product_variant_id: item.variant_id, 
-          quantity_variants: item.quantity, // 🚀 FIXED: Reverted back to your actual column name!
-          total_base_units: item.quantity * actualMultiplier, // Perfect math for your trigger!
+          quantity_variants: item.quantity, 
+          total_base_units: item.quantity * actualMultiplier, 
           unit_price: item.unit_price, 
           line_total: item.line_total
         };
@@ -258,11 +293,22 @@ export default function Checkout() {
       const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
       if (itemsError) throw itemsError;
 
-      if (!isB2B && saveToProfile) {
+      // 4. 🚀 AUDIT TRAIL LOGGING
+      if (isProxy) {
+        await supabase.from('order_audit_logs').insert([{
+          order_id: order.id,
+          action: 'ORDER_CREATED',
+          performed_by: profile.id, // The Admin's ID
+          details: `Order created via Proxy by ${profile.role} on behalf of ${proxySession.customerName}`
+        }]);
+      }
+
+      // 5. Update user profile if requested
+      if (!isB2B && saveToProfile && targetUserId) {
         await supabase.from('user_profiles').update({
           full_name: retailInfo.full_name, contact_number: retailInfo.phone, email: retailInfo.email,
           address: retailInfo.address, city: retailInfo.city, state: retailInfo.state, zip: retailInfo.zip
-        }).eq('id', profile.id);
+        }).eq('id', targetUserId);
       }
 
       setShowSuccess(true);
@@ -271,7 +317,16 @@ export default function Checkout() {
     } finally { setLoading(false); }
   };
 
-  const finishCheckout = () => { localStorage.removeItem(cartKey); setCart([]); setShowSuccess(false); navigate('/orders'); };
+  const finishCheckout = () => { 
+    localStorage.removeItem(cartKey); 
+    if (isProxy) localStorage.removeItem('tricore_proxy_session');
+    setCart([]); 
+    setShowSuccess(false); 
+    
+    // Route Admins back to Admin view, Normal users to My Orders
+    if (isStaff) navigate('/admin/orders');
+    else navigate('/orders'); 
+  };
 
   if (!cartLoaded || cart.length === 0) {
     return (
@@ -289,12 +344,26 @@ export default function Checkout() {
   const currentCartItems = cart.slice((cartPage - 1) * ITEMS_PER_PAGE, cartPage * ITEMS_PER_PAGE);
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6 pb-12 relative">
+    <div className="max-w-5xl mx-auto space-y-6 pb-12 relative px-4 sm:px-6 mt-4">
       <div className="flex flex-col sm:flex-row sm:items-center gap-4">
         <button onClick={() => navigate('/catalog')} className="flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-900"><ArrowLeft size={16} /> Back to Catalog</button>
         <div className="hidden sm:block w-px h-6 bg-slate-200 mx-2"></div>
         <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Secure Checkout</h2>
       </div>
+
+      {/* 🚀 PROXY WARNING BANNER */}
+      {isProxy && (
+        <div className="bg-blue-50 border border-blue-200 p-4 rounded-2xl flex items-start gap-3 shadow-sm animate-in fade-in slide-in-from-top-4">
+          <Info size={20} className="text-blue-600 mt-0.5 shrink-0" />
+          <div>
+            <h3 className="text-sm font-bold text-blue-900 uppercase tracking-widest mb-1">Proxy Order Mode Active</h3>
+            <p className="text-sm text-blue-800 font-medium leading-relaxed">
+              You are placing this order on behalf of <span className="font-bold underline">{proxySession.customerName}</span>. 
+              This order will appear in their account history, and you will be recorded in the audit trail.
+            </p>
+          </div>
+        </div>
+      )}
 
       {error && (<div className="p-4 bg-red-50 text-red-700 font-medium rounded-xl border border-red-100 text-sm flex items-center gap-3"><AlertCircle size={18} /> {error}</div>)}
 
@@ -312,22 +381,22 @@ export default function Checkout() {
                     <h4 className="text-xs font-bold text-slate-700 uppercase tracking-widest">Agency Billing</h4>
                   </div>
                   <div className="p-4 flex-1 flex flex-col">
-                    <p className="font-extrabold text-slate-900 text-base mb-3 tracking-tight">{profile?.companies?.name || 'Your Agency'}</p>
+                    <p className="font-extrabold text-slate-900 text-base mb-3 tracking-tight">{activeCompany?.name || 'Your Agency'}</p>
                     
                     <div className="space-y-2.5 text-sm font-medium text-slate-600">
                       <div className="flex items-center gap-2.5">
                         <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Mail size={14}/></div>
-                        <span className="truncate">{profile?.companies?.email || <span className="italic text-slate-400">No email provided</span>}</span>
+                        <span className="truncate">{activeCompany?.email || <span className="italic text-slate-400">No email provided</span>}</span>
                       </div>
                       <div className="flex items-center gap-2.5">
                         <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Phone size={14}/></div>
-                        <span>{profile?.companies?.phone || profile?.contact_number || <span className="italic text-slate-400">No phone provided</span>}</span>
+                        <span>{activeCompany?.phone || <span className="italic text-slate-400">No phone provided</span>}</span>
                       </div>
                       <div className="flex items-start gap-2.5">
                         <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100 shrink-0"><MapPin size={14}/></div>
                         <span className="leading-snug">
-                          {profile?.companies?.address || <span className="italic text-slate-400">No address provided</span>}
-                          {profile?.companies?.city && <><br/>{profile.companies.city}, {profile.companies.state} {profile.companies.zip}</>}
+                          {activeCompany?.address || <span className="italic text-slate-400">No address provided</span>}
+                          {activeCompany?.city && <><br/>{activeCompany.city}, {activeCompany.state} {activeCompany.zip}</>}
                         </span>
                       </div>
                     </div>
@@ -351,21 +420,21 @@ export default function Checkout() {
                     
                     {shipToAgency ? (
                       <div className="animate-in fade-in zoom-in-95 duration-200">
-                        <p className="font-extrabold text-slate-900 text-base mb-3 tracking-tight">{profile?.companies?.name || 'Your Agency'}</p>
+                        <p className="font-extrabold text-slate-900 text-base mb-3 tracking-tight">{activeCompany?.name || 'Your Agency'}</p>
                         <div className="space-y-2.5 text-sm font-medium text-slate-600">
                           <div className="flex items-center gap-2.5">
                             <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Mail size={14}/></div>
-                            <span className="truncate">{profile?.companies?.email || <span className="italic text-slate-400">No email provided</span>}</span>
+                            <span className="truncate">{activeCompany?.email || <span className="italic text-slate-400">No email provided</span>}</span>
                           </div>
                           <div className="flex items-center gap-2.5">
                             <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><Phone size={14}/></div>
-                            <span>{profile?.companies?.phone || profile?.contact_number || <span className="italic text-slate-400">No phone provided</span>}</span>
+                            <span>{activeCompany?.phone || <span className="italic text-slate-400">No phone provided</span>}</span>
                           </div>
                           <div className="flex items-start gap-2.5">
                             <div className="p-1.5 rounded-lg bg-slate-50 text-slate-400 border border-slate-100 shrink-0"><MapPin size={14}/></div>
                             <span className="leading-snug">
-                              {profile?.companies?.address || <span className="italic text-slate-400">No address provided</span>}
-                              {profile?.companies?.city && <><br/>{profile.companies.city}, {profile.companies.state} {profile.companies.zip}</>}
+                              {activeCompany?.address || <span className="italic text-slate-400">No address provided</span>}
+                              {activeCompany?.city && <><br/>{activeCompany.city}, {activeCompany.state} {activeCompany.zip}</>}
                             </span>
                           </div>
                         </div>
@@ -568,7 +637,7 @@ export default function Checkout() {
                     </label>
 
                     <div className="pt-5 flex justify-end gap-3 border-t border-slate-200 mt-5">
-                      {profile?.address && (<button onClick={() => setIsEditingRetail(false)} className="px-5 py-2.5 text-sm font-bold text-slate-600 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 transition-colors shadow-sm">Cancel</button>)}
+                      {retailInfo?.address && (<button onClick={() => setIsEditingRetail(false)} className="px-5 py-2.5 text-sm font-bold text-slate-600 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 transition-colors shadow-sm">Cancel</button>)}
                       <button onClick={handleApplyAddress} className="px-6 py-2.5 text-sm font-bold text-white bg-slate-900 rounded-xl hover:bg-slate-800 active:scale-95 shadow-md transition-all w-full sm:w-auto">Use this Address</button>
                     </div>
                   </div>
@@ -768,7 +837,7 @@ export default function Checkout() {
                     onClick={() => taxData && setShowTaxBreakdown(!showTaxBreakdown)}
                   >
                     Estimated Tax 
-                    {(isB2B && profile?.companies?.tax_exempt) && <span className="text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ml-1 border border-blue-100 shadow-sm">Exempt</span>}
+                    {(isB2B && activeCompany?.tax_exempt) && <span className="text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ml-1 border border-blue-100 shadow-sm">Exempt</span>}
                     {taxLoading && <span className="text-[9px] font-bold uppercase tracking-widest text-amber-500 animate-pulse bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100">Calculating...</span>}
                     {taxData && !taxLoading && <ChevronDown size={14} className={`transition-transform duration-200 text-slate-400 ${showTaxBreakdown ? 'rotate-180' : ''}`} />}
                   </span>
@@ -861,7 +930,9 @@ export default function Checkout() {
             <div className="w-24 h-24 bg-green-50 text-green-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner"><CheckCircle2 size={48} strokeWidth={2.5} /></div>
             <h4 className="text-3xl font-black text-slate-900 tracking-tight">Success!</h4>
             <p className="text-slate-500 mt-3 font-medium leading-relaxed">Your order has been received and is being processed.</p>
-            <button onClick={finishCheckout} className="w-full mt-8 py-4 bg-slate-900 text-white font-bold rounded-2xl shadow-lg hover:bg-slate-800 active:scale-95 transition-all">View Order History</button>
+            <button onClick={finishCheckout} className="w-full mt-8 py-4 bg-slate-900 text-white font-bold rounded-2xl shadow-lg hover:bg-slate-800 active:scale-95 transition-all">
+              {isStaff ? 'Return to Admin Orders' : 'View Order History'}
+            </button>
           </div>
         </div>
       )}
