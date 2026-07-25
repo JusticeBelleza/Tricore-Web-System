@@ -1,11 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { 
   Search, Package, CheckCircle2, Truck, FileDown, 
   CheckSquare, Square, Box, ChevronDown, Hash, Calendar, MapPin, User, Phone, Mail, Car,
-  ChevronLeft, ChevronRight, CheckCircle, AlertTriangle, XCircle, RefreshCw, ArrowRightCircle, RotateCcw
+  ChevronLeft, ChevronRight, CheckCircle, AlertTriangle, XCircle, RefreshCw, ArrowRightCircle, RotateCcw, AlertCircle, ArrowRight
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -66,9 +66,119 @@ export default function Warehouse() {
     refetchInterval: 60000, 
   });
 
+  // ==========================================
+  // 🚀 BACKORDER FETCHING & GROUPING LOGIC
+  // ==========================================
+  const { data: backorderedItems = [], isLoading: isBackordersLoading } = useQuery({
+    queryKey: ['warehouse_backorders'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('order_items')
+        .select(`
+          id,
+          quantity_variants,
+          status,
+          order_id,
+          orders ( id, company_id, user_id, companies ( name ), user_profiles ( full_name ) ),
+          product_variants ( 
+            id, 
+            name, 
+            sku, 
+            multiplier, 
+            products ( id, name, inventory ( base_units_on_hand ) ) 
+          )
+        `)
+        .ilike('status', 'backordered');
+
+      if (error) throw error;
+      return data || [];
+    },
+    refetchInterval: 30000, 
+  });
+
+  const groupedBackorders = useMemo(() => {
+    const groups = {};
+    backorderedItems.forEach(item => {
+      const variant = item.product_variants;
+      if (!variant) return;
+
+      const sku = variant.sku;
+      const multiplier = Number(variant.multiplier) || 1;
+
+      let baseStock = 0;
+      const inv = variant.products?.inventory;
+      if (Array.isArray(inv)) {
+        baseStock = inv.reduce((sum, i) => sum + (Number(i.base_units_on_hand) || 0), 0);
+      } else if (inv) {
+        baseStock = Number(inv.base_units_on_hand) || 0;
+      }
+
+      const currentStockVariants = baseStock > 0 ? Math.floor(baseStock / multiplier) : 0;
+
+      if (!groups[sku]) {
+        groups[sku] = {
+          sku: sku,
+          productName: variant.products?.name || 'Unknown Product',
+          variantName: variant.name,
+          currentStock: currentStockVariants,
+          totalOwed: 0,
+          pendingOrders: []
+        };
+      }
+
+      groups[sku].totalOwed += Number(item.quantity_variants || 0);
+      const customerName = item.orders?.companies?.name || item.orders?.user_profiles?.full_name || 'Retail Customer';
+      groups[sku].pendingOrders.push({
+        orderId: item.order_id,
+        itemId: item.id,
+        qty: item.quantity_variants,
+        customer: customerName
+      });
+    });
+    return Object.values(groups).sort((a, b) => b.totalOwed - a.totalOwed);
+  }, [backorderedItems]);
+
+  const allocateStockMutation = useMutation({
+    mutationFn: async (itemIds) => {
+      const { data, error } = await supabase
+        .from('order_items')
+        .update({ status: 'READY_TO_PACK' })
+        .in('id', itemIds);
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['warehouse_backorders'] });
+      toast.success("Stock allocated! Items moved to Ready to Pack.");
+    },
+    onError: (err) => toast.error(`Failed to allocate stock: ${err.message}`)
+  });
+
+  const markBackorderMutation = useMutation({
+    mutationFn: async (itemId) => {
+      const { error } = await supabase
+        .from('order_items')
+        .update({ status: 'BACKORDERED' })
+        .eq('id', itemId);
+        
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Item moved to backorder!");
+      queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['warehouse_backorders'] });
+    },
+    onError: (err) => toast.error(`Failed to backorder item: ${err.message}`)
+  });
+
+  // ==========================================
+  // 🚀 STANDARD ORDERS FETCHING
+  // ==========================================
   const { data: ordersData, isLoading } = useQuery({
     queryKey: ['warehouse_orders', activeTab, page, debouncedSearch],
     queryFn: async () => {
+      if (activeTab === 'backorders') return []; 
+
       let query = supabase.from('orders').select(`
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
@@ -95,7 +205,7 @@ export default function Warehouse() {
       return data || [];
     },
     placeholderData: keepPreviousData,
-    enabled: !!profile?.id,
+    enabled: !!profile?.id && activeTab !== 'backorders',
   });
 
   const hasNextPage = ordersData && ordersData.length > pageSize;
@@ -112,6 +222,7 @@ export default function Warehouse() {
         debounceTimer = setTimeout(() => {
           queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
           queryClient.invalidateQueries({ queryKey: ['warehouse_tab_counts'] });
+          queryClient.invalidateQueries({ queryKey: ['warehouse_backorders'] });
         }, 500);
       }).subscribe();
       
@@ -153,11 +264,7 @@ export default function Warehouse() {
   const restockMutation = useMutation({
     mutationFn: async () => {
       const { order } = confirmRestock;
-      
-      const { error } = await supabase.rpc('process_warehouse_restock', {
-        p_order_id: order.id
-      });
-      
+      const { error } = await supabase.rpc('process_warehouse_restock', { p_order_id: order.id });
       if (error) throw error;
     },
     onSuccess: () => {
@@ -184,7 +291,11 @@ export default function Warehouse() {
 
   const toggleSelectAll = (activeItems, isAllPicked) => {
     const newPickedState = { ...pickedItems };
-    activeItems.forEach(item => { newPickedState[item.id] = !isAllPicked; });
+    activeItems.forEach(item => { 
+      if (item.status?.toLowerCase() !== 'backordered') {
+        newPickedState[item.id] = !isAllPicked; 
+      }
+    });
     setPickedItems(newPickedState);
   };
 
@@ -310,273 +421,414 @@ export default function Warehouse() {
           <div className="flex gap-2 p-1 bg-slate-100/50 border border-slate-200 w-max rounded-xl">
             <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><Package size={16}/> To Pack ({tabCounts.processing})</button>
             <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><CheckCircle2 size={16}/> Packed ({tabCounts.completed})</button>
-            <button onClick={() => setActiveTab('returns')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'returns' ? 'bg-amber-600 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}><RefreshCw size={16}/> Returns ({tabCounts.returns})</button>
+            <button onClick={() => setActiveTab('returns')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'returns' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><RefreshCw size={16}/> Returns ({tabCounts.returns})</button>
+            
+            <button onClick={() => setActiveTab('backorders')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'backorders' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>
+              <AlertCircle size={16}/> Backorders ({backorderedItems.length})
+            </button>
           </div>
         </div>
-        <div className="relative w-full md:w-80 shrink-0">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input type="text" placeholder="Search Patient Name..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" />
-        </div>
+        
+        {activeTab !== 'backorders' && (
+          <div className="relative w-full md:w-80 shrink-0">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <input type="text" placeholder="Search Patient Name..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" />
+          </div>
+        )}
       </div>
 
-      {isLoading ? (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      {/* ============================================== */}
+      {/* 🚀 RENDER PENDING BACKORDERS TAB (MINIMALIST)  */}
+      {/* ============================================== */}
+      {activeTab === 'backorders' ? (
+        <div className="mt-6">
+          {isBackordersLoading ? (
+            <div className="flex items-center justify-center p-12 text-slate-500">
+              <Package className="animate-pulse mr-3" /> Loading backorder queue...
+            </div>
+          ) : groupedBackorders.length === 0 ? (
+            <div className="bg-white border border-slate-200 rounded-2xl p-16 text-center flex flex-col items-center shadow-sm">
+              <CheckCircle2 className="text-slate-300 w-12 h-12 mb-3" />
+              <h3 className="text-lg font-bold text-slate-900 mb-1">All Caught Up</h3>
+              <p className="text-sm text-slate-500">There are currently no items on backorder.</p>
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm px-6 py-2">
+              {groupedBackorders.map((group) => {
+                const canFulfill = group.currentStock >= group.totalOwed;
+                const partialFulfill = group.currentStock > 0 && !canFulfill;
+
+                return (
+                  <div key={group.sku} className="group flex flex-col md:flex-row md:items-center justify-between gap-4 py-5 border-b border-slate-100 last:border-0">
+                    
+                    {/* Product & Orders Info (Clean List) */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-3 mb-2">
+                        <Box size={18} className="text-slate-400 shrink-0" />
+                        <h3 className="font-semibold text-slate-900 truncate">{group.productName}</h3>
+                        <span className="text-slate-300 text-sm hidden sm:inline">|</span>
+                        <p className="text-sm text-slate-500 truncate hidden sm:inline">
+                          {group.variantName} <span className="font-mono text-xs text-slate-400 ml-1">({group.sku})</span>
+                        </p>
+                      </div>
+                      
+                      <div className="flex flex-wrap gap-x-5 gap-y-1 mt-1 pl-7">
+                        {group.pendingOrders.map((po, idx) => {
+                          const shortId = po.orderId ? po.orderId.substring(0, 8).toUpperCase() : 'UNKNOWN';
+                          return (
+                            <div key={idx} className="text-xs text-slate-500 flex items-center gap-1.5">
+                              <span className="font-medium text-slate-700">{po.qty}x</span>
+                              <span className="truncate max-w-[150px]" title={po.customer}>{po.customer}</span>
+                              <span className="text-slate-900 font-bold tracking-tight">#{shortId}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Minimalist Math & Action */}
+                    <div className="flex items-center justify-between md:justify-end gap-6 shrink-0 md:pl-6 pl-7">
+                      <div className="text-right">
+                        <p className="text-[10px] uppercase tracking-wider text-slate-400 font-medium mb-0.5">Owed / Stock</p>
+                        <p className="text-base font-medium">
+                          <span className="text-amber-600 font-semibold">{group.totalOwed}</span>
+                          <span className="text-slate-300 mx-1.5">/</span>
+                          <span className={group.currentStock <= 0 ? 'text-red-500' : 'text-emerald-600'}>
+                            {group.currentStock}
+                          </span>
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={(e) => {
+                          if (group.currentStock <= 0) {
+                            e.preventDefault();
+                            return;
+                          }
+                          const itemIds = group.pendingOrders.map(order => order.itemId);
+                          allocateStockMutation.mutate(itemIds);
+                        }}
+                        disabled={group.currentStock <= 0 || allocateStockMutation.isPending}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors w-24 flex items-center justify-center ${
+                          canFulfill 
+                            ? 'bg-slate-900 text-white hover:bg-slate-800' 
+                            : partialFulfill 
+                              ? 'bg-blue-600 text-white hover:bg-blue-700'
+                              : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                        }`}
+                      >
+                        {allocateStockMutation.isPending ? 'Working...' : canFulfill ? 'Allocate' : partialFulfill ? 'Partial' : 'Awaiting'}
+                      </button>
+                    </div>
+
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : isLoading ? (
+        // ==============================================
+        // STANDARD TAB LOADING STATE
+        // ==============================================
+        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden mt-6">
           <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
           {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div></div>))}
         </div>
       ) : displayOrders.length === 0 ? (
+        // ==============================================
+        // STANDARD TAB EMPTY STATE
+        // ==============================================
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm mt-6">
           <Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" />
           <h3 className="text-xl font-bold text-slate-900 mb-2 tracking-tight">Queue is empty</h3>
           <p className="text-slate-500 text-sm">There are no orders in this tab matching your search right now.</p>
         </div>
       ) : (
-        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-x-auto mt-6">
-          <table className="w-full text-left text-sm whitespace-nowrap">
-            <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500">
-              <tr>
-                <th className="px-6 py-4 font-bold tracking-tight rounded-tl-3xl">Order Details</th>
-                <th className="px-6 py-4 font-bold tracking-tight">Date</th>
-                <th className="px-6 py-4 font-bold tracking-tight">Customer / Agency</th>
-                <th className="px-6 py-4 font-bold tracking-tight text-center">Items</th>
-                <th className="px-6 py-4 font-bold tracking-tight">Status</th>
-                <th className="px-6 py-4 font-bold tracking-tight text-right rounded-tr-3xl"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {displayOrders.map(order => {
-                const isExpanded = expandedOrderId === order.id;
-                const shortId = order.id.substring(0, 8).toUpperCase();
-                const isB2B = !!order.company_id;
-                const isOrderDone = order.status === 'ready_for_delivery' || order.status === 'shipped';
-                
-                const isReturn = activeTab === 'returns' && (order.status === 'attempted' || order.status === 'delivered_partial');
-                
-                let activeItems = [];
-                if (activeTab === 'returns' && order.status === 'delivered_partial') {
-                  // 🚀 THE FIX: Make sure the Returns tab shows both rejected AND successfully restocked items
-                  activeItems = order.order_items?.filter(item => item.status?.toLowerCase() === 'rejected' || item.status?.toLowerCase() === 'restocked') || [];
-                } else {
-                  activeItems = order.order_items?.filter(item => item.status?.toLowerCase() !== 'cancelled') || [];
-                }
-                
-                const currentPickedCount = isOrderDone ? activeItems.length : Object.values(pickedItems).filter(Boolean).length;
-                const allItemsPicked = activeItems.length > 0 && activeItems.every(item => pickedItems[item.id]);
-                
-                const billName = order.companies?.name || 'Retail Customer';
-                const shipName = order.shipping_name || billName;
-                const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
-                const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
-                const shipAddress = order.shipping_address || 'No shipping address provided';
-                const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
+        // ==============================================
+        // STANDARD TAB DATA TABLE
+        // ==============================================
+        <>
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-x-auto mt-6">
+            <table className="w-full text-left text-sm whitespace-nowrap">
+              <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500">
+                <tr>
+                  <th className="px-6 py-4 font-bold tracking-tight rounded-tl-3xl">Order Details</th>
+                  <th className="px-6 py-4 font-bold tracking-tight">Date</th>
+                  <th className="px-6 py-4 font-bold tracking-tight">Customer / Agency</th>
+                  <th className="px-6 py-4 font-bold tracking-tight text-center">Items</th>
+                  <th className="px-6 py-4 font-bold tracking-tight">Status</th>
+                  <th className="px-6 py-4 font-bold tracking-tight text-right rounded-tr-3xl"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {displayOrders.map(order => {
+                  const isExpanded = expandedOrderId === order.id;
+                  const shortId = order.id.substring(0, 8).toUpperCase();
+                  const isB2B = !!order.company_id;
+                  const isOrderDone = order.status === 'ready_for_delivery' || order.status === 'shipped';
+                  
+                  const isReturn = activeTab === 'returns' && (order.status === 'attempted' || order.status === 'delivered_partial');
+                  
+                  let activeItems = [];
+                  if (activeTab === 'returns' && order.status === 'delivered_partial') {
+                    activeItems = order.order_items?.filter(item => item.status?.toLowerCase() === 'rejected' || item.status?.toLowerCase() === 'restocked') || [];
+                  } else {
+                    activeItems = order.order_items?.filter(item => item.status?.toLowerCase() !== 'cancelled') || [];
+                  }
+                  
+                  const requiredPickItems = activeItems.filter(item => item.status?.toLowerCase() !== 'backordered');
+                  const currentPickedCount = isOrderDone ? activeItems.length : Object.values(pickedItems).filter(Boolean).length;
+                  const allItemsPicked = requiredPickItems.length > 0 && requiredPickItems.every(item => pickedItems[item.id]);
+                  
+                  const billName = order.companies?.name || 'Retail Customer';
+                  const shipName = order.shipping_name || billName;
+                  const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
+                  const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
+                  const shipAddress = order.shipping_address || 'No shipping address provided';
+                  const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
 
-                const driverParts = (order.driver_name || '').split(' | ');
-                const displayDriverName = driverParts[0];
-                const displayDriverPhone = driverParts[1] || '';
+                  const driverParts = (order.driver_name || '').split(' | ');
+                  const displayDriverName = driverParts[0];
+                  const displayDriverPhone = driverParts[1] || '';
 
-                return (
-                  <React.Fragment key={order.id}>
-                    <tr onClick={() => toggleOrderDetails(order.id)} className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-900' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-4">
-                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border transition-colors shadow-sm ${isExpanded ? 'bg-slate-900 text-white border-slate-900' : isReturn ? (order.status === 'delivered_partial' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'bg-amber-50 text-amber-600 border-amber-200') : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
-                            {isReturn ? <RefreshCw size={18} /> : <Box size={18} />}
+                  return (
+                    <React.Fragment key={order.id}>
+                      <tr onClick={() => toggleOrderDetails(order.id)} className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-900' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-4">
+                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border transition-colors shadow-sm ${isExpanded ? 'bg-slate-900 text-white border-slate-900' : isReturn ? (order.status === 'delivered_partial' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'bg-amber-50 text-amber-600 border-amber-200') : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                              {isReturn ? <RefreshCw size={18} /> : <Box size={18} />}
+                            </div>
+                            <div><p className="font-mono font-bold text-slate-900 text-sm tracking-tight">{shortId}</p><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Hash size={10}/> Order ID</p></div>
                           </div>
-                          <div><p className="font-mono font-bold text-slate-900 text-sm tracking-tight">{shortId}</p><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Hash size={10}/> Order ID</p></div>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4"><p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> Placed</p></td>
-                      <td className="px-6 py-4">
-                        <p className="font-bold text-slate-900">{getDisplayName(order)}</p>
-                        <span className={`inline-flex mt-1 px-1.5 py-0.5 text-[9px] uppercase tracking-widest font-bold rounded shadow-sm ${isB2B ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>{isB2B ? 'B2B Agency' : 'Retail'}</span>
-                      </td>
-                      <td className="px-6 py-4 text-center"><span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-100 text-slate-700 font-extrabold text-xs shadow-inner border border-slate-200">{activeItems.length}</span></td>
-                      <td className="px-6 py-4">{getStatusBadge(order.status)}</td>
-                      <td className="px-6 py-4 text-right"><button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}><ChevronDown size={20} /></button></td>
-                    </tr>
+                        </td>
+                        <td className="px-6 py-4"><p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> Placed</p></td>
+                        <td className="px-6 py-4">
+                          <p className="font-bold text-slate-900">{getDisplayName(order)}</p>
+                          <span className={`inline-flex mt-1 px-1.5 py-0.5 text-[9px] uppercase tracking-widest font-bold rounded shadow-sm ${isB2B ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>{isB2B ? 'B2B Agency' : 'Retail'}</span>
+                        </td>
+                        <td className="px-6 py-4 text-center"><span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-100 text-slate-700 font-extrabold text-xs shadow-inner border border-slate-200">{activeItems.length}</span></td>
+                        <td className="px-6 py-4">{getStatusBadge(order.status)}</td>
+                        <td className="px-6 py-4 text-right"><button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}><ChevronDown size={20} /></button></td>
+                      </tr>
 
-                    {isExpanded && (
-                      <tr className="bg-slate-50 shadow-inner">
-                        <td colSpan="6" className="p-0 border-b border-slate-200">
-                          <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
-                            
-                            {isReturn && order.cancellation_reason && (
-                              <div className={`mb-6 p-4 border rounded-2xl flex items-start gap-3 shadow-sm ${order.status === 'delivered_partial' ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'}`}>
-                                {order.status === 'delivered_partial' ? <CheckCircle2 size={20} className="mt-0.5 shrink-0 text-emerald-600" /> : <AlertTriangle size={20} className="mt-0.5 shrink-0 text-amber-600" />}
-                                <div>
-                                  <h4 className={`text-sm font-black tracking-tight ${order.status === 'delivered_partial' ? 'text-emerald-900' : 'text-amber-900'}`}>
-                                    {order.status === 'delivered_partial' ? 'Delivered (with rejected items)' : 'Delivery Attempted (Failed)'}
-                                  </h4>
-                                  <p className={`text-sm mt-1 font-medium leading-relaxed ${order.status === 'delivered_partial' ? 'text-emerald-700' : 'text-amber-700'}`}>
-                                    {order.cancellation_reason}
-                                  </p>
+                      {isExpanded && (
+                        <tr className="bg-slate-50 shadow-inner">
+                          <td colSpan="6" className="p-0 border-b border-slate-200">
+                            <div className="p-6 sm:p-8 animate-in slide-in-from-top-2 fade-in duration-200">
+                              
+                              {isReturn && order.cancellation_reason && (
+                                <div className={`mb-6 p-4 border rounded-2xl flex items-start gap-3 shadow-sm ${order.status === 'delivered_partial' ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'}`}>
+                                  {order.status === 'delivered_partial' ? <CheckCircle2 size={20} className="mt-0.5 shrink-0 text-emerald-600" /> : <AlertTriangle size={20} className="mt-0.5 shrink-0 text-amber-600" />}
+                                  <div>
+                                    <h4 className={`text-sm font-black tracking-tight ${order.status === 'delivered_partial' ? 'text-emerald-900' : 'text-amber-900'}`}>
+                                      {order.status === 'delivered_partial' ? 'Delivered (with rejected items)' : 'Delivery Attempted (Failed)'}
+                                    </h4>
+                                    <p className={`text-sm mt-1 font-medium leading-relaxed ${order.status === 'delivered_partial' ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                      {order.cancellation_reason}
+                                    </p>
+                                  </div>
                                 </div>
-                              </div>
-                            )}
+                              )}
 
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                              <div className="lg:col-span-2 space-y-4">
-                                <div className="flex justify-between items-end mb-4 border-b border-slate-200 pb-2">
-                                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
-                                    <CheckSquare size={16} className="text-slate-400" /> 
-                                    Items to {isReturn ? 'Restock' : 'Pick'}
-                                  </h4>
-                                  
-                                  <div className="flex items-center gap-4">
-                                    {!isReturn && <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">{currentPickedCount} / {activeItems.length} Picked</span>}
+                              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                                <div className="lg:col-span-2 space-y-4">
+                                  <div className="flex justify-between items-end mb-4 border-b border-slate-200 pb-2">
+                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
+                                      <CheckSquare size={16} className="text-slate-400" /> 
+                                      Items to {isReturn ? 'Restock' : 'Pick'}
+                                    </h4>
                                     
-                                    {order.status === 'processing' && activeItems.length > 0 && (
-                                      <button 
-                                        onClick={(e) => { e.stopPropagation(); toggleSelectAll(activeItems, allItemsPicked); }}
-                                        className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold rounded-lg border shadow-sm transition-all active:scale-95 ${allItemsPicked ? 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'}`}
-                                      >
-                                        <CheckCircle size={14} className={allItemsPicked ? 'text-slate-400' : 'text-emerald-500'} />
-                                        {allItemsPicked ? 'Deselect All' : 'Select All'}
-                                      </button>
+                                    <div className="flex items-center gap-4">
+                                      {!isReturn && <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">{currentPickedCount} / {requiredPickItems.length} Picked</span>}
+                                      
+                                      {order.status === 'processing' && requiredPickItems.length > 0 && (
+                                        <button 
+                                          onClick={(e) => { e.stopPropagation(); toggleSelectAll(activeItems, allItemsPicked); }}
+                                          className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold rounded-lg border shadow-sm transition-all active:scale-95 ${allItemsPicked ? 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'}`}
+                                        >
+                                          <CheckCircle size={14} className={allItemsPicked ? 'text-slate-400' : 'text-emerald-500'} />
+                                          {allItemsPicked ? 'Deselect All' : 'Select All'}
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="space-y-3">
+                                    {activeItems.length === 0 ? (
+                                      <div className="p-6 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white">
+                                        <p className="text-slate-500 font-medium">No items available for processing.</p>
+                                      </div>
+                                    ) : (
+                                      activeItems.map(item => {
+                                        const isPicked = pickedItems[item.id];
+                                        const isDone = isOrderDone || isReturn; 
+                                        
+                                        const isItemRejected = item.status?.toLowerCase() === 'rejected' || item.status?.toLowerCase() === 'restocked';
+                                        const isBackordered = item.status?.toLowerCase() === 'backordered';
+
+                                        return (
+                                          <div key={item.id} onClick={() => (order.status === 'processing' && !isBackordered) && togglePickItem(item.id)} className={`flex items-center justify-between p-4 sm:px-5 sm:py-4 rounded-2xl border transition-all ${order.status === 'processing' && !isBackordered ? 'cursor-pointer active:scale-[0.99]' : ''} ${isPicked || isDone ? (isReturn && isItemRejected ? 'bg-red-50/50 border-red-200 shadow-sm' : 'bg-slate-100 border-slate-200 shadow-sm') : isBackordered ? 'bg-amber-50/50 border-amber-200 opacity-75' : 'bg-white border-slate-200 hover:border-slate-300 shadow-sm'}`}>
+                                            <div className="flex items-center gap-4 sm:gap-5 flex-1 min-w-0 pr-4">
+                                              
+                                              {!isReturn && !isBackordered && (
+                                                <div className={`shrink-0 transition-colors ${isPicked || isDone ? 'text-emerald-500' : 'text-slate-300'}`}>
+                                                  {isPicked || isDone ? <CheckSquare size={26} strokeWidth={2} /> : <Square size={26} strokeWidth={2} />}
+                                                </div>
+                                              )}
+                                              
+                                              {!isReturn && isBackordered && (
+                                                <div className="shrink-0 text-amber-500">
+                                                  <AlertCircle size={26} strokeWidth={2} />
+                                                </div>
+                                              )}
+
+                                              {isReturn && <div className={`shrink-0 ${isItemRejected ? 'text-red-400' : 'text-emerald-500'}`}>{isItemRejected ? <Package size={24} strokeWidth={1.5} /> : <CheckCircle2 size={24} strokeWidth={1.5} />}</div>}
+                                              
+                                              <div className="flex-1 min-w-0">
+                                                <p className={`whitespace-normal font-bold leading-snug text-xs sm:text-sm transition-all ${isItemRejected || isBackordered ? 'line-through text-slate-400' : 'text-slate-900'} ${(!isItemRejected && !isBackordered && (isPicked || isOrderDone)) ? 'text-slate-500' : ''}`}>
+                                                  {item.product_variants?.products?.name || item.product_variants?.name || 'Item'}
+                                                </p>
+                                                <p className={`text-[10px] sm:text-xs font-mono mt-1 ${isItemRejected || isBackordered ? 'text-slate-300' : 'text-slate-500'}`}>SKU: {item.product_variants?.sku}</p>
+                                              </div>
+                                            </div>
+
+                                            <div className="flex items-center gap-3">
+                                              {order.status === 'processing' && !isBackordered && !isPicked && (
+                                                <button 
+                                                  onClick={(e) => {
+                                                    e.stopPropagation(); 
+                                                    markBackorderMutation.mutate(item.id);
+                                                  }}
+                                                  disabled={markBackorderMutation.isPending}
+                                                  className="px-3 py-1.5 bg-white border border-amber-200 text-amber-700 hover:bg-amber-50 rounded-lg text-[10px] font-bold uppercase tracking-widest shadow-sm active:scale-95 transition-all whitespace-nowrap"
+                                                >
+                                                  Mark Backorder
+                                                </button>
+                                              )}
+
+                                              {isBackordered && (
+                                                <span className="px-2 py-1 bg-amber-100 text-amber-800 rounded text-[10px] font-bold uppercase tracking-widest shadow-sm whitespace-nowrap">
+                                                  Backordered
+                                                </span>
+                                              )}
+
+                                              <div className={`text-center bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm shrink-0 ${isItemRejected || isBackordered ? 'opacity-60' : ''}`}>
+                                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-1">Qty</p>
+                                                <p className={`text-lg font-extrabold leading-none ${isItemRejected || isBackordered ? 'text-slate-400 line-through' : (isPicked || isOrderDone ? 'text-emerald-700' : 'text-slate-900')}`}>
+                                                  {item.quantity_variants}
+                                                </p>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        );
+                                      })
                                     )}
                                   </div>
                                 </div>
-                                <div className="space-y-3">
-                                  {activeItems.length === 0 ? (
-                                    <div className="p-6 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white">
-                                      <p className="text-slate-500 font-medium">No items available for processing.</p>
-                                    </div>
-                                  ) : (
-                                    activeItems.map(item => {
-                                      const isPicked = pickedItems[item.id];
-                                      const isDone = isOrderDone || isReturn; 
-                                      
-                                      // 🚀 THE FIX: This ensures restocked items are perfectly crossed out!
-                                      const isItemRejected = item.status?.toLowerCase() === 'rejected' || item.status?.toLowerCase() === 'restocked';
 
-                                      return (
-                                        <div key={item.id} onClick={() => order.status === 'processing' && togglePickItem(item.id)} className={`flex items-center justify-between p-4 sm:px-5 sm:py-4 rounded-2xl border transition-all ${order.status === 'processing' ? 'cursor-pointer active:scale-[0.99]' : ''} ${isPicked || isDone ? (isReturn && isItemRejected ? 'bg-red-50/50 border-red-200 shadow-sm' : 'bg-slate-100 border-slate-200 shadow-sm') : 'bg-white border-slate-200 hover:border-slate-300 shadow-sm'}`}>
-                                          <div className="flex items-center gap-4 sm:gap-5 flex-1 min-w-0 pr-4">
-                                            {!isReturn && <div className={`shrink-0 transition-colors ${isPicked || isDone ? 'text-emerald-500' : 'text-slate-300'}`}>{isPicked || isDone ? <CheckSquare size={26} strokeWidth={2} /> : <Square size={26} strokeWidth={2} />}</div>}
-                                            {isReturn && <div className={`shrink-0 ${isItemRejected ? 'text-red-400' : 'text-emerald-500'}`}>{isItemRejected ? <Package size={24} strokeWidth={1.5} /> : <CheckCircle2 size={24} strokeWidth={1.5} />}</div>}
-                                            
-                                            <div className="flex-1 min-w-0">
-                                              <p className={`whitespace-normal font-bold leading-snug text-xs sm:text-sm transition-all ${isItemRejected ? 'line-through decoration-red-500 text-slate-400' : 'text-slate-900'} ${(!isItemRejected && (isPicked || isOrderDone)) ? 'text-slate-500' : ''}`}>
-                                                {item.product_variants?.products?.name || item.product_variants?.name || 'Item'}
-                                              </p>
-                                              <p className={`text-[10px] sm:text-xs font-mono mt-1 ${isItemRejected ? 'text-slate-300' : 'text-slate-500'}`}>SKU: {item.product_variants?.sku}</p>
-                                            </div>
+                                <div className="space-y-6">
+                                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
+                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2 border-b border-slate-100 pb-3"><MapPin size={16} className="text-slate-400" /> Delivery Route</h4>
+                                    <div className="space-y-4">
+                                      <div>
+                                        <p className="font-bold text-slate-900 text-sm mb-2">{shipName}</p>
+                                        <div className="space-y-1.5 text-xs font-medium text-slate-600">
+                                          {shipEmail && <p className="flex items-center gap-1.5"><Mail size={12} className="text-slate-400"/> {shipEmail}</p>}
+                                          {shipPhone && <p className="flex items-center gap-1.5"><Phone size={12} className="text-slate-400"/> {shipPhone}</p>}
+                                          <div className="flex items-start gap-1.5">
+                                            <MapPin size={12} className="text-slate-400 mt-0.5 shrink-0"/>
+                                            <div><p>{shipAddress}</p>{shipCityState && <p>{shipCityState}</p>}</div>
                                           </div>
-                                          <div className={`text-center bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm shrink-0 ${isItemRejected ? 'opacity-60' : ''}`}>
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-1">Qty</p>
-                                            <p className={`text-lg font-extrabold leading-none ${isItemRejected ? 'text-slate-400 line-through decoration-red-500' : (isPicked || isOrderDone ? 'text-emerald-700' : 'text-slate-900')}`}>
-                                              {item.quantity_variants}
-                                            </p>
-                                          </div>
-                                        </div>
-                                      );
-                                    })
-                                  )}
-                                </div>
-                              </div>
-
-                              <div className="space-y-6">
-                                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2 border-b border-slate-100 pb-3"><MapPin size={16} className="text-slate-400" /> Delivery Route</h4>
-                                  <div className="space-y-4">
-                                    <div>
-                                      <p className="font-bold text-slate-900 text-sm mb-2">{shipName}</p>
-                                      <div className="space-y-1.5 text-xs font-medium text-slate-600">
-                                        {shipEmail && <p className="flex items-center gap-1.5"><Mail size={12} className="text-slate-400"/> {shipEmail}</p>}
-                                        {shipPhone && <p className="flex items-center gap-1.5"><Phone size={12} className="text-slate-400"/> {shipPhone}</p>}
-                                        <div className="flex items-start gap-1.5">
-                                          <MapPin size={12} className="text-slate-400 mt-0.5 shrink-0"/>
-                                          <div><p>{shipAddress}</p>{shipCityState && <p>{shipCityState}</p>}</div>
                                         </div>
                                       </div>
                                     </div>
                                   </div>
-                                </div>
 
-                                {(isOrderDone || isReturn) && order.driver_name && (
-                                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><Truck size={16} className="text-slate-400" /> Dispatch Info</h4>
-                                    <div className="space-y-3 text-sm">
-                                      <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p><p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p></div>
-                                      {displayDriverPhone && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p><p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p></div>}
-                                      <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p><p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p></div>
-                                      {order.vehicle_license && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p><p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p></div>}
+                                  {(isOrderDone || isReturn) && order.driver_name && (
+                                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
+                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><Truck size={16} className="text-slate-400" /> Dispatch Info</h4>
+                                      <div className="space-y-3 text-sm">
+                                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p><p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p></div>
+                                        {displayDriverPhone && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p><p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p></div>}
+                                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p><p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p></div>
+                                        {order.vehicle_license && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p><p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p></div>}
+                                      </div>
                                     </div>
-                                  </div>
-                                )}
-
-                                <div className="space-y-3">
-                                  {order.status === 'processing' && (
-                                    <button 
-                                      onClick={() => setConfirmReady({ show: true, orderId: order.id })} 
-                                      disabled={!allItemsPicked || activeItems.length === 0 || markAsReadyMutation.isPending} 
-                                      className={`w-full py-4 text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-all shadow-md ${allItemsPicked && activeItems.length > 0 ? 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
-                                    >
-                                      <Box size={18} /> {markAsReadyMutation.isPending ? 'Processing...' : (allItemsPicked && activeItems.length > 0 ? 'Mark as Ready for Delivery' : 'Pick all items to continue')}
-                                    </button>
                                   )}
 
-                                  {isReturn && (
-                                    <div className="flex flex-col gap-3">
-                                      {order.status !== 'delivered_partial' && (
-                                        <button 
-                                          onClick={() => setConfirmReattempt({ show: true, orderId: order.id })}
-                                          className="w-full py-4 text-sm bg-blue-600 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-blue-700 active:scale-95 transition-all shadow-md"
-                                        >
-                                          <ArrowRightCircle size={18} className="text-blue-200"/> Re-Attempt Delivery
-                                        </button>
-                                      )}
+                                  <div className="space-y-3">
+                                    {order.status === 'processing' && (
                                       <button 
-                                        onClick={() => setConfirmRestock({ show: true, order: order })} 
-                                        className="w-full py-4 text-sm bg-slate-900 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-slate-800 active:scale-95 transition-all shadow-md"
+                                        onClick={() => setConfirmReady({ show: true, orderId: order.id })} 
+                                        disabled={!allItemsPicked || activeItems.length === 0 || markAsReadyMutation.isPending} 
+                                        className={`w-full py-4 text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-all shadow-md ${allItemsPicked && requiredPickItems.length > 0 ? 'bg-slate-900 text-white hover:bg-slate-800 active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
                                       >
-                                        <RefreshCw size={18} className="text-slate-400"/> Mark as Restocked
+                                        <Box size={18} /> {markAsReadyMutation.isPending ? 'Processing...' : (allItemsPicked && requiredPickItems.length > 0 ? 'Mark as Ready for Delivery' : 'Pick all items to continue')}
                                       </button>
-                                    </div>
-                                  )}
-                                  
-                                  {isOrderDone && (
-                                    <button onClick={() => generatePackingSlip(order)} className="w-full py-4 text-sm bg-white border border-slate-200 text-slate-900 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
-                                      <FileDown size={18} className="text-slate-400"/> Print Packing Slip
-                                    </button>
-                                  )}
+                                    )}
+
+                                    {isReturn && (
+                                      <div className="flex flex-col gap-3">
+                                        {order.status !== 'delivered_partial' && (
+                                          <button 
+                                            onClick={() => setConfirmReattempt({ show: true, orderId: order.id })}
+                                            className="w-full py-4 text-sm bg-blue-600 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-blue-700 active:scale-95 transition-all shadow-md"
+                                          >
+                                            <ArrowRightCircle size={18} className="text-blue-200"/> Re-Attempt Delivery
+                                          </button>
+                                        )}
+                                        <button 
+                                          onClick={() => setConfirmRestock({ show: true, order: order })} 
+                                          className="w-full py-4 text-sm bg-slate-900 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-slate-800 active:scale-95 transition-all shadow-md"
+                                        >
+                                          <RefreshCw size={18} className="text-slate-400"/> Mark as Restocked
+                                        </button>
+                                      </div>
+                                    )}
+                                    
+                                    {isOrderDone && (
+                                      <button onClick={() => generatePackingSlip(order)} className="w-full py-4 text-sm bg-white border border-slate-200 text-slate-900 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
+                                        <FileDown size={18} className="text-slate-400"/> Print Packing Slip
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                             </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
-      {/* 🚀 ULTIMATE INFINITE PAGINATION UI */}
-      <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
-        <span className="text-sm font-medium text-slate-500">
-          Page {page + 1}: {(page * pageSize) + 1}-{page * pageSize + displayOrders.length}
-        </span>
-        <div className="flex gap-2">
-          <button 
-            onClick={() => setPage(p => Math.max(0, p - 1))} 
-            disabled={page === 0} 
-            className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
-          >
-            <ChevronLeft size={18} />
-          </button>
-          <button 
-            onClick={() => setPage(p => p + 1)} 
-            disabled={!hasNextPage} 
-            className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
-          >
-            <ChevronRight size={18} />
-          </button>
-        </div>
-      </div>
+          <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
+            <span className="text-sm font-medium text-slate-500">
+              Page {page + 1}: {(page * pageSize) + 1}-{page * pageSize + displayOrders.length}
+            </span>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setPage(p => Math.max(0, p - 1))} 
+                disabled={page === 0} 
+                className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <button 
+                onClick={() => setPage(p => p + 1)} 
+                disabled={!hasNextPage} 
+                className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+              >
+                <ChevronRight size={18} />
+              </button>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* MODALS */}
       {confirmReady.show && (
