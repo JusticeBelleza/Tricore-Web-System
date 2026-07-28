@@ -3,7 +3,6 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { GoogleMap, useJsApiLoader, DirectionsRenderer, Marker, Polyline } from '@react-google-maps/api';
-// 🚀 ADDED: RefreshCw to the imports
 import { Truck, MapPin, Phone, User, CheckCircle2, AlertTriangle, XCircle, Navigation, Package, DollarSign, Clock, Check, X, PenTool, UploadCloud, Map, Minus, Plus, PackageCheck, Route, Camera, RefreshCw } from 'lucide-react';
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -35,6 +34,22 @@ const compressImage = (file, maxWidth = 800) => {
   });
 };
 
+// ✨ FIXED: Removed 'shipped' from this check so standard orders don't get trapped
+const getActiveItems = (order) => {
+  if (!order) return [];
+  const isBackorder = ['delivered_partial', 'delivered'].includes(order.status);
+  
+  if (isBackorder) {
+    return order.order_items?.filter(item => ['SHIPPED', 'OUT_FOR_DELIVERY'].includes(item.status?.toUpperCase())) || [];
+  }
+  
+  return order.order_items?.filter(item => 
+    item.status?.toLowerCase() !== 'backordered' && 
+    item.status?.toLowerCase() !== 'cancelled' && 
+    item.status?.toLowerCase() !== 'rejected'
+  ) || [];
+};
+
 function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger }) {
   const { isLoaded } = useJsApiLoader({
     id: 'google-map-script',
@@ -45,7 +60,11 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
   const [showMap, setShowMap] = useState(false);
   const [isCalculating, setIsCalculating] = useState(false);
 
-  const activeDelivery = orders.find(o => o.status === 'out_for_delivery');
+  const activeDelivery = orders.find(o => 
+    o.status === 'out_for_delivery' || 
+    (['delivered_partial', 'delivered'].includes(o.status) && getActiveItems(o).some(i => i.status?.toUpperCase() === 'OUT_FOR_DELIVERY'))
+  );
+  
   const activeLegIndex = activeDelivery && activeDelivery.routeLegIndex !== undefined 
     ? activeDelivery.routeLegIndex 
     : -1;
@@ -209,7 +228,6 @@ export default function DriverRoutes() {
   const [loading, setLoading] = useState(true);
   const [licenseAlert, setLicenseAlert] = useState(null);
   
-  // 🚀 ADDED: Track last refresh time
   const [lastRefreshed, setLastRefreshed] = useState(new Date());
 
   const [activeOrder, setActiveOrder] = useState(null); 
@@ -285,9 +303,7 @@ export default function DriverRoutes() {
           payload.old?.driver_name?.includes(profile.full_name);
                           
         if (isMyOrder) {
-          console.log("New dispatch update received! Refreshing routes...");
           fetchMyRoutes();
-          
           if (payload.eventType === 'INSERT' || (payload.eventType === 'UPDATE' && payload.new.status === 'ready_for_delivery')) {
             toast.success("New order assigned to your route!"); 
           }
@@ -310,15 +326,10 @@ export default function DriverRoutes() {
   useEffect(() => {
     if (activeOrder) {
       const initialQtys = {};
-      activeOrder.order_items?.forEach(item => {
-        // Updated filter to correctly track valid items in the modal state
-        if (
-          item.status?.toLowerCase() !== 'backordered' && 
-          item.status?.toLowerCase() !== 'cancelled' && 
-          item.status?.toLowerCase() !== 'rejected'
-        ) {
-          initialQtys[item.id] = item.quantity_variants; 
-        }
+      const activeItems = getActiveItems(activeOrder);
+      
+      activeItems.forEach(item => {
+        initialQtys[item.id] = item.quantity_variants; 
       });
       setDeliveredQuantities(initialQtys);
     }
@@ -344,22 +355,34 @@ export default function DriverRoutes() {
     }
   };
 
-  const showToastMsg = (message, isError = false) => {
-    setToastAlert({ show: true, message, isError });
-    setTimeout(() => setToastAlert({ show: false, message: '', isError: false }), 4000);
-  };
-
   const fetchMyRoutes = async () => {
     setLoading(true);
     try {
-      const { data: pendingData, error: pendingError } = await supabase
+      const { data: backorderItems } = await supabase.from('order_items').select('order_id').in('status', ['SHIPPED', 'OUT_FOR_DELIVERY']);
+      const backorderOrderIds = backorderItems && backorderItems.length > 0 ? [...new Set(backorderItems.map(i => i.order_id))] : [];
+
+      let query = supabase
         .from('orders')
         .select(`*, companies ( name, address, city, state, zip, phone ), agency_patients ( contact_number ), user_profiles ( full_name, contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, line_total, unit_price, product_variants ( product_id, name, multiplier, products(name) ) )`)
-        .in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery'])
         .ilike('driver_name', `${profile.full_name}%`) 
         .order('created_at', { ascending: true }); 
 
+      if (backorderOrderIds.length > 0) {
+        query = query.or(`status.in.(ready_for_delivery,shipped,out_for_delivery),id.in.(${backorderOrderIds.join(',')})`);
+      } else {
+        query = query.in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery']);
+      }
+
+      const { data: pendingData, error: pendingError } = await query;
       if (pendingError) throw pendingError;
+
+      const validOrders = (pendingData || []).filter(order => {
+        const isBackorder = ['delivered_partial', 'delivered'].includes(order.status);
+        if (isBackorder) {
+          return order.order_items?.some(item => ['SHIPPED', 'OUT_FOR_DELIVERY'].includes(item.status?.toUpperCase()));
+        }
+        return true;
+      });
 
       const startOfWeek = new Date();
       startOfWeek.setHours(0, 0, 0, 0);
@@ -367,7 +390,7 @@ export default function DriverRoutes() {
 
       const { count: completedCount } = await supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').ilike('driver_name', `${profile.full_name}%`).gte('updated_at', startOfWeek.toISOString());
 
-      setOrders(pendingData || []);
+      setOrders(validOrders);
       setCompletedThisWeek(completedCount || 0);
       setLastRefreshed(new Date()); 
     } catch (error) {
@@ -405,37 +428,62 @@ export default function DriverRoutes() {
   };
 
   const updateOrderStatus = async (orderId, newStatus) => {
-    setOrders(currentOrders => 
-      currentOrders.map(order => 
-        order.id === orderId ? { ...order, status: newStatus } : order
-      )
-    );
+    const orderToUpdate = orders.find(o => o.id === orderId);
+    const isBackorder = ['delivered_partial', 'delivered'].includes(orderToUpdate?.status);
 
-    if (newStatus === 'out_for_delivery') {
+    if (isBackorder && newStatus === 'out_for_delivery') {
+      setOrders(currentOrders => currentOrders.map(order => {
+        if (order.id === orderId) {
+          return {
+            ...order,
+            order_items: order.order_items.map(item => 
+              item.status?.toUpperCase() === 'SHIPPED' ? { ...item, status: 'OUT_FOR_DELIVERY' } : item
+            )
+          };
+        }
+        return order;
+      }));
+
       setTriggerMapOpen(Date.now());
       window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
 
-    try {
-      const { error } = await supabase
-        .from('orders')
-        .update({ status: newStatus, updated_at: new Date().toISOString() })
-        .eq('id', orderId);
-      if (error) throw error;
-    } catch (error) { 
-      toast.error("Failed to sync status to database."); 
+      try {
+        const itemsToUpdate = orderToUpdate.order_items.filter(i => i.status?.toUpperCase() === 'SHIPPED').map(i => i.id);
+        if (itemsToUpdate.length > 0) {
+          await supabase.from('order_items').update({ status: 'OUT_FOR_DELIVERY' }).in('id', itemsToUpdate);
+        }
+      } catch (error) { 
+        toast.error("Failed to sync route start to database."); 
+      }
+    } else {
+      setOrders(currentOrders => 
+        currentOrders.map(order => 
+          order.id === orderId ? { ...order, status: newStatus } : order
+        )
+      );
+
+      if (newStatus === 'out_for_delivery') {
+        setTriggerMapOpen(Date.now());
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+
+      try {
+        const { error } = await supabase
+          .from('orders')
+          .update({ status: newStatus, updated_at: new Date().toISOString() })
+          .eq('id', orderId);
+        if (error) throw error;
+      } catch (error) { 
+        toast.error("Failed to sync status to database."); 
+      }
     }
   };
 
   const submitDelivery = async () => {
     if (!receivedBy.trim()) { toast.error('Please enter the full name of the person receiving the order.'); return; }
     
-    // Updated filter logic for final submission matching the new statuses
-    const activeItems = activeOrder.order_items?.filter(item => 
-      item.status?.toLowerCase() !== 'backordered' && 
-      item.status?.toLowerCase() !== 'cancelled' && 
-      item.status?.toLowerCase() !== 'rejected'
-    ) || [];
+    const activeItems = getActiveItems(activeOrder);
+    const isBackorderRun = ['delivered_partial', 'delivered'].includes(activeOrder.status);
     
     let totalDeliveredQty = 0;
     let totalOriginalQty = 0;
@@ -478,7 +526,7 @@ export default function DriverRoutes() {
         signatureUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(sigPath).data.publicUrl;
       }
 
-      let newSubtotal = 0;
+      let rejectedSubtotalValue = 0;
 
       for (const item of activeItems) {
         const delQty = deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : item.quantity_variants;
@@ -487,16 +535,18 @@ export default function DriverRoutes() {
         const rejQty = origQty - delQty;
 
         if (rejQty === origQty) {
+          rejectedSubtotalValue += (origQty * unitPrice);
           const { error: err } = await supabase.from('order_items').update({ status: 'rejected' }).eq('id', item.id);
           if (err) throw err;
         } else if (rejQty > 0) {
-          newSubtotal += (delQty * unitPrice);
+          rejectedSubtotalValue += (rejQty * unitPrice);
 
           const proportionalBaseUnitsDel = Math.round((item.total_base_units / origQty) * delQty);
           const { error: err1 } = await supabase.from('order_items').update({
             quantity_variants: delQty,
             line_total: delQty * unitPrice,
-            total_base_units: proportionalBaseUnitsDel
+            total_base_units: proportionalBaseUnitsDel,
+            status: 'DELIVERED'
           }).eq('id', item.id);
           if (err1) throw err1;
 
@@ -512,7 +562,8 @@ export default function DriverRoutes() {
           }]);
           if (err2) throw err2;
         } else {
-          newSubtotal += (delQty * unitPrice);
+          const { error: err3 } = await supabase.from('order_items').update({ status: 'DELIVERED' }).eq('id', item.id);
+          if (err3) throw err3;
         }
       }
 
@@ -521,23 +572,32 @@ export default function DriverRoutes() {
       
       const origSub = Number(activeOrder.subtotal) || 0;
       const taxRate = origSub > 0 ? (Number(activeOrder.tax_amount || 0) / origSub) : 0;
-      const newTaxAmount = newSubtotal * taxRate;
-      let finalTotalAmount = newSubtotal + Number(activeOrder.shipping_amount || 0) + newTaxAmount;
+      
+      let finalSubtotal = origSub - rejectedSubtotalValue;
+      let finalTaxAmount = finalSubtotal * taxRate;
+      let finalTotalAmount = finalSubtotal + Number(activeOrder.shipping_amount || 0) + finalTaxAmount;
 
-      if (isTotalRejection) {
+      if (isTotalRejection && !isBackorderRun) {
         finalOrderStatus = 'attempted';
         cancellationReason = 'Customer rejected all items at the door.';
         finalTotalAmount = activeOrder.total_amount; 
-        newSubtotal = activeOrder.subtotal;
+        finalSubtotal = activeOrder.subtotal;
+        finalTaxAmount = activeOrder.tax_amount;
+      } else if (isTotalRejection && isBackorderRun) {
+        finalOrderStatus = 'delivered_partial';
+        cancellationReason = 'Customer rejected the backordered items at the door.';
       } else if (isPartialRejection) {
         finalOrderStatus = 'delivered_partial';
         cancellationReason = 'Customer rejected some items at the door.';
+      } else {
+        const stillHasBackorders = activeOrder.order_items.some(i => i.status?.toLowerCase() === 'backordered' || i.status?.toUpperCase() === 'ALLOCATED' || i.status?.toUpperCase() === 'READY_TO_PACK');
+        finalOrderStatus = stillHasBackorders ? 'delivered_partial' : 'delivered';
       }
 
       const { error: updateErr } = await supabase.from('orders').update({ 
         status: finalOrderStatus, 
-        subtotal: isTotalRejection ? activeOrder.subtotal : newSubtotal,
-        tax_amount: isTotalRejection ? activeOrder.tax_amount : newTaxAmount,
+        subtotal: finalSubtotal,
+        tax_amount: finalTaxAmount,
         total_amount: finalTotalAmount, 
         photo_url: photoUrlStr, 
         signature_url: signatureUrlStr, 
@@ -554,7 +614,7 @@ export default function DriverRoutes() {
       window.dispatchEvent(new Event('orderStatusChanged')); 
       closeModal(); 
       
-      toast.success(isTotalRejection ? 'Order marked as attempted (All items rejected).' : 'Delivery completed successfully!');
+      toast.success(isTotalRejection ? 'Order marked as attempted (Items rejected).' : 'Delivery completed successfully!');
       
     } catch (error) { 
       console.error('Delivery Error:', error.message); 
@@ -568,17 +628,27 @@ export default function DriverRoutes() {
     if (!cancelReason.trim()) { toast.error('Please provide a reason for cancelling this delivery.'); return; }
     setIsCancelling(true);
     try {
-      const { error } = await supabase.rpc('reject_full_order', {
-        p_order_id: cancellingOrder.id,
-        p_reason: cancelReason.trim(),
-        p_target_status: 'cancelled'
-      });
-      if (error) throw error;
+      const isBackorderRun = ['delivered_partial', 'delivered'].includes(cancellingOrder.status);
+
+      if (isBackorderRun) {
+        const activeItems = getActiveItems(cancellingOrder);
+        for (const item of activeItems) {
+           await supabase.from('order_items').update({ status: 'rejected' }).eq('id', item.id);
+        }
+        await supabase.from('orders').update({ cancellation_reason: cancelReason.trim(), updated_at: new Date().toISOString() }).eq('id', cancellingOrder.id);
+      } else {
+        const { error } = await supabase.rpc('reject_full_order', {
+          p_order_id: cancellingOrder.id,
+          p_reason: cancelReason.trim(),
+          p_target_status: 'cancelled'
+        });
+        if (error) throw error;
+      }
       
       setOrders(orders.filter(o => o.id !== cancellingOrder.id)); 
       window.dispatchEvent(new Event('orderStatusChanged')); 
       closeCancelModal(); 
-      toast.success('Order cancelled and items successfully restocked!'); 
+      toast.success('Route cancelled. Items flagged for return.'); 
     } catch (error) { 
       console.error('Cancellation Error:', error.message); 
       toast.error('Failed to cancel the delivery. Please try again.'); 
@@ -591,12 +661,23 @@ export default function DriverRoutes() {
     if (!attemptReason.trim()) { toast.error('Please provide a reason for the failed delivery attempt.'); return; }
     setIsAttempting(true);
     try {
-      const { error } = await supabase.from('orders').update({ status: 'attempted', cancellation_reason: attemptReason.trim(), updated_at: new Date().toISOString() }).eq('id', attemptingOrder.id);
-      if (error) throw error;
+      const isBackorderRun = ['delivered_partial', 'delivered'].includes(attemptingOrder.status);
+
+      if (isBackorderRun) {
+        const activeItems = getActiveItems(attemptingOrder);
+        for (const item of activeItems) {
+           await supabase.from('order_items').update({ status: 'rejected' }).eq('id', item.id);
+        }
+        await supabase.from('orders').update({ cancellation_reason: attemptReason.trim(), updated_at: new Date().toISOString() }).eq('id', attemptingOrder.id);
+      } else {
+        const { error } = await supabase.from('orders').update({ status: 'attempted', cancellation_reason: attemptReason.trim(), updated_at: new Date().toISOString() }).eq('id', attemptingOrder.id);
+        if (error) throw error;
+      }
+      
       setOrders(orders.filter(o => o.id !== attemptingOrder.id)); 
       window.dispatchEvent(new Event('orderStatusChanged')); 
       closeAttemptModal(); 
-      toast.success('Order marked as attempted.'); 
+      toast.success('Order marked as attempted. Return to warehouse.'); 
     } catch (error) { 
       console.error('Attempt Error:', error.message); 
       toast.error('Failed to mark delivery as attempted.'); 
@@ -612,23 +693,23 @@ export default function DriverRoutes() {
   const getDynamicTotal = () => {
     if (!activeOrder) return 0;
     let newSubtotal = 0;
-    activeOrder.order_items?.forEach(item => {
-      // Updated filter matching the active order logic
-      if (
-        item.status?.toLowerCase() !== 'backordered' && 
-        item.status?.toLowerCase() !== 'cancelled' && 
-        item.status?.toLowerCase() !== 'rejected'
-      ) {
+    const activeItems = getActiveItems(activeOrder);
+
+    activeItems.forEach(item => {
         const maxQty = item.quantity_variants;
         const currentDelivered = deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : maxQty;
         const unitPrice = Number(item.unit_price) || (Number(item.line_total) / maxQty);
         newSubtotal += (currentDelivered * unitPrice);
-      }
     });
+
     const origSub = Number(activeOrder.subtotal) || 0;
     const taxRate = origSub > 0 ? (Number(activeOrder.tax_amount || 0) / origSub) : 0;
     const newTax = newSubtotal * taxRate;
-    return newSubtotal + Number(activeOrder.shipping_amount || 0) + newTax;
+    
+    const isBackorderRun = ['delivered_partial', 'delivered'].includes(activeOrder.status);
+    const shipping = isBackorderRun ? 0 : Number(activeOrder.shipping_amount || 0);
+
+    return newSubtotal + shipping + newTax;
   };
 
   return (
@@ -718,19 +799,15 @@ export default function DriverRoutes() {
             const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
             const shortId = order.id.split('-')[0].toUpperCase();
 
-            // Correctly updated filter logic for Total Items on Route View
-            const validItems = order.order_items?.filter(item => 
-             item.status?.toLowerCase() !== 'backordered' && 
-             item.status?.toLowerCase() !== 'cancelled' && 
-             item.status?.toLowerCase() !== 'rejected'
-            ) || [];
+            const isBackorder = ['delivered_partial', 'delivered'].includes(order.status);
+            const validItems = getActiveItems(order);
             const totalItems = validItems.reduce((sum, item) => sum + (item.quantity_variants || 0), 0);
             
             const isCOD = order.payment_method === 'cod';
             const isNet30 = order.payment_method === 'net_30';
             const paymentText = isCOD ? `$${Number(order.total_amount).toFixed(2)}` : (isNet30 ? 'Net 30' : 'Paid');
             
-            const isOutForDelivery = order.status === 'out_for_delivery';
+            const isOutForDelivery = order.status === 'out_for_delivery' || (isBackorder && validItems.some(i => i.status?.toUpperCase() === 'OUT_FOR_DELIVERY'));
 
             return (
               <div key={order.id} className={`bg-white border rounded-3xl p-4 shadow-sm relative overflow-hidden flex flex-col transition-all ${isOutForDelivery ? 'border-blue-400 ring-4 ring-blue-500/10' : 'border-slate-200'}`}>
@@ -740,7 +817,9 @@ export default function DriverRoutes() {
                 </div>
 
                 <div className="mb-3 pr-16 pl-1">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 block">Order #{shortId}</span>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 block">
+                    Order #{shortId}{isBackorder ? '-B' : ''}
+                  </span>
                   <h3 className="text-lg font-black text-slate-900 leading-tight">{shipName}</h3>
                   {order.travelDistance && (
                     <div className="flex items-center gap-3 mt-1.5">
@@ -755,9 +834,11 @@ export default function DriverRoutes() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 mb-4">
-                  <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 flex flex-col justify-center items-center text-center">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 flex items-center gap-1"><Package size={12}/> Packages</span>
-                    <span className="font-black text-slate-900 text-sm">{totalItems} {totalItems === 1 ? 'Item' : 'Items'}</span>
+                  <div className={`p-3 rounded-2xl border flex flex-col justify-center items-center text-center ${isBackorder ? 'bg-purple-50 border-purple-100' : 'bg-slate-50 border-slate-100'}`}>
+                    <span className={`text-[10px] font-bold uppercase tracking-widest mb-1 flex items-center gap-1 ${isBackorder ? 'text-purple-600' : 'text-slate-400'}`}>
+                      <Package size={12}/> {isBackorder ? 'Backorder Items' : 'Packages'}
+                    </span>
+                    <span className={`font-black text-sm ${isBackorder ? 'text-purple-700' : 'text-slate-900'}`}>{totalItems} {totalItems === 1 ? 'Item' : 'Items'}</span>
                   </div>
                   
                   <div className={`p-3 rounded-2xl border flex flex-col justify-center items-center text-center ${isCOD ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200'}`}>
@@ -865,25 +946,25 @@ export default function DriverRoutes() {
               
               {activeOrder.payment_method === 'cod' && (
                 <div className={`p-4 rounded-2xl border flex items-center justify-between shadow-sm transition-colors ${
-                  activeOrder.order_items?.some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) 
+                  getActiveItems(activeOrder).some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) 
                     ? 'bg-amber-50 border-amber-200' 
                     : 'bg-emerald-50 border-emerald-200'
                 }`}>
                   <div>
                     <p className={`text-[10px] font-bold uppercase tracking-widest ${
-                      activeOrder.order_items?.some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) 
+                      getActiveItems(activeOrder).some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) 
                         ? 'text-amber-600' : 'text-emerald-600'
                     }`}>
                       Amount to Collect (COD)
                     </p>
                     <p className={`text-2xl font-black ${
-                      activeOrder.order_items?.some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) 
+                      getActiveItems(activeOrder).some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) 
                         ? 'text-amber-700' : 'text-emerald-700'
                     }`}>
                       ${getDynamicTotal().toFixed(2)}
                     </p>
                   </div>
-                  {activeOrder.order_items?.some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) && (
+                  {getActiveItems(activeOrder).some(i => deliveredQuantities[i.id] !== undefined && deliveredQuantities[i.id] < i.quantity_variants) && (
                     <span className="text-xs font-bold bg-white text-amber-600 px-2 py-1 rounded-md shadow-sm border border-amber-100">Adjusted</span>
                   )}
                 </div>
@@ -897,12 +978,7 @@ export default function DriverRoutes() {
                 <p className="text-xs text-slate-500 font-medium mb-2">Adjust the quantity delivered if the customer refuses any items.</p>
                 
                 <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                  {/* Updated filter logic here to remove 'active' requirement */}
-                  {activeOrder.order_items?.filter(item => 
-                    item.status?.toLowerCase() !== 'backordered' && 
-                    item.status?.toLowerCase() !== 'cancelled' && 
-                    item.status?.toLowerCase() !== 'rejected'
-                  ).map(item => {
+                  {getActiveItems(activeOrder).map(item => {
                     const maxQty = item.quantity_variants;
                     const currentDelivered = deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : maxQty;
                     const isPartiallyRejected = currentDelivered < maxQty && currentDelivered > 0;

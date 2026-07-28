@@ -20,7 +20,6 @@ export default function DispatchMonitor() {
   const [activeTab, setActiveTab] = useState('needs_dispatch');
   const [selectedPod, setSelectedPod] = useState(null);
 
-  // Dispatch Assignment States
   const [assigningOrder, setAssigningOrder] = useState(null);
   const [driverName, setDriverName] = useState('');
   const [vehicleName, setVehicleName] = useState('');
@@ -28,18 +27,15 @@ export default function DispatchMonitor() {
   const [vehicleLicense, setVehicleLicense] = useState('');
   const [notification, setNotification] = useState({ show: false, message: '', isError: false });
 
-  // Debounce Search
   useEffect(() => {
     const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
-  // Reset page on tab change
   useEffect(() => {
     setPage(0);
   }, [activeTab]);
 
-  // Auto-hide notifications
   useEffect(() => {
     if (notification.show) {
       const timer = setTimeout(() => { setNotification({ ...notification, show: false }); }, 3000);
@@ -47,7 +43,6 @@ export default function DispatchMonitor() {
     }
   }, [notification.show]);
 
-  // Handle local storage markers for badges
   useEffect(() => {
     if (activeTab === 'delivered') {
       localStorage.setItem('lastViewedDelivered', new Date().toISOString());
@@ -59,11 +54,6 @@ export default function DispatchMonitor() {
     }
   }, [activeTab]);
 
-  // ==========================================
-  // 🚀 REACT QUERY: DATA FETCHING
-  // ==========================================
-
-  // 1. Fetch Fleet Vehicles (Cached)
   const { data: fleetVehicles = [] } = useQuery({
     queryKey: ['fleet_vehicles'],
     queryFn: async () => {
@@ -74,7 +64,6 @@ export default function DispatchMonitor() {
     staleTime: Infinity,
   });
 
-  // 2. Fetch Drivers (Cached)
   const { data: drivers = [] } = useQuery({
     queryKey: ['dispatch_drivers'],
     queryFn: async () => {
@@ -85,7 +74,6 @@ export default function DispatchMonitor() {
     staleTime: Infinity,
   });
 
-  // 3. Fetch Tab Counts via RPC
   const { data: tabCounts = { needs_dispatch: 0, in_transit: 0, delivered: 0, cancelled: 0 } } = useQuery({
     queryKey: ['dispatch_tab_counts'],
     queryFn: async () => {
@@ -96,52 +84,44 @@ export default function DispatchMonitor() {
     refetchInterval: 60000,
   });
 
-  // 4. Fetch Paginated Deliveries (N+1)
   const { data: deliveriesData, isLoading } = useQuery({
     queryKey: ['dispatch_deliveries', activeTab, page, debouncedSearch],
     queryFn: async () => {
       let backorderOrderIds = [];
 
-      // ✨ NEW: Pre-fetch any orders that have READY_TO_PACK backordered items
       if (activeTab === 'needs_dispatch') {
-        const { data: readyItems } = await supabase
-          .from('order_items')
-          .select('order_id')
-          .eq('status', 'READY_TO_PACK');
-        
-        if (readyItems && readyItems.length > 0) {
-          backorderOrderIds = [...new Set(readyItems.map(item => item.order_id))];
-        }
+        const { data: readyItems } = await supabase.from('order_items').select('order_id').eq('status', 'READY_TO_PACK');
+        if (readyItems && readyItems.length > 0) backorderOrderIds = [...new Set(readyItems.map(item => item.order_id))];
+      } else if (activeTab === 'in_transit') {
+        const { data: transitItems } = await supabase.from('order_items').select('order_id').in('status', ['SHIPPED', 'OUT_FOR_DELIVERY']);
+        if (transitItems && transitItems.length > 0) backorderOrderIds = [...new Set(transitItems.map(item => item.order_id))];
       }
 
       let query = supabase.from('orders').select('*');
 
-      // Server-side Tab Filtering (Modified to include backorders)
       if (activeTab === 'needs_dispatch') {
-        if (backorderOrderIds.length > 0) {
-          query = query.or(`status.eq.ready_for_delivery,id.in.(${backorderOrderIds.join(',')})`);
-        } else {
-          query = query.eq('status', 'ready_for_delivery');
-        }
+        if (backorderOrderIds.length > 0) query = query.or(`status.eq.ready_for_delivery,id.in.(${backorderOrderIds.join(',')})`);
+        else query = query.eq('status', 'ready_for_delivery');
       } 
-      else if (activeTab === 'in_transit') query = query.in('status', ['shipped', 'out_for_delivery']);
-      else if (activeTab === 'delivered') query = query.eq('status', 'delivered');
+      else if (activeTab === 'in_transit') {
+        if (backorderOrderIds.length > 0) query = query.or(`status.in.(shipped,out_for_delivery),id.in.(${backorderOrderIds.join(',')})`);
+        else query = query.in('status', ['shipped', 'out_for_delivery']);
+      }
+      else if (activeTab === 'delivered') {
+        // ✨ FIXED: Added delivered_partial here so it shows up on the Delivered tab properly
+        query = query.in('status', ['delivered', 'delivered_partial']);
+      }
       else if (activeTab === 'cancelled') query = query.eq('status', 'cancelled');
 
-      // Server-side Search Filtering
       if (debouncedSearch) {
         const clean = debouncedSearch.trim();
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clean);
-        if (isUUID) {
-          query = query.or(`id.eq.${clean},shipping_name.ilike.%${clean}%,driver_name.ilike.%${clean}%`);
-        } else {
-          query = query.or(`shipping_name.ilike.%${clean}%,driver_name.ilike.%${clean}%`);
-        }
+        if (isUUID) query = query.or(`id.eq.${clean},shipping_name.ilike.%${clean}%,driver_name.ilike.%${clean}%`);
+        else query = query.or(`shipping_name.ilike.%${clean}%,driver_name.ilike.%${clean}%`);
       }
 
       query = query.order('updated_at', { ascending: false });
 
-      // N+1 Pagination Math
       const from = page * pageSize;
       const to = from + pageSize; 
       query = query.range(from, to);
@@ -153,17 +133,11 @@ export default function DispatchMonitor() {
     placeholderData: keepPreviousData,
   });
 
-  // Process N+1 Array
   const hasNextPage = deliveriesData && deliveriesData.length > pageSize;
   const displayedDeliveries = deliveriesData ? deliveriesData.slice(0, pageSize) : [];
 
-
-  // ==========================================
-  // 🚀 THROTTLED REAL-TIME SUBSCRIPTION
-  // ==========================================
   useEffect(() => {
     let debounceTimer;
-    
     const sub = supabase.channel('dispatch_updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
         clearTimeout(debounceTimer);
@@ -173,41 +147,44 @@ export default function DispatchMonitor() {
         }, 500);
       }).subscribe();
       
-    return () => { 
-      clearTimeout(debounceTimer);
-      supabase.removeChannel(sub); 
-    };
+    return () => { clearTimeout(debounceTimer); supabase.removeChannel(sub); };
   }, [queryClient]);
 
-  // ==========================================
-  // 🚀 REACT QUERY: MUTATIONS
-  // ==========================================
   const assignDriverMutation = useMutation({
     mutationFn: async () => {
       const assignedDriverObj = drivers.find(d => d.full_name === driverName);
       const driverPhone = assignedDriverObj?.contact_number || '';
       const finalDriverName = driverPhone ? `${driverName} | ${driverPhone}` : driverName;
 
+      const isBackorder = ['delivered_partial', 'delivered'].includes(assigningOrder.status);
+
       const { data, error } = await supabase.from('orders').update({ 
-        driver_name: finalDriverName || null, vehicle_name: vehicleName || null, 
-        vehicle_license: vehicleLicense || null, status: 'shipped', 
+        driver_name: finalDriverName || null, 
+        vehicle_name: vehicleName || null, 
+        vehicle_license: vehicleLicense || null, 
+        status: isBackorder ? assigningOrder.status : 'shipped',
         updated_at: new Date().toISOString(),
         shipped_at: new Date().toISOString()
       })
       .eq('id', assigningOrder.id)
-      .eq('status', assigningOrder.status)
       .select();
       
       if (error) throw error;
-      if (data && data.length === 0) throw new Error('Action Blocked: Another user already modified this order.');
       
+      if (isBackorder) {
+        await supabase.from('order_items')
+          .update({ status: 'SHIPPED' })
+          .eq('order_id', assigningOrder.id)
+          .eq('status', 'READY_TO_PACK');
+      }
+
       return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dispatch_deliveries'] });
       queryClient.invalidateQueries({ queryKey: ['dispatch_tab_counts'] });
       setAssigningOrder(null);
-      setNotification({ show: true, isError: false, message: 'Driver assigned and order shipped successfully!' });
+      setNotification({ show: true, isError: false, message: 'Driver assigned and route updated successfully!' });
       window.dispatchEvent(new Event('orderStatusChanged'));
     },
     onError: (error) => {
@@ -226,7 +203,6 @@ export default function DispatchMonitor() {
   };
 
   const openAssignModal = (order) => {
-    // If it's a backorder, they probably want to reassign. We prepopulate but they can change it.
     setDriverName((order.driver_name || '').split(' | ')[0]); 
     setVehicleName(order.vehicle_name || '');
     setVehicleType(order.vehicle_type || 'Cargo Van'); 
@@ -247,7 +223,6 @@ export default function DispatchMonitor() {
     }
   };
 
-  // --- UI HELPERS ---
   const getInitials = (name) => {
     if (!name || name === 'Unassigned') return '??';
     const parts = name.trim().split(' ');
@@ -256,10 +231,20 @@ export default function DispatchMonitor() {
   };
 
   const getStatusBadge = (status) => {
+    if (['delivered_partial', 'delivered'].includes(status) && activeTab === 'needs_dispatch') {
+      return <span className="px-3 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><PackageCheck size={14}/> Backorder (To Dispatch)</span>;
+    }
+    if (['delivered_partial', 'delivered'].includes(status) && activeTab === 'in_transit') {
+      return <span className="px-3 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><Truck size={14}/> Backorder (En Route)</span>;
+    }
+
     if (status === 'delivered') return <span className="px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><CheckCircle2 size={14}/> Delivered</span>;
+    
+    // ✨ FIXED: Added specific badge for partial deliveries sitting in the Delivered tab
+    if (status === 'delivered_partial') return <span className="px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><CheckCircle2 size={14}/> Partial Delivery</span>;
+
     if (status === 'cancelled') return <span className="px-3 py-1 bg-red-50 text-red-700 border border-red-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><XCircle size={14}/> Cancelled</span>;
     if (status === 'ready_for_delivery') return <span className="px-3 py-1 bg-purple-50 text-purple-700 border border-purple-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><PackageCheck size={14}/> Needs Dispatch</span>;
-    if (status === 'delivered_partial') return <span className="px-3 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><PackageCheck size={14}/> Backorder Dispatch</span>;
     return <span className="px-3 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><Truck size={14}/> In Transit</span>;
   };
 
@@ -278,8 +263,6 @@ export default function DispatchMonitor() {
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12 relative">
-      
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-2">
         <div className="flex items-center gap-4">
           <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-md">
@@ -292,7 +275,6 @@ export default function DispatchMonitor() {
         </div>
       </div>
 
-      {/* Filters & Search */}
       <div className="flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full lg:w-auto overflow-x-auto shrink-0">
           <button onClick={() => setActiveTab('needs_dispatch')} className={`${tabBaseClass} ${activeTab === 'needs_dispatch' ? activeStyles.needs_dispatch : tabInactiveClass}`}>
@@ -314,7 +296,6 @@ export default function DispatchMonitor() {
         </div>
       </div>
 
-      {/* Main Content Area */}
       {isLoading ? (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden mt-6">
           <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
@@ -343,12 +324,10 @@ export default function DispatchMonitor() {
                 const driverName = (delivery.driver_name || 'Unassigned').split(' | ')[0];
                 const hasPod = delivery.photo_url || delivery.signature_url || delivery.received_by;
                 const isAssigned = delivery.driver_name;
-                const isBackorder = delivery.status === 'delivered_partial';
+                const isBackorder = ['delivered_partial', 'delivered'].includes(delivery.status) && activeTab !== 'delivered';
 
                 return (
                   <tr key={delivery.id} className="hover:bg-slate-50/80 transition-colors group">
-                    
-                    {/* Column 1: Delivery Details */}
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-4">
                         <div className={`w-10 h-10 rounded-xl flex items-center justify-center border shadow-sm shrink-0 ${isBackorder ? 'bg-amber-50 border-amber-200 text-amber-500' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
@@ -366,7 +345,6 @@ export default function DispatchMonitor() {
                       </div>
                     </td>
 
-                    {/* Column 2: Driver & Fleet */}
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
                         <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 border shadow-sm ${isAssigned ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-slate-50 text-slate-400 border-dashed border-slate-300'}`}>
@@ -383,7 +361,6 @@ export default function DispatchMonitor() {
                       </div>
                     </td>
                     
-                    {/* Column 3: Status */}
                     <td className="px-6 py-4">
                       <div className="flex flex-col items-start gap-1.5">
                         {getStatusBadge(delivery.status)}
@@ -404,13 +381,14 @@ export default function DispatchMonitor() {
                       </div>
                     </td>
 
-                    {/* Column 4: Actions */}
                     <td className="px-6 py-4 text-right">
-                      {(delivery.status === 'ready_for_delivery' || delivery.status === 'delivered_partial') ? (
+                      {activeTab === 'needs_dispatch' ? (
                         <button onClick={() => openAssignModal(delivery)} className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-slate-900 text-white text-xs font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md">
                             <Truck size={14} /> Assign Driver
                         </button>
-                      ) : delivery.status === 'delivered' ? (
+                      ) : activeTab === 'in_transit' ? (
+                        <span className="inline-flex items-center justify-center px-4 py-2 text-slate-400 text-xs font-bold italic">En Route...</span>
+                      ) : activeTab === 'delivered' ? (
                         hasPod ? (
                           <button onClick={() => setSelectedPod(delivery)} className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 text-xs font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
                             <ImageIcon size={14} className="text-slate-400" /> View POD
@@ -418,12 +396,10 @@ export default function DispatchMonitor() {
                         ) : (
                           <span className="inline-flex items-center justify-center px-4 py-2 bg-slate-50 text-slate-400 text-xs font-bold rounded-xl border border-slate-100 italic">No POD</span>
                         )
-                      ) : delivery.status === 'cancelled' ? (
+                      ) : (
                         <button onClick={() => setSelectedPod(delivery)} className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 text-xs font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
                           <AlertTriangle size={14} className="text-red-500" /> View Reason
                         </button>
-                      ) : (
-                        <span className="inline-flex items-center justify-center px-4 py-2 text-slate-400 text-xs font-bold italic">En Route...</span>
                       )}
                     </td>
                   </tr>
@@ -432,7 +408,6 @@ export default function DispatchMonitor() {
             </tbody>
           </table>
 
-          {/* 🚀 ULTIMATE INFINITE PAGINATION UI */}
           <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
             <span className="text-sm font-medium text-slate-500">
               Page {page + 1}: {(page * pageSize) + 1}-{page * pageSize + displayedDeliveries.length}
@@ -457,7 +432,6 @@ export default function DispatchMonitor() {
         </div>
       )}
 
-      {/* --- MINIMALIST DISPATCH ASSIGNMENT MODAL --- */}
       {assigningOrder && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg flex flex-col overflow-hidden">
@@ -471,7 +445,6 @@ export default function DispatchMonitor() {
             
             <form onSubmit={confirmAssignment} className="p-6 space-y-6 max-h-[85vh] overflow-y-auto">
               
-              {/* DRIVER SECTION */}
               <div className="space-y-3">
                 <label className="block text-sm font-semibold text-slate-700">Driver Assignment</label>
                 <div className="relative">
@@ -516,7 +489,6 @@ export default function DispatchMonitor() {
 
               <div className="h-px w-full bg-slate-100"></div>
 
-              {/* VEHICLE SECTION */}
               <div className="space-y-3">
                 <label className="block text-sm font-semibold text-slate-700">Fleet Vehicle</label>
                 <div className="relative">
@@ -555,24 +527,12 @@ export default function DispatchMonitor() {
                             </td>
                           </tr>
                           <tr className="hover:bg-slate-50 transition-colors">
-                            <th className="px-4 py-3 font-semibold text-slate-500">Make & Model</th>
-                            <td className="px-4 py-3 font-medium text-slate-800">{selectedVehicleObj.make || 'N/A'} {selectedVehicleObj.model || ''}</td>
-                          </tr>
-                          <tr className="hover:bg-slate-50 transition-colors">
-                            <th className="px-4 py-3 font-semibold text-slate-500">Year</th>
-                            <td className="px-4 py-3 font-medium text-slate-800">{selectedVehicleObj.year || 'N/A'}</td>
-                          </tr>
-                          <tr className="hover:bg-slate-50 transition-colors">
                             <th className="px-4 py-3 font-semibold text-slate-500">License Plate</th>
                             <td className="px-4 py-3 font-mono font-bold text-slate-900">
                               <span className="bg-slate-100 px-2 py-1 rounded border border-slate-200 shadow-inner text-xs">
                                 {selectedVehicleObj.license_plate || 'N/A'}
                               </span>
                             </td>
-                          </tr>
-                          <tr className="hover:bg-slate-50 transition-colors">
-                            <th className="px-4 py-3 font-semibold text-slate-500">VIN Number</th>
-                            <td className="px-4 py-3 font-mono text-xs font-medium text-slate-600">{selectedVehicleObj.vin || 'N/A'}</td>
                           </tr>
                         </tbody>
                       </table>
@@ -593,7 +553,6 @@ export default function DispatchMonitor() {
         </div>
       )}
 
-      {/* --- MINIMALIST POD / EXCEPTION MODAL --- */}
       {selectedPod && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden animate-in zoom-in-95">
@@ -610,21 +569,6 @@ export default function DispatchMonitor() {
             </div>
             
             <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
-              
-              {/* EXCEPTION REASON */}
-              {selectedPod.status === 'cancelled' && (
-                <div className="bg-red-50/50 border border-red-100 p-4 rounded-xl flex items-start gap-3">
-                  <AlertTriangle size={18} className="text-red-500 mt-0.5 shrink-0" />
-                  <div>
-                    <h4 className="text-sm font-bold text-red-900">Driver Notes</h4>
-                    <p className="text-sm text-red-700 mt-1 leading-relaxed">
-                      {selectedPod.cancellation_reason || "No reason provided by driver."}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* RECIPIENT NAME */}
               {selectedPod.received_by && (
                 <div className="bg-slate-50 border border-slate-100 p-4 rounded-xl flex items-center gap-3">
                    <div className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm">
@@ -637,7 +581,6 @@ export default function DispatchMonitor() {
                 </div>
               )}
 
-              {/* PHOTO POD */}
               {selectedPod.photo_url && (
                 <div className="space-y-3">
                   <h4 className="text-sm font-semibold text-slate-900">Delivery Photo</h4>
@@ -647,7 +590,6 @@ export default function DispatchMonitor() {
                 </div>
               )}
 
-              {/* SIGNATURE POD */}
               {selectedPod.signature_url && (
                 <div className="space-y-3">
                   <h4 className="text-sm font-semibold text-slate-900">Customer Signature</h4>
@@ -665,7 +607,6 @@ export default function DispatchMonitor() {
         </div>
       )}
 
-      {/* TOAST NOTIFICATION */}
       {notification.show && (
         <div className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-[120] flex items-center gap-3 bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-300">
           <div className={`p-1.5 rounded-full ${notification.isError ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>{notification.isError ? <XCircle size={18} strokeWidth={2.5} /> : <CheckCircle2 size={18} strokeWidth={2.5} />}</div>

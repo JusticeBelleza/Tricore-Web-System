@@ -66,9 +66,6 @@ export default function Warehouse() {
     refetchInterval: 60000, 
   });
 
-  // ==========================================
-  // 🚀 BACKORDER FETCHING & GROUPING LOGIC
-  // ==========================================
   const { data: backorderedItems = [], isLoading: isBackordersLoading } = useQuery({
     queryKey: ['warehouse_backorders'],
     queryFn: async () => {
@@ -142,7 +139,6 @@ export default function Warehouse() {
     mutationFn: async (itemIds) => {
       const { data, error } = await supabase
         .from('order_items')
-        // ✨ NEW: Change to ALLOCATED so it sits in the To Pack tab before going to Dispatch
         .update({ status: 'ALLOCATED' }) 
         .in('id', itemIds);
       if (error) throw error;
@@ -173,15 +169,11 @@ export default function Warehouse() {
     onError: (err) => toast.error(`Failed to backorder item: ${err.message}`)
   });
 
-  // ==========================================
-  // 🚀 STANDARD ORDERS FETCHING
-  // ==========================================
   const { data: ordersData, isLoading } = useQuery({
     queryKey: ['warehouse_orders', activeTab, page, debouncedSearch],
     queryFn: async () => {
       if (activeTab === 'backorders') return []; 
 
-      // ✨ NEW: Pre-fetch for backorder integration
       let prefetchOrderIds = [];
       if (activeTab === 'processing') {
         const { data: allocated } = await supabase.from('order_items').select('order_id').eq('status', 'ALLOCATED');
@@ -221,7 +213,19 @@ export default function Warehouse() {
       const { data, error } = await query;
       if (error) throw error;
       
-      return data || [];
+      let filteredData = data || [];
+      
+      // ✨ FIXED: Prevent backordered delivered_partial orders from showing up in Returns if nothing was actually rejected
+      if (activeTab === 'returns') {
+        filteredData = filteredData.filter(order => {
+          if (order.status === 'delivered_partial') {
+            return order.order_items?.some(i => i.status?.toLowerCase() === 'rejected' || i.status?.toLowerCase() === 'restocked');
+          }
+          return true;
+        });
+      }
+      
+      return filteredData;
     },
     placeholderData: keepPreviousData,
     enabled: !!profile?.id && activeTab !== 'backorders',
@@ -259,14 +263,12 @@ export default function Warehouse() {
       const isBackorderRun = order.status === 'delivered_partial' || order.status === 'delivered' || order.status === 'shipped';
 
       if (isBackorderRun) {
-         // ✨ NEW: Only push the specific allocated items to Dispatch, leave the order status alone
          const allocatedItemIds = order.order_items.filter(i => i.status?.toLowerCase() === 'allocated').map(i => i.id);
          if (allocatedItemIds.length > 0) {
            const { error } = await supabase.from('order_items').update({ status: 'READY_TO_PACK' }).in('id', allocatedItemIds);
            if (error) throw error;
          }
       } else {
-         // Standard processing logic
          const { error } = await supabase.from('orders').update({ status: 'ready_for_delivery', updated_at: new Date().toISOString() }).eq('id', orderId);
          if (error) throw error;
       }
@@ -394,11 +396,10 @@ export default function Warehouse() {
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    // ✨ NEW: Packing Slip Contextual Filter
     const activeItems = order.order_items?.filter(item => {
       const s = item.status?.toLowerCase();
       if (s === 'cancelled' || s === 'rejected' || s === 'backordered') return false;
-      if (isBackorderRun && s === 'delivered') return false; // Hides already delivered items
+      if (isBackorderRun && s === 'delivered') return false; 
       return true;
     }) || [];
 
@@ -428,9 +429,17 @@ export default function Warehouse() {
     doc.save(`Packing_Slip_${orderNum}${isBackorderRun ? '_B' : ''}.pdf`);
   };
 
-  const getStatusBadge = (status, isBackorderRunUI) => {
+  const getStatusBadge = (status, isBackorderRunUI, activeItems = []) => {
     if (activeTab === 'processing' && isBackorderRunUI) return <span className="px-2.5 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-[10px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><Package size={12}/> Backorder To Pack</span>;
     
+    if (activeTab === 'completed' && isBackorderRunUI) {
+      const isShipped = activeItems.some(i => i.status?.toUpperCase() === 'SHIPPED' || i.status?.toUpperCase() === 'OUT_FOR_DELIVERY');
+      if (isShipped) {
+        return <span className="px-2.5 py-1 bg-green-50 text-green-700 border border-green-200 rounded-lg text-[10px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><Truck size={12}/> Backorder Shipped</span>;
+      }
+      return <span className="px-2.5 py-1 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg text-[10px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><Box size={12}/> Backorder Ready</span>;
+    }
+
     const displayStatus = status === 'delivered_partial' ? 'delivered' : status;
     if (status === 'processing') return <span className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-[10px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><Package size={12}/> To Pack</span>;
     if (status === 'ready_for_delivery') return <span className="px-2.5 py-1 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg text-[10px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><Box size={12}/> Ready</span>;
@@ -505,7 +514,6 @@ export default function Warehouse() {
                 return (
                   <div key={group.sku} className="group flex flex-col md:flex-row md:items-center justify-between gap-4 py-5 border-b border-slate-100 last:border-0">
                     
-                    {/* Product & Orders Info (Clean List) */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-3 mb-2">
                         <Box size={18} className="text-slate-400 shrink-0" />
@@ -530,7 +538,6 @@ export default function Warehouse() {
                       </div>
                     </div>
 
-                    {/* Minimalist Math & Action */}
                     <div className="flex items-center justify-between md:justify-end gap-6 shrink-0 md:pl-6 pl-7">
                       <div className="text-right">
                         <p className="text-[10px] uppercase tracking-wider text-slate-400 font-medium mb-0.5">Owed / Stock</p>
@@ -572,26 +579,17 @@ export default function Warehouse() {
           )}
         </div>
       ) : isLoading ? (
-        // ==============================================
-        // STANDARD TAB LOADING STATE
-        // ==============================================
         <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden mt-6">
           <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
           {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div></div>))}
         </div>
       ) : displayOrders.length === 0 ? (
-        // ==============================================
-        // STANDARD TAB EMPTY STATE
-        // ==============================================
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm mt-6">
           <Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" />
           <h3 className="text-xl font-bold text-slate-900 mb-2 tracking-tight">Queue is empty</h3>
           <p className="text-slate-500 text-sm">There are no orders in this tab matching your search right now.</p>
         </div>
       ) : (
-        // ==============================================
-        // STANDARD TAB DATA TABLE
-        // ==============================================
         <>
           <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-x-auto mt-6">
             <table className="w-full text-left text-sm whitespace-nowrap">
@@ -610,13 +608,11 @@ export default function Warehouse() {
                   const isExpanded = expandedOrderId === order.id;
                   const isB2B = !!order.company_id;
                   
-                  // Contextual status flags
                   const isOrderDone = order.status === 'ready_for_delivery' || order.status === 'shipped';
                   const isReturn = activeTab === 'returns' && (order.status === 'attempted' || order.status === 'delivered_partial');
                   const isBackorderRunUI = order.status === 'delivered_partial' || order.status === 'delivered' || order.status === 'shipped';
                   const shortId = order.id.substring(0, 8).toUpperCase();
                   
-                  // ✨ NEW: Master Item Filter Logic
                   let activeItems = [];
                   if (activeTab === 'returns' && order.status === 'delivered_partial') {
                     activeItems = order.order_items?.filter(item => item.status?.toLowerCase() === 'rejected' || item.status?.toLowerCase() === 'restocked') || [];
@@ -624,7 +620,7 @@ export default function Warehouse() {
                     activeItems = order.order_items?.filter(item => {
                       const s = item.status?.toLowerCase();
                       if (s === 'cancelled' || s === 'backordered' || s === 'rejected') return false;
-                      if (isBackorderRunUI && s === 'delivered') return false; // Hide old completed items
+                      if (isBackorderRunUI && s === 'delivered') return false; 
 
                       if (isBackorderRunUI) {
                         if (activeTab === 'processing') return s === 'allocated';
@@ -659,7 +655,6 @@ export default function Warehouse() {
                               {isReturn ? <RefreshCw size={18} /> : <Box size={18} />}
                             </div>
                             <div>
-                              {/* ✨ Append -B for backorders on main view */}
                               <p className="font-mono font-bold text-slate-900 text-sm tracking-tight">#{shortId}{isBackorderRunUI ? '-B' : ''}</p>
                               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Hash size={10}/> Order ID</p>
                             </div>
@@ -672,7 +667,7 @@ export default function Warehouse() {
                         </td>
                         <td className="px-6 py-4 text-center"><span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-100 text-slate-700 font-extrabold text-xs shadow-inner border border-slate-200">{activeItems.length}</span></td>
                         
-                        <td className="px-6 py-4">{getStatusBadge(order.status, isBackorderRunUI)}</td>
+                        <td className="px-6 py-4">{getStatusBadge(order.status, isBackorderRunUI, activeItems)}</td>
                         
                         <td className="px-6 py-4 text-right"><button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}><ChevronDown size={20} /></button></td>
                       </tr>
