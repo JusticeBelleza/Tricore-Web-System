@@ -311,7 +311,12 @@ export default function DriverRoutes() {
     if (activeOrder) {
       const initialQtys = {};
       activeOrder.order_items?.forEach(item => {
-        if (item.status === 'active') {
+        // Updated filter to correctly track valid items in the modal state
+        if (
+          item.status?.toLowerCase() !== 'backordered' && 
+          item.status?.toLowerCase() !== 'cancelled' && 
+          item.status?.toLowerCase() !== 'rejected'
+        ) {
           initialQtys[item.id] = item.quantity_variants; 
         }
       });
@@ -364,7 +369,7 @@ export default function DriverRoutes() {
 
       setOrders(pendingData || []);
       setCompletedThisWeek(completedCount || 0);
-      setLastRefreshed(new Date()); // 🚀 Record the exact time we refreshed
+      setLastRefreshed(new Date()); 
     } catch (error) {
       console.error('Error fetching routes:', error.message);
       toast.error('Failed to load routes.');
@@ -425,7 +430,12 @@ export default function DriverRoutes() {
   const submitDelivery = async () => {
     if (!receivedBy.trim()) { toast.error('Please enter the full name of the person receiving the order.'); return; }
     
-    const activeItems = activeOrder.order_items?.filter(item => item.status === 'active') || [];
+    // Updated filter logic for final submission matching the new statuses
+    const activeItems = activeOrder.order_items?.filter(item => 
+      item.status?.toLowerCase() !== 'backordered' && 
+      item.status?.toLowerCase() !== 'cancelled' && 
+      item.status?.toLowerCase() !== 'rejected'
+    ) || [];
     
     let totalDeliveredQty = 0;
     let totalOriginalQty = 0;
@@ -603,7 +613,12 @@ export default function DriverRoutes() {
     if (!activeOrder) return 0;
     let newSubtotal = 0;
     activeOrder.order_items?.forEach(item => {
-      if (item.status === 'active') {
+      // Updated filter matching the active order logic
+      if (
+        item.status?.toLowerCase() !== 'backordered' && 
+        item.status?.toLowerCase() !== 'cancelled' && 
+        item.status?.toLowerCase() !== 'rejected'
+      ) {
         const maxQty = item.quantity_variants;
         const currentDelivered = deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : maxQty;
         const unitPrice = Number(item.unit_price) || (Number(item.line_total) / maxQty);
@@ -633,7 +648,6 @@ export default function DriverRoutes() {
 
       <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-lg relative overflow-hidden mt-4">
         
-        {/* 🚀 FIXED: Added the manual Refresh button to the top right of the dashboard card */}
         <div className="flex justify-between items-start relative z-10">
           <div>
             <p className="text-emerald-400 font-bold tracking-widest uppercase text-[10px] mb-1">Driver Dashboard</p>
@@ -670,7 +684,6 @@ export default function DriverRoutes() {
             </div>
           </div>
           
-          {/* 🚀 Shows the driver exactly when the screen was last updated */}
           <div className="mt-4 flex items-center justify-center gap-1.5 text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-slate-800/50 py-1.5 rounded-lg border border-white/5">
             <Clock size={10} /> Last synced: {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
           </div>
@@ -705,7 +718,14 @@ export default function DriverRoutes() {
             const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
             const shortId = order.id.split('-')[0].toUpperCase();
 
-            const totalItems = order.order_items?.reduce((sum, item) => sum + (item.quantity_variants || 0), 0) || 0;
+            // Correctly updated filter logic for Total Items on Route View
+            const validItems = order.order_items?.filter(item => 
+             item.status?.toLowerCase() !== 'backordered' && 
+             item.status?.toLowerCase() !== 'cancelled' && 
+             item.status?.toLowerCase() !== 'rejected'
+            ) || [];
+            const totalItems = validItems.reduce((sum, item) => sum + (item.quantity_variants || 0), 0);
+            
             const isCOD = order.payment_method === 'cod';
             const isNet30 = order.payment_method === 'net_30';
             const paymentText = isCOD ? `$${Number(order.total_amount).toFixed(2)}` : (isNet30 ? 'Net 30' : 'Paid');
@@ -877,7 +897,12 @@ export default function DriverRoutes() {
                 <p className="text-xs text-slate-500 font-medium mb-2">Adjust the quantity delivered if the customer refuses any items.</p>
                 
                 <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                  {activeOrder.order_items?.filter(item => item.status === 'active').map(item => {
+                  {/* Updated filter logic here to remove 'active' requirement */}
+                  {activeOrder.order_items?.filter(item => 
+                    item.status?.toLowerCase() !== 'backordered' && 
+                    item.status?.toLowerCase() !== 'cancelled' && 
+                    item.status?.toLowerCase() !== 'rejected'
+                  ).map(item => {
                     const maxQty = item.quantity_variants;
                     const currentDelivered = deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : maxQty;
                     const isPartiallyRejected = currentDelivered < maxQty && currentDelivered > 0;

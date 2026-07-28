@@ -100,10 +100,30 @@ export default function DispatchMonitor() {
   const { data: deliveriesData, isLoading } = useQuery({
     queryKey: ['dispatch_deliveries', activeTab, page, debouncedSearch],
     queryFn: async () => {
+      let backorderOrderIds = [];
+
+      // ✨ NEW: Pre-fetch any orders that have READY_TO_PACK backordered items
+      if (activeTab === 'needs_dispatch') {
+        const { data: readyItems } = await supabase
+          .from('order_items')
+          .select('order_id')
+          .eq('status', 'READY_TO_PACK');
+        
+        if (readyItems && readyItems.length > 0) {
+          backorderOrderIds = [...new Set(readyItems.map(item => item.order_id))];
+        }
+      }
+
       let query = supabase.from('orders').select('*');
 
-      // Server-side Tab Filtering
-      if (activeTab === 'needs_dispatch') query = query.eq('status', 'ready_for_delivery');
+      // Server-side Tab Filtering (Modified to include backorders)
+      if (activeTab === 'needs_dispatch') {
+        if (backorderOrderIds.length > 0) {
+          query = query.or(`status.eq.ready_for_delivery,id.in.(${backorderOrderIds.join(',')})`);
+        } else {
+          query = query.eq('status', 'ready_for_delivery');
+        }
+      } 
       else if (activeTab === 'in_transit') query = query.in('status', ['shipped', 'out_for_delivery']);
       else if (activeTab === 'delivered') query = query.eq('status', 'delivered');
       else if (activeTab === 'cancelled') query = query.eq('status', 'cancelled');
@@ -206,6 +226,7 @@ export default function DispatchMonitor() {
   };
 
   const openAssignModal = (order) => {
+    // If it's a backorder, they probably want to reassign. We prepopulate but they can change it.
     setDriverName((order.driver_name || '').split(' | ')[0]); 
     setVehicleName(order.vehicle_name || '');
     setVehicleType(order.vehicle_type || 'Cargo Van'); 
@@ -238,6 +259,7 @@ export default function DispatchMonitor() {
     if (status === 'delivered') return <span className="px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><CheckCircle2 size={14}/> Delivered</span>;
     if (status === 'cancelled') return <span className="px-3 py-1 bg-red-50 text-red-700 border border-red-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><XCircle size={14}/> Cancelled</span>;
     if (status === 'ready_for_delivery') return <span className="px-3 py-1 bg-purple-50 text-purple-700 border border-purple-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><PackageCheck size={14}/> Needs Dispatch</span>;
+    if (status === 'delivered_partial') return <span className="px-3 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><PackageCheck size={14}/> Backorder Dispatch</span>;
     return <span className="px-3 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><Truck size={14}/> In Transit</span>;
   };
 
@@ -321,6 +343,7 @@ export default function DispatchMonitor() {
                 const driverName = (delivery.driver_name || 'Unassigned').split(' | ')[0];
                 const hasPod = delivery.photo_url || delivery.signature_url || delivery.received_by;
                 const isAssigned = delivery.driver_name;
+                const isBackorder = delivery.status === 'delivered_partial';
 
                 return (
                   <tr key={delivery.id} className="hover:bg-slate-50/80 transition-colors group">
@@ -328,11 +351,13 @@ export default function DispatchMonitor() {
                     {/* Column 1: Delivery Details */}
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-500 flex items-center justify-center border border-slate-200 shadow-sm shrink-0">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center border shadow-sm shrink-0 ${isBackorder ? 'bg-amber-50 border-amber-200 text-amber-500' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
                           <Package size={18} />
                         </div>
                         <div className="flex flex-col">
-                          <span className="font-mono font-bold text-slate-900 text-xs mb-0.5">#{shortId}</span>
+                          <span className="font-mono font-bold text-slate-900 text-xs mb-0.5">
+                            #{shortId}{isBackorder ? '-B' : ''}
+                          </span>
                           <p className="font-bold text-slate-700 text-sm">{delivery.shipping_name}</p>
                           <p className="text-xs text-slate-500 flex items-center gap-1 mt-1 font-medium">
                             <MapPin size={12} className="text-slate-400"/> {delivery.shipping_city || 'Address hidden'}
@@ -381,7 +406,7 @@ export default function DispatchMonitor() {
 
                     {/* Column 4: Actions */}
                     <td className="px-6 py-4 text-right">
-                      {delivery.status === 'ready_for_delivery' ? (
+                      {(delivery.status === 'ready_for_delivery' || delivery.status === 'delivered_partial') ? (
                         <button onClick={() => openAssignModal(delivery)} className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-slate-900 text-white text-xs font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md">
                             <Truck size={14} /> Assign Driver
                         </button>
