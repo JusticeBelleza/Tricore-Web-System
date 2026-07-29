@@ -66,13 +66,28 @@ export default function AdminOrders() {
     }
   }, [itemAction.show, itemAction.type, availableVariants.length]);
 
-  const { data: tabCounts = { pending: 0, newPending: 0, processing: 0, shipped: 0, completed: 0, due: 0, paid: 0, cancelled: 0, attempted: 0, restocked: 0 } } = useQuery({
+  // 🚀 BULLETPROOF TAB COUNTS WITH FALLBACK LOGIC
+  const { data: tabCounts = { pending: 0, newPending: 0, processing: 0, shipped: 0, partially_delivered: 0, completed: 0, due: 0, paid: 0, cancelled: 0, attempted: 0, restocked: 0 } } = useQuery({
     queryKey: ['admin_tab_counts'],
     queryFn: async () => {
       const lastViewedPending = localStorage.getItem('lastViewedPending') || new Date(0).toISOString();
       const { data, error } = await supabase.rpc('get_order_tab_counts', { p_last_viewed_pending: lastViewedPending });
       if (error) throw error;
-      return data;
+
+      let partialCount = data?.partially_delivered;
+      let completedCount = data?.completed;
+
+      // If the database doesn't send back the partially_delivered count, fetch it manually
+      if (partialCount === undefined) {
+        const { count: pCount } = await supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered_partial');
+        partialCount = pCount || 0;
+
+        // Ensure partial orders aren't accidentally bloating the Completed count
+        const { count: cCount } = await supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').eq('payment_status', 'unpaid');
+        completedCount = cCount || 0;
+      }
+
+      return { ...data, partially_delivered: partialCount, completed: completedCount };
     },
     refetchInterval: 60000,
     enabled: !!profile?.id
@@ -102,7 +117,8 @@ export default function AdminOrders() {
       if (activeTab === 'pending') query = query.eq('status', 'pending');
       else if (activeTab === 'processing') query = query.eq('status', 'processing');
       else if (activeTab === 'shipped') query = query.eq('status', 'shipped');
-      else if (activeTab === 'completed') query = query.in('status', ['delivered', 'delivered_partial']).eq('payment_status', 'unpaid');
+      else if (activeTab === 'partially_delivered') query = query.eq('status', 'delivered_partial'); 
+      else if (activeTab === 'completed') query = query.eq('status', 'delivered').eq('payment_status', 'unpaid'); 
       else if (activeTab === 'paid') query = query.eq('payment_status', 'paid');
       else if (activeTab === 'cancelled') query = query.eq('status', 'cancelled');
       else if (activeTab === 'attempted') query = query.eq('status', 'attempted'); 
@@ -119,7 +135,7 @@ export default function AdminOrders() {
         else query = query.or(`shipping_name.ilike.%${clean}%,companies.name.ilike.%${clean}%`);
       }
 
-      const sortColumn = (['completed', 'cancelled', 'paid', 'attempted', 'restocked'].includes(activeTab)) ? 'updated_at' : 'created_at';
+      const sortColumn = (['completed', 'partially_delivered', 'cancelled', 'paid', 'attempted', 'restocked'].includes(activeTab)) ? 'updated_at' : 'created_at';
       
       const from = page * pageSize;
       const to = from + pageSize; 
@@ -289,7 +305,6 @@ export default function AdminOrders() {
       const newTaxAmount = newSubtotal * taxRate;
       const newTotalAmount = newSubtotal + Number(order.shipping_amount || 0) + newTaxAmount;
 
-      // 🚀 USE THE NEW DATABASE FUNCTION FOR STRICT INVENTORY MATH
       const { error: itemError } = await supabase.rpc('substitute_order_item', {
         p_item_id: item.id,
         p_new_variant_id: selectedSubstitute.id,
@@ -297,7 +312,6 @@ export default function AdminOrders() {
       });
       if (itemError) throw itemError;
       
-      // Update order-level financial totals manually
       const { error: orderError } = await supabase.from('orders').update({ subtotal: newSubtotal, tax_amount: newTaxAmount, total_amount: newTotalAmount, updated_at: new Date().toISOString() }).eq('id', order.id);
       if (orderError) throw orderError;
 
@@ -480,9 +494,9 @@ export default function AdminOrders() {
   };
 
   const getStatusBadge = (status) => {
-    const displayStatus = status === 'delivered_partial' ? 'delivered' : status;
-    const styles = { pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', processing: 'bg-blue-50 text-blue-700 border-blue-200', ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', delivered_partial: 'bg-emerald-50 text-emerald-700 border-emerald-200', cancelled: 'bg-red-50 text-red-700 border-red-200', attempted: 'bg-amber-50 text-amber-700 border-amber-200', restocked: 'bg-slate-100 text-slate-700 border-slate-300' };
-    const icons = { pending: <Clock size={12}/>, processing: <Package size={12}/>, ready_for_delivery: <PackageCheck size={12}/>, shipped: <Truck size={12}/>, delivered: <CheckCircle2 size={12}/>, delivered_partial: <CheckCircle2 size={12}/>, cancelled: <XCircle size={12}/>, attempted: <AlertTriangle size={12}/>, restocked: <RefreshCw size={12}/> };
+    const displayStatus = status === 'delivered_partial' ? 'Partial' : status;
+    const styles = { pending: 'bg-yellow-50 text-yellow-700 border-yellow-200', processing: 'bg-blue-50 text-blue-700 border-blue-200', ready_for_delivery: 'bg-purple-50 text-purple-700 border-purple-200', shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200', delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200', delivered_partial: 'bg-amber-50 text-amber-700 border-amber-200', cancelled: 'bg-red-50 text-red-700 border-red-200', attempted: 'bg-orange-50 text-orange-700 border-orange-200', restocked: 'bg-slate-100 text-slate-700 border-slate-300' };
+    const icons = { pending: <Clock size={12}/>, processing: <Package size={12}/>, ready_for_delivery: <PackageCheck size={12}/>, shipped: <Truck size={12}/>, delivered: <CheckCircle2 size={12}/>, delivered_partial: <Package size={12}/>, cancelled: <XCircle size={12}/>, attempted: <AlertTriangle size={12}/>, restocked: <RefreshCw size={12}/> };
     return (<span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border shadow-sm flex items-center gap-1.5 w-fit whitespace-nowrap ${styles[status] || 'bg-slate-50 text-slate-700 border-slate-200'}`}>{icons[status]} {displayStatus.replace(/_/g, ' ')}</span>);
   };
 
@@ -508,23 +522,26 @@ export default function AdminOrders() {
 
       <div className="flex flex-col xl:flex-row gap-4 justify-between items-start xl:items-center bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
         <div className="w-full xl:w-auto overflow-x-auto scrollbar-hide rounded-xl">
-          <div className="flex gap-2 p-1 bg-slate-100/50 border border-slate-200 w-max rounded-xl">
-            <button onClick={() => setActiveTab('all')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'all' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}>All</button>
-            <button onClick={() => setActiveTab('pending')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'pending' ? 'bg-red-500 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>{newPendingCount > 0 && <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>}Pending ({tabCounts.pending})</button>
-            <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-600 hover:bg-blue-50'}`}>Processing ({tabCounts.processing})</button>
-            <button onClick={() => setActiveTab('shipped')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'shipped' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>Shipped ({tabCounts.shipped})</button>
-            <button onClick={() => setActiveTab('attempted')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'attempted' ? 'bg-amber-600 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>Attempted ({tabCounts.attempted})</button>
-            <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>Completed ({tabCounts.completed})</button>
+          <div className="flex gap-1 p-1 bg-slate-100/50 border border-slate-200 w-max rounded-xl">
+            <button onClick={() => setActiveTab('all')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'all' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}>All</button>
+            <button onClick={() => setActiveTab('pending')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'pending' ? 'bg-red-500 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>{newPendingCount > 0 && <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>}Pending ({tabCounts.pending})</button>
+            <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-600 hover:bg-blue-50'}`}>Processing ({tabCounts.processing})</button>
+            <button onClick={() => setActiveTab('shipped')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'shipped' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-600 hover:bg-purple-50'}`}>Shipped ({tabCounts.shipped})</button>
+            
+            <button onClick={() => setActiveTab('partially_delivered')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'partially_delivered' ? 'bg-amber-600 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>Partial ({tabCounts.partially_delivered || 0})</button>
+            
+            <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`}>Completed ({tabCounts.completed})</button>
             
             {!isWarehouse && (
               <>
-                <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>{tabCounts.due > 0 && <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>}Due ({tabCounts.due})</button>
-                <button onClick={() => setActiveTab('paid')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'paid' ? 'bg-slate-800 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200'}`}><Receipt size={14}/> Paid ({tabCounts.paid})</button>
+                <button onClick={() => setActiveTab('due')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'due' ? 'bg-orange-500 text-white shadow-md' : 'text-orange-600 hover:bg-orange-50'}`}>{tabCounts.due > 0 && <span className="w-2 h-2 rounded-full bg-orange-600 animate-pulse"></span>}Due ({tabCounts.due})</button>
+                <button onClick={() => setActiveTab('paid')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'paid' ? 'bg-slate-800 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200'}`}><Receipt size={14}/> Paid ({tabCounts.paid})</button>
               </>
             )}
 
-            <button onClick={() => setActiveTab('cancelled')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>Cancelled ({tabCounts.cancelled})</button>
-            <button onClick={() => setActiveTab('restocked')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'restocked' ? 'bg-slate-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200/50'}`}>Restocked ({tabCounts.restocked})</button>
+            <button onClick={() => setActiveTab('attempted')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'attempted' ? 'bg-orange-600 text-white shadow-md' : 'text-orange-600 hover:bg-orange-50'}`}>Attempted ({tabCounts.attempted})</button>
+            <button onClick={() => setActiveTab('cancelled')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : 'text-red-600 hover:bg-red-50'}`}>Cancelled ({tabCounts.cancelled})</button>
+            <button onClick={() => setActiveTab('restocked')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'restocked' ? 'bg-slate-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200/50'}`}>Restocked ({tabCounts.restocked})</button>
           </div>
         </div>
         <div className="relative w-full xl:w-64 shrink-0">

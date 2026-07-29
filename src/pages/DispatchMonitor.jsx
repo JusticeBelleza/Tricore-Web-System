@@ -74,67 +74,75 @@ export default function DispatchMonitor() {
     staleTime: Infinity,
   });
 
-  const { data: tabCounts = { needs_dispatch: 0, in_transit: 0, delivered: 0, cancelled: 0 } } = useQuery({
+  // 🚀 BULLETPROOF COUNTS: Uses JS to calculate exact badge numbers regardless of parent status
+  const { data: tabCounts = { needs_dispatch: 0, in_transit: 0, partially_delivered: 0, delivered: 0, cancelled: 0 } } = useQuery({
     queryKey: ['dispatch_tab_counts'],
     queryFn: async () => {
-      const { data, error } = await supabase.rpc('get_dispatch_tab_counts');
+      const { data, error } = await supabase.from('orders').select('id, status, order_items(status)');
       if (error) throw error;
-      return data;
+
+      let counts = { needs_dispatch: 0, in_transit: 0, partially_delivered: 0, delivered: 0, cancelled: 0 };
+
+      data.forEach(order => {
+        const isBackorder = ['delivered_partial', 'delivered'].includes(order.status);
+        const items = order.order_items || [];
+        
+        if (order.status === 'ready_for_delivery' || (isBackorder && items.some(i => i.status?.toUpperCase() === 'READY_TO_PACK'))) {
+          counts.needs_dispatch++;
+        }
+        if (['shipped', 'out_for_delivery'].includes(order.status) || (isBackorder && items.some(i => ['SHIPPED', 'OUT_FOR_DELIVERY'].includes(i.status?.toUpperCase())))) {
+          counts.in_transit++;
+        }
+        if (order.status === 'delivered_partial') counts.partially_delivered++;
+        if (order.status === 'delivered') counts.delivered++;
+        if (order.status === 'cancelled') counts.cancelled++;
+      });
+
+      return counts;
     },
     refetchInterval: 60000,
   });
 
-  const { data: deliveriesData, isLoading } = useQuery({
-    queryKey: ['dispatch_deliveries', activeTab, page, debouncedSearch],
+  // 🚀 BULLETPROOF FETCHING: Pulls all orders and perfectly sorts them into tabs via React
+  const { data: deliveriesData = [], isLoading } = useQuery({
+    queryKey: ['dispatch_deliveries', activeTab, debouncedSearch],
     queryFn: async () => {
-      let backorderOrderIds = [];
+      const { data, error } = await supabase.from('orders').select('*, order_items(status)').order('updated_at', { ascending: false });
+      if (error) throw error;
 
-      if (activeTab === 'needs_dispatch') {
-        const { data: readyItems } = await supabase.from('order_items').select('order_id').eq('status', 'READY_TO_PACK');
-        if (readyItems && readyItems.length > 0) backorderOrderIds = [...new Set(readyItems.map(item => item.order_id))];
-      } else if (activeTab === 'in_transit') {
-        const { data: transitItems } = await supabase.from('order_items').select('order_id').in('status', ['SHIPPED', 'OUT_FOR_DELIVERY']);
-        if (transitItems && transitItems.length > 0) backorderOrderIds = [...new Set(transitItems.map(item => item.order_id))];
-      }
-
-      let query = supabase.from('orders').select('*');
-
-      if (activeTab === 'needs_dispatch') {
-        if (backorderOrderIds.length > 0) query = query.or(`status.eq.ready_for_delivery,id.in.(${backorderOrderIds.join(',')})`);
-        else query = query.eq('status', 'ready_for_delivery');
-      } 
-      else if (activeTab === 'in_transit') {
-        if (backorderOrderIds.length > 0) query = query.or(`status.in.(shipped,out_for_delivery),id.in.(${backorderOrderIds.join(',')})`);
-        else query = query.in('status', ['shipped', 'out_for_delivery']);
-      }
-      else if (activeTab === 'delivered') {
-        // ✨ FIXED: Added delivered_partial here so it shows up on the Delivered tab properly
-        query = query.in('status', ['delivered', 'delivered_partial']);
-      }
-      else if (activeTab === 'cancelled') query = query.eq('status', 'cancelled');
+      let filtered = data.filter(order => {
+        const isBackorder = ['delivered_partial', 'delivered'].includes(order.status);
+        const items = order.order_items || [];
+        
+        if (activeTab === 'needs_dispatch') {
+          return order.status === 'ready_for_delivery' || (isBackorder && items.some(i => i.status?.toUpperCase() === 'READY_TO_PACK'));
+        }
+        if (activeTab === 'in_transit') {
+          return ['shipped', 'out_for_delivery'].includes(order.status) || (isBackorder && items.some(i => ['SHIPPED', 'OUT_FOR_DELIVERY'].includes(i.status?.toUpperCase())));
+        }
+        if (activeTab === 'partially_delivered') return order.status === 'delivered_partial';
+        if (activeTab === 'delivered') return order.status === 'delivered';
+        if (activeTab === 'cancelled') return order.status === 'cancelled';
+        return false;
+      });
 
       if (debouncedSearch) {
-        const clean = debouncedSearch.trim();
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clean);
-        if (isUUID) query = query.or(`id.eq.${clean},shipping_name.ilike.%${clean}%,driver_name.ilike.%${clean}%`);
-        else query = query.or(`shipping_name.ilike.%${clean}%,driver_name.ilike.%${clean}%`);
+        const clean = debouncedSearch.toLowerCase();
+        filtered = filtered.filter(o => 
+          o.id.toLowerCase().includes(clean) || 
+          (o.shipping_name && o.shipping_name.toLowerCase().includes(clean)) ||
+          (o.driver_name && o.driver_name.toLowerCase().includes(clean))
+        );
       }
 
-      query = query.order('updated_at', { ascending: false });
-
-      const from = page * pageSize;
-      const to = from + pageSize; 
-      query = query.range(from, to);
-
-      const { data, error } = await query;
-      if (error) throw error;
-      return data || [];
+      return filtered;
     },
     placeholderData: keepPreviousData,
   });
 
-  const hasNextPage = deliveriesData && deliveriesData.length > pageSize;
-  const displayedDeliveries = deliveriesData ? deliveriesData.slice(0, pageSize) : [];
+  // Handle local pagination dynamically based on the filtered results
+  const hasNextPage = deliveriesData.length > (page + 1) * pageSize;
+  const displayedDeliveries = deliveriesData.slice(page * pageSize, (page + 1) * pageSize);
 
   useEffect(() => {
     let debounceTimer;
@@ -231,28 +239,30 @@ export default function DispatchMonitor() {
   };
 
   const getStatusBadge = (status) => {
-    if (['delivered_partial', 'delivered'].includes(status) && activeTab === 'needs_dispatch') {
-      return <span className="px-3 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><PackageCheck size={14}/> Backorder (To Dispatch)</span>;
+    if (activeTab === 'needs_dispatch') {
+      if (['delivered_partial', 'delivered', 'shipped', 'out_for_delivery'].includes(status)) {
+        return <span className="px-3 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><PackageCheck size={14}/> Backorder (To Dispatch)</span>;
+      }
+      return <span className="px-3 py-1 bg-purple-50 text-purple-700 border border-purple-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><PackageCheck size={14}/> Needs Dispatch</span>;
     }
+
     if (['delivered_partial', 'delivered'].includes(status) && activeTab === 'in_transit') {
       return <span className="px-3 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><Truck size={14}/> Backorder (En Route)</span>;
     }
 
     if (status === 'delivered') return <span className="px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><CheckCircle2 size={14}/> Delivered</span>;
-    
-    // ✨ FIXED: Added specific badge for partial deliveries sitting in the Delivered tab
-    if (status === 'delivered_partial') return <span className="px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><CheckCircle2 size={14}/> Partial Delivery</span>;
-
+    if (status === 'delivered_partial') return <span className="px-3 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><PackageCheck size={14}/> Partially Delivered</span>;
     if (status === 'cancelled') return <span className="px-3 py-1 bg-red-50 text-red-700 border border-red-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><XCircle size={14}/> Cancelled</span>;
     if (status === 'ready_for_delivery') return <span className="px-3 py-1 bg-purple-50 text-purple-700 border border-purple-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><PackageCheck size={14}/> Needs Dispatch</span>;
     return <span className="px-3 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-xl text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 w-fit shadow-sm"><Truck size={14}/> In Transit</span>;
   };
 
-  const tabBaseClass = "flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95";
+  const tabBaseClass = "flex items-center gap-2 px-4 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95";
   const tabInactiveClass = "text-slate-500 hover:text-slate-900 hover:bg-slate-200/50";
   const activeStyles = {
     needs_dispatch: 'bg-purple-600 text-white shadow-md',
     in_transit: 'bg-blue-600 text-white shadow-md',
+    partially_delivered: 'bg-amber-600 text-white shadow-md',
     delivered: 'bg-emerald-600 text-white shadow-md',
     cancelled: 'bg-red-600 text-white shadow-md'
   };
@@ -276,12 +286,15 @@ export default function DispatchMonitor() {
       </div>
 
       <div className="flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
-        <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full lg:w-auto overflow-x-auto shrink-0">
+        <div className="flex gap-1 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full lg:w-auto overflow-x-auto shrink-0 scrollbar-hide">
           <button onClick={() => setActiveTab('needs_dispatch')} className={`${tabBaseClass} ${activeTab === 'needs_dispatch' ? activeStyles.needs_dispatch : tabInactiveClass}`}>
             <PackageCheck size={16}/> Needs Dispatch ({tabCounts.needs_dispatch})
           </button>
           <button onClick={() => setActiveTab('in_transit')} className={`${tabBaseClass} ${activeTab === 'in_transit' ? activeStyles.in_transit : tabInactiveClass}`}>
             <Truck size={16}/> In Transit ({tabCounts.in_transit})
+          </button>
+          <button onClick={() => setActiveTab('partially_delivered')} className={`${tabBaseClass} ${activeTab === 'partially_delivered' ? activeStyles.partially_delivered : tabInactiveClass}`}>
+            <Package size={16}/> Partial ({tabCounts.partially_delivered || 0})
           </button>
           <button onClick={() => setActiveTab('delivered')} className={`${tabBaseClass} ${activeTab === 'delivered' ? activeStyles.delivered : tabInactiveClass}`}>
             <CheckCircle2 size={16}/> Delivered ({tabCounts.delivered})
@@ -324,7 +337,7 @@ export default function DispatchMonitor() {
                 const driverName = (delivery.driver_name || 'Unassigned').split(' | ')[0];
                 const hasPod = delivery.photo_url || delivery.signature_url || delivery.received_by;
                 const isAssigned = delivery.driver_name;
-                const isBackorder = ['delivered_partial', 'delivered'].includes(delivery.status) && activeTab !== 'delivered';
+                const isBackorder = ['delivered_partial', 'delivered'].includes(delivery.status) && activeTab !== 'delivered' && activeTab !== 'partially_delivered';
 
                 return (
                   <tr key={delivery.id} className="hover:bg-slate-50/80 transition-colors group">
@@ -365,7 +378,7 @@ export default function DispatchMonitor() {
                       <div className="flex flex-col items-start gap-1.5">
                         {getStatusBadge(delivery.status)}
                         
-                        {delivery.status === 'delivered' ? (
+                        {['delivered', 'delivered_partial'].includes(delivery.status) ? (
                           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1 mt-0.5">
                             <Clock size={10}/> {new Date(delivery.delivered_at || delivery.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric'})} at {new Date(delivery.delivered_at || delivery.updated_at).toLocaleTimeString([], {hour: 'numeric', minute:'2-digit', hour12: true})}
                           </span>
@@ -388,7 +401,7 @@ export default function DispatchMonitor() {
                         </button>
                       ) : activeTab === 'in_transit' ? (
                         <span className="inline-flex items-center justify-center px-4 py-2 text-slate-400 text-xs font-bold italic">En Route...</span>
-                      ) : activeTab === 'delivered' ? (
+                      ) : (activeTab === 'delivered' || activeTab === 'partially_delivered') ? (
                         hasPod ? (
                           <button onClick={() => setSelectedPod(delivery)} className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 text-xs font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
                             <ImageIcon size={14} className="text-slate-400" /> View POD

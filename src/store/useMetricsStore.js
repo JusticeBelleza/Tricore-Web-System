@@ -24,7 +24,6 @@ export const useMetricsStore = create((set, get) => ({
   fetchDashboardMetrics: async (startDate = null, endDate = null) => {
     set({ isLoading: true });
     try {
-      // Call our new Postgres function! No more .reduce() on 10,000 rows.
       const { data, error } = await supabase.rpc('get_dashboard_metrics', {
         p_start_date: startDate ? startDate.toISOString() : null,
         p_end_date: endDate ? endDate.toISOString() : null
@@ -47,15 +46,24 @@ export const useMetricsStore = create((set, get) => ({
     const isStaff = ['admin', 'warehouse'].includes(role);
 
     try {
-      const queries = [];
-      
       if (isStaff) {
-        queries.push(
+        // ✨ FIXED: Swapped the "dumb" frontend query for the "smart" RPC we just built!
+        const [pendingRes, processingRes, dispatchRes, warehouseCountsRes] = await Promise.all([
           supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
           supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
           supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'ready_for_delivery'),
-          supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', ['attempted', 'delivered_partial']).is('is_restocked', false)
-        );
+          supabase.rpc('get_warehouse_tab_counts') 
+        ]);
+
+        set({
+          badges: {
+            ...get().badges,
+            pendingCount: pendingRes.count || 0,
+            processingCount: processingRes.count || 0,
+            needsDispatchCount: dispatchRes.count || 0,
+            returnsCount: warehouseCountsRes.data?.returns || 0, // Pulls accurate backorder-safe data!
+          }
+        });
       } else {
         // Customer overdue queries...
         const threshold = new Date();
@@ -63,23 +71,9 @@ export const useMetricsStore = create((set, get) => ({
         let q = supabase.from('orders').select('*', { count: 'exact', head: true })
           .eq('status', 'delivered').eq('payment_status', 'unpaid').eq('payment_method', 'net_30').lte('created_at', threshold.toISOString());
         q = company_id ? q.eq('company_id', company_id) : q.eq('user_id', id);
-        queries.push(q);
-      }
-
-      const results = await Promise.all(queries);
-
-      if (isStaff) {
-        set({
-          badges: {
-            ...get().badges,
-            pendingCount: results[0].count || 0,
-            processingCount: results[1].count || 0,
-            needsDispatchCount: results[2].count || 0,
-            returnsCount: results[3].count || 0,
-          }
-        });
-      } else {
-        set({ badges: { ...get().badges, overdueCount: results[0].count || 0 } });
+        
+        const results = await q;
+        set({ badges: { ...get().badges, overdueCount: results.count || 0 } });
       }
     } catch (error) {
       console.error("Failed to fetch badges:", error);
@@ -88,14 +82,12 @@ export const useMetricsStore = create((set, get) => ({
 
   // 3. Optimized Realtime Subscription
   initRealtime: (profile) => {
-    if (get().realtimeChannel) return; // Prevent duplicate sockets
+    if (get().realtimeChannel) return; 
     
     const isStaff = ['admin', 'warehouse'].includes(profile.role);
     
-    // OPTIMIZATION: Only listen to what matters!
-    // Customers only hear about their own orders. Staff only hear about actionable status changes.
     const filterString = isStaff 
-      ? 'status=in.(pending,processing,ready_for_delivery,attempted)' 
+      ? 'status=in.(pending,processing,ready_for_delivery,attempted,delivered_partial)' 
       : `user_id=eq.${profile.id}`;
 
     const channel = supabase.channel('optimized_orders_channel')
@@ -103,9 +95,8 @@ export const useMetricsStore = create((set, get) => ({
         event: '*', 
         schema: 'public', 
         table: 'orders',
-        filter: filterString // Stops the "Firehose" memory leak!
+        filter: filterString 
       }, (payload) => {
-        // Silently update badges when relevant changes happen
         get().fetchBadges(profile);
       })
       .subscribe();
