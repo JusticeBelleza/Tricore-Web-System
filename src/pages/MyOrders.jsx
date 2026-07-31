@@ -6,7 +6,7 @@ import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-quer
 import { 
   Package, Receipt, ChevronDown, Calendar, Hash, MapPin, Mail,
   CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2,
-  ChevronLeft, ChevronRight, PackageCheck, XCircle, Clock, AlertTriangle, RefreshCw, ShieldCheck 
+  ChevronLeft, ChevronRight, PackageCheck, XCircle, Clock, AlertTriangle, RefreshCw, ShieldCheck, Box
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -21,17 +21,11 @@ export default function MyOrders() {
   const pageSize = 10;
   const [activeTab, setActiveTab] = useState('all'); 
 
-  // Reset page and expanded rows on tab change
   useEffect(() => {
     setPage(0);
     setExpandedOrderId(null);
   }, [activeTab]);
 
-  // ==========================================
-  // 🚀 REACT QUERY: DATA FETCHING
-  // ==========================================
-
-  // 1. Fetch Drivers (Cached heavily)
   const { data: drivers = [] } = useQuery({
     queryKey: ['drivers'],
     queryFn: async () => {
@@ -39,17 +33,15 @@ export default function MyOrders() {
       if (error) throw error;
       return data || [];
     },
-    staleTime: Infinity, // Drivers don't change often, keep in cache
+    staleTime: Infinity, 
   });
 
-  // 2. Fetch Tab Counts (Frontend Calculation)
-  const { data: tabCounts = { all: 0, delivered: 0, due: 0, paid: 0, cancelled: 0, returned: 0 } } = useQuery({
+  const { data: tabCounts = { all: 0, delivered: 0, backorders: 0, due: 0, paid: 0, cancelled: 0, returned: 0 } } = useQuery({
     queryKey: ['my_orders_tabs', profile?.id, profile?.company_id],
     queryFn: async () => {
       const thresholdDate = new Date();
       thresholdDate.setDate(thresholdDate.getDate() - 25);
 
-      // 🚀 THE FIX: Intelligently query for Proxy B2B vs Retail orders
       const baseQuery = () => {
         let q = supabase.from('orders').select('*', { count: 'exact', head: true });
         
@@ -66,10 +58,10 @@ export default function MyOrders() {
         return q;
       };
 
-      // Run parallel counts for this specific user
-      const [allReq, deliveredReq, dueReq, paidReq, cancelledReq, returnedReq] = await Promise.all([
+      const [allReq, deliveredReq, backorderReq, dueReq, paidReq, cancelledReq, returnedReq] = await Promise.all([
         baseQuery(),
-        baseQuery().in('status', ['delivered', 'delivered_partial']),
+        baseQuery().eq('status', 'delivered'),
+        baseQuery().eq('status', 'delivered_partial'),
         baseQuery().in('status', ['delivered', 'delivered_partial']).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString()),
         baseQuery().eq('payment_status', 'paid'),
         baseQuery().eq('status', 'cancelled'),
@@ -79,6 +71,7 @@ export default function MyOrders() {
       return {
         all: allReq.count || 0,
         delivered: deliveredReq.count || 0,
+        backorders: backorderReq.count || 0,
         due: dueReq.count || 0,
         paid: paidReq.count || 0,
         cancelled: cancelledReq.count || 0,
@@ -89,11 +82,9 @@ export default function MyOrders() {
     staleTime: 60000,
   });
 
-  // 3. Fetch Paginated Orders using N+1 Infinite Cursor Pagination
   const { data: ordersData, isLoading } = useQuery({
     queryKey: ['my_orders', activeTab, page, profile?.id, profile?.company_id],
     queryFn: async () => {
-      // 🚀 Added user_id and role to the select string for Proxy Detection
       let query = supabase
         .from('orders')
         .select(`
@@ -109,7 +100,6 @@ export default function MyOrders() {
           )
         `);
 
-      // 🚀 THE FIX: Link B2B and Retail Orders correctly
       if (profile?.role?.toLowerCase() === 'b2b' && profile?.company_id) {
         query = query.eq('company_id', profile.company_id);
       } else {
@@ -121,7 +111,9 @@ export default function MyOrders() {
       }
 
       if (activeTab === 'delivered') {
-        query = query.in('status', ['delivered', 'delivered_partial']);
+        query = query.eq('status', 'delivered');
+      } else if (activeTab === 'backorders') {
+        query = query.eq('status', 'delivered_partial');
       } else if (activeTab === 'due') {
         const thresholdDate = new Date();
         thresholdDate.setDate(thresholdDate.getDate() - 25);
@@ -136,7 +128,6 @@ export default function MyOrders() {
 
       query = query.order('created_at', { ascending: false });
       
-      // 🚀 The N+1 Math: Ask for exactly 1 extra row
       const from = page * pageSize;
       const to = from + pageSize; 
       query = query.range(from, to);
@@ -146,17 +137,13 @@ export default function MyOrders() {
       
       return data || [];
     },
-    placeholderData: keepPreviousData, // Keeps old data visible while fetching new page
+    placeholderData: keepPreviousData, 
     enabled: !!(profile?.id || profile?.company_id),
   });
 
-  // 🚀 Process the N+1 Array
   const hasNextPage = ordersData && ordersData.length > pageSize;
   const displayOrders = ordersData ? ordersData.slice(0, pageSize) : [];
 
-  // ==========================================
-  // 🚀 THROTTLED REAL-TIME SUBSCRIPTION
-  // ==========================================
   useEffect(() => {
     if (!profile?.id && !profile?.company_id) return;
     
@@ -164,7 +151,6 @@ export default function MyOrders() {
     
     const sub = supabase.channel('my_orders_channel')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-        // Debounce to prevent rapid UI flashing if warehouse bulk updates
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
           queryClient.invalidateQueries({ queryKey: ['my_orders'] });
@@ -178,13 +164,12 @@ export default function MyOrders() {
     };
   }, [profile?.id, profile?.company_id, queryClient]);
 
-
   const toggleOrderDetails = (orderId) => {
     setExpandedOrderId(expandedOrderId === orderId ? null : orderId);
   };
 
   const getStatusBadge = (status) => {
-    const displayStatus = status === 'delivered_partial' ? 'delivered' : status.replace(/_/g, ' ');
+    const displayStatus = status === 'delivered_partial' ? 'Partially Delivered' : status.replace(/_/g, ' ');
     
     const styles = {
       pending: 'bg-yellow-50 text-yellow-700 border-yellow-200',
@@ -193,7 +178,7 @@ export default function MyOrders() {
       shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200',
       out_for_delivery: 'bg-orange-50 text-orange-700 border-orange-200',
       delivered: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-      delivered_partial: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      delivered_partial: 'bg-amber-50 text-amber-700 border-amber-200', 
       cancelled: 'bg-red-50 text-red-700 border-red-200',
       attempted: 'bg-amber-50 text-amber-700 border-amber-200',
       restocked: 'bg-slate-100 text-slate-700 border-slate-300' 
@@ -237,7 +222,6 @@ export default function MyOrders() {
     const orderNum = order.id.substring(0, 8).toUpperCase();
     const datePlaced = new Date(order.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-    // 🚀 DYNAMIC CALCULATIONS FOR PDF
     const rejectedItemsSum = order.order_items?.filter(item => item.status === 'cancelled' || item.status === 'rejected').reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
     const grossSubtotal = order.order_items?.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) || 0;
     
@@ -294,7 +278,6 @@ export default function MyOrders() {
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 
-    // 🚀 FILTER OUT REJECTED ITEMS FROM THE ACTUAL INVOICE LIST
     const activeItems = order.order_items?.filter(item => item.status !== 'cancelled' && item.status !== 'rejected') || [];
     const tableRows = activeItems.map(item => [
       `${item.product_variants?.products?.name || item.product_variants?.name || 'Item'}\nSKU: ${item.product_variants?.products?.base_sku || item.product_variants?.sku || 'N/A'}`,
@@ -380,7 +363,10 @@ export default function MyOrders() {
           <button onClick={() => setActiveTab('delivered')} className={`${tabBaseClass} ${activeTab === 'delivered' ? tabActiveClass : tabInactiveClass}`}>
             <PackageCheck size={16}/> Delivered ({tabCounts.delivered})
           </button>
-          <button onClick={() => setActiveTab('due')} className={`${tabBaseClass} ${activeTab === 'due' ? 'bg-amber-500 text-white shadow-md' : tabInactiveClass}`}>
+          <button onClick={() => setActiveTab('backorders')} className={`${tabBaseClass} ${activeTab === 'backorders' ? 'bg-amber-500 text-white shadow-md' : tabInactiveClass}`}>
+            <Box size={16}/> Backorders ({tabCounts.backorders})
+          </button>
+          <button onClick={() => setActiveTab('due')} className={`${tabBaseClass} ${activeTab === 'due' ? 'bg-orange-500 text-white shadow-md' : tabInactiveClass}`}>
             <AlertCircle size={16}/> Due ({tabCounts.due})
           </button>
           <button onClick={() => setActiveTab('paid')} className={`${tabBaseClass} ${activeTab === 'paid' ? 'bg-emerald-600 text-white shadow-md' : tabInactiveClass}`}>
@@ -417,18 +403,18 @@ export default function MyOrders() {
           </button>
         </div>
       ) : (
-        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col mt-6">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm whitespace-nowrap">
-              <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500">
+        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col mt-6 overflow-hidden">
+          <div className="overflow-x-auto scrollbar-hide">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 whitespace-nowrap">
                 <tr>
-                  <th className="px-6 py-4 font-bold tracking-tight text-center w-16 rounded-tl-3xl">#</th>
+                  <th className="px-6 py-4 font-bold tracking-tight text-center w-16">#</th>
                   <th className="px-6 py-4 font-bold tracking-tight">Order Details</th>
                   <th className="px-6 py-4 font-bold tracking-tight">Date Placed</th>
                   <th className="px-6 py-4 font-bold tracking-tight">Total Amount</th>
                   <th className="px-6 py-4 font-bold tracking-tight">Payment</th>
                   <th className="px-6 py-4 font-bold tracking-tight">Fulfillment</th>
-                  <th className="px-6 py-4 font-bold tracking-tight text-right rounded-tr-3xl"></th>
+                  <th className="px-6 py-4 font-bold tracking-tight text-right"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -437,10 +423,9 @@ export default function MyOrders() {
                   const shortId = order.id.split('-')[0].toUpperCase();
                   const isB2B = !!order.company_id || !!profile?.company_id;
                   
-                  // 🚀 DETECT PROXY ORDERS
                   const isProxyOrder = order.user_id !== profile.id;
-
                   const hasAdjustments = order.order_items?.some(item => item.status === 'cancelled' || item.status === 'rejected');
+                  const hasBackorders = order.status === 'delivered_partial';
 
                   const rawDriverName = order.driver_name || '';
                   const driverParts = rawDriverName.split('|').map(s => s.trim());
@@ -489,21 +474,21 @@ export default function MyOrders() {
                         onClick={() => toggleOrderDetails(order.id)} 
                         className={`group cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50 border-l-4 border-l-slate-800' : 'hover:bg-slate-50/80 border-l-4 border-transparent'}`}
                       >
-                        <td className="px-6 py-4 text-center">
-                          <span className="font-medium text-slate-400 text-sm">
+                        <td className="px-6 py-4 align-top text-center w-16">
+                          <span className="font-medium text-slate-400 text-sm block pt-1.5">
                             {(page * pageSize) + index + 1}
                           </span>
                         </td>
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-4">
-                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border transition-colors shadow-sm ${isExpanded ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                        
+                        <td className="px-6 py-4 align-top whitespace-nowrap">
+                          <div className="flex items-start gap-4">
+                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border transition-colors shadow-sm ${isExpanded ? 'bg-slate-900 text-white border-slate-900' : hasBackorders ? 'bg-amber-50 text-amber-600 border-amber-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
                               <Package size={18} />
                             </div>
-                            <div>
+                            <div className="pt-0.5">
                               <p className="font-mono font-bold text-slate-900 text-sm tracking-tight">{shortId}</p>
                               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Hash size={10}/> Order ID</p>
                               
-                              {/* 🚀 THE PROXY BADGE */}
                               {isProxyOrder && (
                                 <span className="mt-1 flex items-center gap-1 px-1.5 py-0.5 bg-slate-800 text-white text-[9px] font-bold uppercase tracking-wider rounded shadow-sm w-max">
                                   <ShieldCheck size={10} /> By Support
@@ -513,18 +498,23 @@ export default function MyOrders() {
                           </div>
                         </td>
                         
-                        <td className="px-6 py-4">
-                          <p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> at {format12hr(order.created_at)}</p>
+                        <td className="px-6 py-4 align-top whitespace-nowrap">
+                          <div className="pt-0.5">
+                            <p className="font-medium text-slate-700">{new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center gap-1"><Calendar size={10}/> at {format12hr(order.created_at)}</p>
+                          </div>
                         </td>
                         
-                        <td className="px-6 py-4">
-                          <p className={`font-extrabold text-base ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
-                            ${finalTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                          </p>
+                        <td className="px-6 py-4 align-top whitespace-nowrap">
+                          <div className="pt-0.5">
+                            <p className={`font-extrabold text-base ${['cancelled', 'restocked', 'attempted'].includes(order.status) ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                              ${finalTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                            </p>
+                          </div>
                         </td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-col items-start gap-1">
+                        
+                        <td className="px-6 py-4 align-top whitespace-nowrap">
+                          <div className="flex flex-col items-start gap-1 pt-0.5">
                             {getPaymentStatusBadge(order.payment_status, order.status)}
                             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
                               <CreditCard size={10} /> {order.payment_method.replace(/_/g, ' ')}
@@ -532,8 +522,8 @@ export default function MyOrders() {
                           </div>
                         </td>
                         
-                        <td className="px-6 py-4">
-                          <div className="flex flex-col items-start gap-1.5">
+                        <td className="px-6 py-4 align-top min-w-[200px]">
+                          <div className="flex flex-col items-start gap-1.5 pt-0.5">
                             {getStatusBadge(order.status)}
                             
                             {['delivered', 'delivered_partial'].includes(order.status) && (order.delivered_at || order.updated_at) && (
@@ -568,10 +558,12 @@ export default function MyOrders() {
                           </div>
                         </td>
                         
-                        <td className="px-6 py-4 text-right">
-                          <button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}>
-                            <ChevronDown size={20} />
-                          </button>
+                        <td className="px-6 py-4 align-top text-right w-16">
+                          <div className="pt-0.5 flex justify-end">
+                            <button className={`p-1.5 rounded-lg transition-transform duration-200 ${isExpanded ? 'bg-slate-200 text-slate-900 rotate-180' : 'text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-900'}`}>
+                              <ChevronDown size={20} />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                       {isExpanded && (
@@ -593,12 +585,22 @@ export default function MyOrders() {
                                 </div>
                               )}
 
-                              {hasAdjustments && !['cancelled', 'attempted', 'restocked'].includes(order.status) && (
+                              {hasBackorders && (
                                 <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3 shadow-sm">
-                                  <AlertCircle size={20} className="text-amber-600 mt-0.5 shrink-0" />
+                                  <PackageCheck size={20} className="text-amber-600 mt-0.5 shrink-0" />
                                   <div>
-                                    <h4 className="text-sm font-black text-amber-900 tracking-tight">Order Adjusted</h4>
-                                    <p className="text-sm text-amber-700 mt-1 font-medium leading-relaxed">Some items in this order were cancelled or rejected at delivery. Please review your updated totals below.</p>
+                                    <h4 className="text-sm font-black text-amber-900 tracking-tight">Partially Delivered</h4>
+                                    <p className="text-sm text-amber-700 mt-1 font-medium leading-relaxed">Some items in your order were successfully delivered. However, the items highlighted below are currently out of stock and have been placed on backorder. They will ship automatically once restocked.</p>
+                                  </div>
+                                </div>
+                              )}
+
+                              {hasAdjustments && !['cancelled', 'attempted', 'restocked'].includes(order.status) && (
+                                <div className="mb-6 p-4 bg-orange-50 border border-orange-200 rounded-2xl flex items-start gap-3 shadow-sm">
+                                  <AlertCircle size={20} className="text-orange-600 mt-0.5 shrink-0" />
+                                  <div>
+                                    <h4 className="text-sm font-black text-orange-900 tracking-tight">Order Adjusted</h4>
+                                    <p className="text-sm text-orange-700 mt-1 font-medium leading-relaxed">Some items in this order were cancelled or rejected at delivery. Please review your updated totals below.</p>
                                   </div>
                                 </div>
                               )}
@@ -667,12 +669,13 @@ export default function MyOrders() {
                                           {order.order_items?.map((item) => {
                                             const isItemCancelled = item.status?.toLowerCase() === 'cancelled';
                                             const isItemRejected = item.status?.toLowerCase() === 'rejected';
+                                            const isItemBackordered = item.status?.toLowerCase() === 'backordered' || item.status?.toLowerCase() === 'allocated' || item.status?.toLowerCase() === 'ready_to_pack';
                                             const isVoided = isItemCancelled || isItemRejected;
 
                                             return (
-                                              <tr key={item.id} className={`hover:bg-slate-50/50 transition-colors ${isVoided ? 'opacity-60 bg-slate-50/50' : ''}`}>
+                                              <tr key={item.id} className={`hover:bg-slate-50/50 transition-colors ${isVoided ? 'opacity-60 bg-slate-50/50' : isItemBackordered ? 'bg-amber-50/30' : ''}`}>
                                                 <td className="px-5 py-4">
-                                                  <p className={`font-bold text-slate-900 leading-snug ${isVoided ? 'line-through text-slate-500' : ''}`}>
+                                                  <p className={`font-bold leading-snug ${isVoided ? 'line-through text-slate-500' : isItemBackordered ? 'text-amber-900' : 'text-slate-900'}`}>
                                                     {item.product_variants?.products?.name || item.product_variants?.name || 'Product'}
                                                   </p>
                                                   <p className="text-xs text-slate-500 mt-1 font-medium">Variant: <span className="text-slate-700">{item.product_variants?.name}</span> <span className="mx-1.5 text-slate-300">|</span> SKU: <span className="font-mono text-slate-600">{item.product_variants?.products?.base_sku || item.product_variants?.sku}</span></p>
@@ -687,13 +690,18 @@ export default function MyOrders() {
                                                       <XCircle size={10} /> Rejected at Delivery
                                                     </p>
                                                   )}
+                                                  {isItemBackordered && (
+                                                    <p className="text-[10px] text-amber-600 font-bold mt-1.5 uppercase tracking-widest flex items-center gap-1">
+                                                      <AlertCircle size={10} /> Pending Backorder
+                                                    </p>
+                                                  )}
                                                 </td>
                                                 <td className="px-5 py-4 text-center">
-                                                  <span className={`px-2.5 py-1 font-bold rounded-lg border shadow-sm ${isVoided ? 'bg-slate-100 text-slate-400 border-slate-200 line-through' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>
+                                                  <span className={`px-2.5 py-1 font-bold rounded-lg border shadow-sm ${isVoided ? 'bg-slate-100 text-slate-400 border-slate-200 line-through' : isItemBackordered ? 'bg-white text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>
                                                     {item.quantity_variants}
                                                   </span>
                                                 </td>
-                                                <td className={`px-5 py-4 text-right font-extrabold ${isVoided ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                                                <td className={`px-5 py-4 text-right font-extrabold ${isVoided ? 'text-slate-400 line-through' : isItemBackordered ? 'text-amber-700' : 'text-slate-900'}`}>
                                                   ${Number(item.line_total).toLocaleString(undefined, {minimumFractionDigits: 2})}
                                                 </td>
                                               </tr>
@@ -858,7 +866,6 @@ export default function MyOrders() {
             </table>
           </div>
 
-          {/* 🚀 ULTIMATE INFINITE PAGINATION UI */}
           <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-3xl">
             <span className="text-sm font-medium text-slate-500">
               Page {page + 1}: {(page * pageSize) + 1}-{page * pageSize + displayOrders.length}

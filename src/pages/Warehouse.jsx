@@ -11,7 +11,6 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 
 export default function Warehouse() {
   const { profile } = useAuth();
@@ -30,6 +29,7 @@ export default function Warehouse() {
   const [confirmReady, setConfirmReady] = useState({ show: false, orderId: null });
   const [confirmRestock, setConfirmRestock] = useState({ show: false, order: null });
   const [confirmReattempt, setConfirmReattempt] = useState({ show: false, orderId: null });
+  const [partialPackModal, setPartialPackModal] = useState({ show: false, item: null, qty: 1 });
 
   useEffect(() => {
     const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
@@ -169,6 +169,23 @@ export default function Warehouse() {
     onError: (err) => toast.error(`Failed to backorder item: ${err.message}`)
   });
 
+  const splitItemMutation = useMutation({
+    mutationFn: async ({ itemId, packQty }) => {
+      const { error } = await supabase.rpc('split_order_item', {
+        p_item_id: itemId,
+        p_pack_qty: packQty
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Item split! Missing quantity moved to backorders.");
+      queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['warehouse_backorders'] });
+      setPartialPackModal({ show: false, item: null, qty: 1 });
+    },
+    onError: (err) => toast.error(`Failed to split item: ${err.message}`)
+  });
+
   const { data: ordersData, isLoading } = useQuery({
     queryKey: ['warehouse_orders', activeTab, page, debouncedSearch],
     queryFn: async () => {
@@ -183,12 +200,19 @@ export default function Warehouse() {
         if (ready?.length) prefetchOrderIds = [...new Set(ready.map(i => i.order_id))];
       }
 
+      // ✨ UPDATED: Now fetches products ( inventory ( base_units_on_hand ) ) so we can see stock levels
       let query = supabase.from('orders').select(`
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( contact_number, email ),
-          order_items ( id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, product_variants ( product_id, name, sku, multiplier, products ( name ) ) )
+          order_items ( 
+            id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, 
+            product_variants ( 
+              product_id, name, sku, multiplier, 
+              products ( name, inventory ( base_units_on_hand ) ) 
+            ) 
+          )
         `);
 
       if (activeTab === 'processing') {
@@ -215,7 +239,6 @@ export default function Warehouse() {
       
       let filteredData = data || [];
       
-      // ✨ FIXED: Prevent backordered delivered_partial orders from showing up in Returns if nothing was actually rejected
       if (activeTab === 'returns') {
         filteredData = filteredData.filter(order => {
           if (order.status === 'delivered_partial') {
@@ -726,48 +749,80 @@ export default function Warehouse() {
                                         const isItemRejected = item.status?.toLowerCase() === 'rejected' || item.status?.toLowerCase() === 'restocked';
                                         const isBackordered = item.status?.toLowerCase() === 'backordered';
 
+                                        // ✨ NEW: Calculate available stock from the database
+                                        const variant = item.product_variants;
+                                        const multiplier = Number(variant?.multiplier) || 1;
+                                        let baseStock = 0;
+                                        const inv = variant?.products?.inventory;
+                                        if (Array.isArray(inv)) {
+                                          baseStock = inv.reduce((sum, i) => sum + (Number(i.base_units_on_hand) || 0), 0);
+                                        } else if (inv) {
+                                          baseStock = Number(inv.base_units_on_hand) || 0;
+                                        }
+                                        const currentStockVariants = baseStock > 0 ? Math.floor(baseStock / multiplier) : 0;
+
                                         return (
                                           <div key={item.id} onClick={() => (activeTab === 'processing' && !isBackordered) && togglePickItem(item.id)} className={`flex items-center justify-between p-4 sm:px-5 sm:py-4 rounded-2xl border transition-all ${activeTab === 'processing' && !isBackordered ? 'cursor-pointer active:scale-[0.99]' : ''} ${isPicked || isDone ? (isReturn && isItemRejected ? 'bg-red-50/50 border-red-200 shadow-sm' : 'bg-slate-100 border-slate-200 shadow-sm') : isBackordered ? 'bg-amber-50/50 border-amber-200 opacity-75' : 'bg-white border-slate-200 hover:border-slate-300 shadow-sm'}`}>
-                                            <div className="flex items-center gap-4 sm:gap-5 flex-1 min-w-0 pr-4">
+                                            <div className="flex items-start gap-4 sm:gap-5 flex-1 min-w-0 pr-4">
                                               
                                               {!isReturn && !isBackordered && (
-                                                <div className={`shrink-0 transition-colors ${isPicked || isDone ? 'text-emerald-500' : 'text-slate-300'}`}>
+                                                <div className={`mt-0.5 shrink-0 transition-colors ${isPicked || isDone ? 'text-emerald-500' : 'text-slate-300'}`}>
                                                   {isPicked || isDone ? <CheckSquare size={26} strokeWidth={2} /> : <Square size={26} strokeWidth={2} />}
                                                 </div>
                                               )}
                                               
                                               {!isReturn && isBackordered && (
-                                                <div className="shrink-0 text-amber-500">
+                                                <div className="mt-0.5 shrink-0 text-amber-500">
                                                   <AlertCircle size={26} strokeWidth={2} />
                                                 </div>
                                               )}
 
-                                              {isReturn && <div className={`shrink-0 ${isItemRejected ? 'text-red-400' : 'text-emerald-500'}`}>{isItemRejected ? <Package size={24} strokeWidth={1.5} /> : <CheckCircle2 size={24} strokeWidth={1.5} />}</div>}
+                                              {isReturn && <div className={`mt-0.5 shrink-0 ${isItemRejected ? 'text-red-400' : 'text-emerald-500'}`}>{isItemRejected ? <Package size={24} strokeWidth={1.5} /> : <CheckCircle2 size={24} strokeWidth={1.5} />}</div>}
                                               
                                               <div className="flex-1 min-w-0">
                                                 <p className={`whitespace-normal font-bold leading-snug text-xs sm:text-sm transition-all ${isItemRejected || isBackordered ? 'line-through text-slate-400' : 'text-slate-900'} ${(!isItemRejected && !isBackordered && (isPicked || isOrderDone)) ? 'text-slate-500' : ''}`}>
                                                   {item.product_variants?.products?.name || item.product_variants?.name || 'Item'}
                                                 </p>
-                                                <p className={`text-[10px] sm:text-xs font-mono mt-1 ${isItemRejected || isBackordered ? 'text-slate-300' : 'text-slate-500'}`}>SKU: {item.product_variants?.sku}</p>
+                                                
+                                                <div className="mt-1.5 flex flex-wrap items-center gap-3">
+                                                  <p className={`text-[10px] sm:text-xs font-mono ${isItemRejected || isBackordered ? 'text-slate-300' : 'text-slate-500'}`}>SKU: {item.product_variants?.sku}</p>
+                                                  
+                                                  {/* 📦 NEW: INVENTORY DISPLAY BADGE */}
+                                                  {activeTab === 'processing' && !isBackordered && (
+                                                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold flex items-center gap-1 border shadow-sm ${currentStockVariants >= item.quantity_variants ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                                                      <Package size={10} /> 
+                                                      Stock: {currentStockVariants}
+                                                    </span>
+                                                  )}
+                                                </div>
                                               </div>
                                             </div>
 
-                                            <div className="flex items-center gap-3">
+                                            <div className="flex items-center gap-3 shrink-0 ml-4">
+                                              
+                                              {/* 🚀 NEW: CLEANER SHORTAGE ACTIONS MENU */}
                                               {activeTab === 'processing' && !isBackordered && !isPicked && (
-                                                <button 
-                                                  onClick={(e) => {
-                                                    e.stopPropagation(); 
-                                                    markBackorderMutation.mutate(item.id);
-                                                  }}
-                                                  disabled={markBackorderMutation.isPending}
-                                                  className="px-3 py-1.5 bg-white border border-amber-200 text-amber-700 hover:bg-amber-50 rounded-lg text-[10px] font-bold uppercase tracking-widest shadow-sm active:scale-95 transition-all whitespace-nowrap"
-                                                >
-                                                  Mark Backorder
-                                                </button>
+                                                <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2 mr-2 pr-4 border-r border-slate-100">
+                                                  {item.quantity_variants > 1 && (
+                                                    <button 
+                                                      onClick={(e) => { e.stopPropagation(); setPartialPackModal({ show: true, item: item, qty: 1 }); }}
+                                                      className="px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 rounded-lg text-[10px] font-bold uppercase tracking-widest shadow-sm active:scale-95 transition-all whitespace-nowrap"
+                                                    >
+                                                      Partial
+                                                    </button>
+                                                  )}
+                                                  <button 
+                                                    onClick={(e) => { e.stopPropagation(); markBackorderMutation.mutate(item.id); }}
+                                                    disabled={markBackorderMutation.isPending}
+                                                    className="px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 rounded-lg text-[10px] font-bold uppercase tracking-widest shadow-sm active:scale-95 transition-all whitespace-nowrap"
+                                                  >
+                                                    Backorder
+                                                  </button>
+                                                </div>
                                               )}
 
                                               {isBackordered && (
-                                                <span className="px-2 py-1 bg-amber-100 text-amber-800 rounded text-[10px] font-bold uppercase tracking-widest shadow-sm whitespace-nowrap">
+                                                <span className="px-2 py-1 bg-amber-100 text-amber-800 border border-amber-200 rounded-md text-[10px] font-bold uppercase tracking-widest shadow-sm whitespace-nowrap mr-2">
                                                   Backordered
                                                 </span>
                                               )}
@@ -930,6 +985,54 @@ export default function Warehouse() {
             </div>
           </div>
         </div>
+      )}
+      
+      {/* PARTIAL PACK MODAL */}
+      {partialPackModal.show && (
+        <Dialog open={partialPackModal.show} onOpenChange={() => setPartialPackModal({ show: false, item: null, qty: 1 })}>
+          <DialogContent className="sm:max-w-md rounded-2xl">
+            <DialogHeader>
+              <DialogTitle className="text-xl font-extrabold text-slate-900">Partial Fulfillment</DialogTitle>
+              <DialogDescription className="text-slate-500 font-medium pt-2">
+                You are splitting <span className="font-bold text-slate-900">{partialPackModal.item?.product_variants?.products?.name || partialPackModal.item?.product_variants?.name}</span>. 
+                The customer ordered {partialPackModal.item?.quantity_variants}.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="py-6">
+              <label className="block text-sm font-bold text-slate-700 mb-2">
+                How many units do you currently have IN STOCK to pack?
+              </label>
+              <input 
+                type="number"
+                min="1"
+                max={partialPackModal.item?.quantity_variants - 1}
+                value={partialPackModal.qty}
+                onChange={(e) => setPartialPackModal(prev => ({...prev, qty: parseInt(e.target.value) || 1}))}
+                className="w-full p-3 border border-slate-300 rounded-xl font-bold text-lg"
+              />
+              <p className="text-xs text-amber-600 font-bold mt-2">
+                * The remaining {partialPackModal.item?.quantity_variants - partialPackModal.qty} unit(s) will automatically be moved to the Backorders queue.
+              </p>
+            </div>
+
+            <div className="flex gap-3 mt-2">
+              <button
+                onClick={() => setPartialPackModal({ show: false, item: null, qty: 1 })}
+                className="w-full py-3.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => splitItemMutation.mutate({ itemId: partialPackModal.item.id, packQty: partialPackModal.qty })}
+                disabled={splitItemMutation.isPending}
+                className="w-full py-3.5 text-white font-bold rounded-xl active:scale-95 transition-all shadow-md bg-blue-600 hover:bg-blue-700 disabled:opacity-70"
+              >
+                {splitItemMutation.isPending ? 'Splitting...' : 'Confirm Split'}
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );
