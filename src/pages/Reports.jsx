@@ -490,6 +490,10 @@ export default function Reports() {
           if (item.status === 'cancelled' || item.status === 'rejected') return;
 
           const qty = Number(item.quantity_variants || 0);
+          const isBackordered = item.status?.toLowerCase() === 'backordered';
+          const shippedQty = isBackordered ? 0 : qty;
+          const backorderQty = isBackordered ? qty : 0;
+          
           const pName = item.product_variants?.products?.name || 'Unknown Item';
           const vName = item.product_variants?.name || '';
           const sku = item.product_variants?.sku || item.product_variants?.products?.base_sku || '';
@@ -497,9 +501,11 @@ export default function Reports() {
           const itemKey = `${sku}_${pName}_${patientName}`; 
 
           if (!customerMap[custKey].items[itemKey]) {
-            customerMap[custKey].items[itemKey] = { name: pName, variant: vName, sku, qty: 0, patientName };
+            customerMap[custKey].items[itemKey] = { name: pName, variant: vName, sku, required: 0, shipped: 0, backorder: 0, patientName };
           }
-          customerMap[custKey].items[itemKey].qty += qty;
+          customerMap[custKey].items[itemKey].required += qty;
+          customerMap[custKey].items[itemKey].shipped += shippedQty;
+          customerMap[custKey].items[itemKey].backorder += backorderQty;
         });
       });
 
@@ -619,7 +625,8 @@ export default function Reports() {
         fileName = `Tricore_Profitability_Report_${startDate}_to_${endDate}.csv`;
         
       } else if (reportType === 'warehouse_summary') {
-        const headers = ["Customer/Agency", "Address", "Patient Name", "Item Qty", "Variant", "Product Name", "SKU"];
+        // ✨ NEW: Required, Shipped, Backorder columns added to CSV
+        const headers = ["Customer/Agency", "Address", "Patient Name", "Required", "Shipped", "Backorder", "Variant", "Product Name", "SKU"];
         const rows = [];
         warehouseData.forEach(cust => {
           cust.patients.forEach(p => {
@@ -627,7 +634,7 @@ export default function Reports() {
               const variantStr = (item.variant && item.variant !== 'Default') ? item.variant : '';
               rows.push([
                 `"${cust.name}"`, `"${cust.address}"`, `"${p.patientName}"`,
-                item.qty, `"${variantStr}"`, `"${item.name}"`, `"${item.sku}"`
+                item.required, item.shipped, item.backorder, `"${variantStr}"`, `"${item.name}"`, `"${item.sku}"`
               ]);
             });
           });
@@ -747,7 +754,7 @@ export default function Reports() {
       warehouseData.forEach(cust => {
         tableRows.push([{ 
           content: `${cust.name.toUpperCase()} \n${cust.address}`, 
-          colSpan: 4, 
+          colSpan: 6, // ✨ Updated Colspan
           styles: { fontStyle: 'bold', fontSize: 10, fillColor: [240, 245, 250], textColor: [15, 23, 42] } 
         }]);
         
@@ -755,32 +762,38 @@ export default function Reports() {
           if (p.items.length === 0) return;
           
           if (p.patientName !== '') {
-            tableRows.push([{ content: `  ${p.patientName.toUpperCase()}`, colSpan: 4, styles: { fontStyle: 'bold', fontSize: 9, textColor: [15, 23, 42] } }]);
+            tableRows.push([{ content: `  ${p.patientName.toUpperCase()}`, colSpan: 6, styles: { fontStyle: 'bold', fontSize: 9, textColor: [15, 23, 42] } }]);
           }
           
           p.items.forEach(item => {
             const variantText = (item.variant && item.variant !== 'Default') ? item.variant : '';
             tableRows.push([
-              item.qty.toString(),
+              item.required.toString(),
+              item.shipped.toString(),
+              item.backorder.toString(),
               variantText,
               item.name,
               item.sku || ''
             ]);
           });
         });
-        tableRows.push([{ content: ' ', colSpan: 4, styles: { minCellHeight: 6 } }]); 
+        tableRows.push([{ content: ' ', colSpan: 6, styles: { minCellHeight: 6 } }]); 
       });
 
       autoTable(doc, {
         startY: tableStartY,
-        head: [["QTY", "VARIANT", "PRODUCT", "SKU"]],
+        head: [["REQUIRED", "SHIPPED", "BACKORDER", "VARIANT", "PRODUCT", "SKU"]],
         body: tableRows,
         theme: 'plain', 
-        headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
-        styles: { fontSize: 9, cellPadding: 2.5 }, 
+        headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold', halign: 'center' },
+        styles: { fontSize: 8, cellPadding: 2.5 }, 
         columnStyles: { 
-          0: { cellWidth: 15, halign: 'center', fontStyle: 'bold' }, 
-          1: { cellWidth: 30, halign: 'center', textColor: [100, 100, 100] } 
+          0: { cellWidth: 18, halign: 'center', fontStyle: 'bold' }, 
+          1: { cellWidth: 18, halign: 'center', fontStyle: 'bold' }, 
+          2: { cellWidth: 20, halign: 'center', fontStyle: 'bold' }, 
+          3: { cellWidth: 30, halign: 'center', textColor: [100, 100, 100] },
+          4: { cellWidth: 'auto' },
+          5: { cellWidth: 25 }
         },
         didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
         margin: { top: tableStartY, bottom: 20 } 
@@ -1184,7 +1197,9 @@ export default function Reports() {
             <table className="w-full text-left text-sm whitespace-nowrap">
               <thead className="bg-white border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest">
                 <tr>
-                  <th className="px-6 py-4 font-bold text-center w-24">Qty</th>
+                  <th className="px-6 py-4 font-bold text-center w-24">Required</th>
+                  <th className="px-6 py-4 font-bold text-center w-24">Shipped</th>
+                  <th className="px-6 py-4 font-bold text-center w-24">Backorder</th>
                   <th className="px-6 py-4 font-bold text-center w-32">Variant</th>
                   <th className="px-6 py-4 font-bold">Product</th>
                   <th className="px-6 py-4 font-bold font-mono">SKU</th>
@@ -1194,7 +1209,7 @@ export default function Reports() {
                 {paginatedWarehouse.map((cust, i) => (
                   <React.Fragment key={i}>
                     <tr className="bg-slate-100/80 border-t-2 border-slate-200">
-                      <td colSpan="4" className="px-6 py-4">
+                      <td colSpan="6" className="px-6 py-4">
                         <div className="font-black text-slate-900 text-base tracking-tight uppercase">{cust.name}</div>
                         <div className="text-xs font-medium text-slate-500 mt-0.5">{cust.address}</div>
                       </td>
@@ -1204,7 +1219,7 @@ export default function Reports() {
                       <React.Fragment key={`${i}-${pIdx}`}>
                         {p.patientName !== '' && (
                           <tr className="bg-white border-b border-slate-50">
-                            <td colSpan="4" className="px-6 pt-4 pb-2">
+                            <td colSpan="6" className="px-6 pt-4 pb-2">
                               <span className="text-[11px] font-bold uppercase tracking-widest flex items-center gap-1.5 text-blue-600">
                                 {p.patientName}
                               </span>
@@ -1214,8 +1229,18 @@ export default function Reports() {
                         {p.items.map((item, itemIdx) => (
                           <tr key={`${i}-${pIdx}-${itemIdx}`} className="hover:bg-slate-50/50 transition-colors group cursor-pointer border-b border-slate-50 last:border-0">
                             <td className="px-6 py-2.5 text-center">
-                              <span className="inline-flex items-center justify-center px-2.5 py-1 rounded bg-white text-slate-900 font-extrabold text-sm shadow-sm border border-slate-200 min-w-[2.5rem]">
-                                {item.qty}
+                              <span className="inline-flex items-center justify-center px-2.5 py-1 rounded bg-slate-100 text-slate-700 font-extrabold text-sm shadow-sm border border-slate-200 min-w-[2.5rem]">
+                                {item.required}
+                              </span>
+                            </td>
+                            <td className="px-6 py-2.5 text-center">
+                              <span className="inline-flex items-center justify-center px-2.5 py-1 rounded bg-emerald-50 text-emerald-700 font-extrabold text-sm shadow-sm border border-emerald-200 min-w-[2.5rem]">
+                                {item.shipped}
+                              </span>
+                            </td>
+                            <td className="px-6 py-2.5 text-center">
+                              <span className={`inline-flex items-center justify-center px-2.5 py-1 rounded ${item.backorder > 0 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-400 border-slate-100'} font-extrabold text-sm shadow-sm border min-w-[2.5rem]`}>
+                                {item.backorder}
                               </span>
                             </td>
                             <td className="px-6 py-2.5 text-center">

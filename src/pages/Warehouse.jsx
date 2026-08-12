@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tansta
 import { 
   Search, Package, CheckCircle2, Truck, FileDown, 
   CheckSquare, Square, Box, ChevronDown, Hash, Calendar, MapPin, User, Phone, Mail, Car,
-  ChevronLeft, ChevronRight, CheckCircle, AlertTriangle, XCircle, RefreshCw, ArrowRightCircle, AlertCircle, RotateCcw
+  ChevronLeft, ChevronRight, CheckCircle, AlertTriangle, XCircle, RefreshCw, ArrowRightCircle, AlertCircle, RotateCcw, CreditCard
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -200,12 +200,11 @@ export default function Warehouse() {
         if (ready?.length) prefetchOrderIds = [...new Set(ready.map(i => i.order_id))];
       }
 
-      // ✨ UPDATED: Now fetches products ( inventory ( base_units_on_hand ) ) so we can see stock levels
       let query = supabase.from('orders').select(`
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
-          user_profiles ( contact_number, email ),
+          user_profiles ( full_name, contact_number, email ),
           order_items ( 
             id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, 
             product_variants ( 
@@ -391,17 +390,17 @@ export default function Warehouse() {
     doc.text(`Order #: ${orderNum}${isBackorderRun ? '-B' : ''}`, 140, 24); doc.text(`Date: ${datePacked}`, 140, 29);
 
     const isB2B = !!order.company_id;
-    const billName = isB2B ? (order.companies?.name || 'Agency') : (order.shipping_name || 'Retail Customer');
+    const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || order.shipping_name || 'Retail Customer');
     const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
     const billCityState = isB2B ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
-    const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || '');
-    const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || '');
+    const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '');
+    const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || profile?.email || '');
 
-    const shipName = order.shipping_name || billName;
+    const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
     const shipAddress = order.shipping_address || 'No shipping address provided';
     const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-    const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
-    const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
+    const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
+    const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
 
     doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.text("SHIP TO", 14, 45); doc.text("BILL TO", 110, 45);
     
@@ -421,21 +420,61 @@ export default function Warehouse() {
 
     const activeItems = order.order_items?.filter(item => {
       const s = item.status?.toLowerCase();
-      if (s === 'cancelled' || s === 'rejected' || s === 'backordered') return false;
-      if (isBackorderRun && s === 'delivered') return false; 
+      // Exclude cancelled and rejected items.
+      if (s === 'cancelled' || s === 'rejected') return false;
+      if (isBackorderRun && s === 'delivered') return false; // Hides already delivered items on backorder slips
       return true;
     }) || [];
 
-    const tableRows = activeItems.map(item => [
-      item.product_variants?.products?.name || item.product_variants?.name || 'Item',
-      item.product_variants?.name || 'N/A', item.product_variants?.sku || 'N/A', `${item.quantity_variants} of ${item.quantity_variants}`
-    ]);
+    const tableRows = activeItems.map(item => {
+      const s = item.status?.toLowerCase();
+      const isBackordered = s === 'backordered';
+      
+      // Calculate quantities
+      const required = item.quantity_variants || 0;
+      const shipped = isBackordered ? 0 : required;
+      const backOrder = isBackordered ? required : 0;
+      
+      // Format SKU & Description
+      const sku = item.product_variants?.sku || 'N/A';
+      const productName = item.product_variants?.products?.name || 'Item';
+      const variantName = item.product_variants?.name || '';
+      const description = variantName && variantName !== 'N/A' ? `${productName} (${variantName})` : productName;
+
+      return [
+        required,
+        shipped,
+        backOrder,
+        sku,
+        description
+      ];
+    });
 
     autoTable(doc, {
-      startY: maxAddressY + 10, head: [["PRODUCT NAME", "VARIANT", "SKU", "QTY"]], body: tableRows, theme: 'striped', 
-      headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9 },
-      styles: { fontSize: 9, cellPadding: 6, textColor: [15, 23, 42] }, 
-      columnStyles: { 0: { cellWidth: 'auto' }, 1: { cellWidth: 45 }, 2: { cellWidth: 35 }, 3: { cellWidth: 25, halign: 'center', valign: 'middle', fontStyle: 'bold' } }
+      startY: maxAddressY + 10, 
+      head: [["Required", "Shipped", "Back Order", "SKU", "Description"]], 
+      body: tableRows, 
+      theme: 'striped',
+      headStyles: { 
+        fillColor: [15, 23, 42], 
+        textColor: [255, 255, 255], 
+        fontStyle: 'bold', 
+        fontSize: 9,
+        halign: 'center'
+      },
+      styles: { 
+        fontSize: 9, 
+        cellPadding: 4, 
+        textColor: [15, 23, 42] 
+      },
+      columnStyles: { 
+        // Increased widths to 32 to guarantee the words never wrap
+        0: { cellWidth: 32, halign: 'center', valign: 'middle' }, 
+        1: { cellWidth: 32, halign: 'center', valign: 'middle' }, 
+        2: { cellWidth: 32, halign: 'center', valign: 'middle' }, 
+        3: { cellWidth: 35, halign: 'center', valign: 'middle' }, 
+        4: { cellWidth: 'auto', valign: 'middle' } 
+      }
     });
 
     const finalY = doc.lastAutoTable.finalY || maxAddressY + 20;
@@ -658,10 +697,11 @@ export default function Warehouse() {
                   const currentPickedCount = isOrderDone ? activeItems.length : Object.values(pickedItems).filter(Boolean).length;
                   const allItemsPicked = requiredPickItems.length > 0 && requiredPickItems.every(item => pickedItems[item.id]);
                   
-                  const billName = order.companies?.name || 'Retail Customer';
-                  const shipName = order.shipping_name || billName;
-                  const shipEmail = order.agency_patients?.email || order.user_profiles?.email || '';
-                  const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
+                  const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || order.shipping_name || 'Retail Customer');
+
+                  const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
+                  const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
+                  const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
                   const shipAddress = order.shipping_address || 'No shipping address provided';
                   const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
 
@@ -749,7 +789,6 @@ export default function Warehouse() {
                                         const isItemRejected = item.status?.toLowerCase() === 'rejected' || item.status?.toLowerCase() === 'restocked';
                                         const isBackordered = item.status?.toLowerCase() === 'backordered';
 
-                                        // ✨ NEW: Calculate available stock from the database
                                         const variant = item.product_variants;
                                         const multiplier = Number(variant?.multiplier) || 1;
                                         let baseStock = 0;
@@ -787,7 +826,6 @@ export default function Warehouse() {
                                                 <div className="mt-1.5 flex flex-wrap items-center gap-3">
                                                   <p className={`text-[10px] sm:text-xs font-mono ${isItemRejected || isBackordered ? 'text-slate-300' : 'text-slate-500'}`}>SKU: {item.product_variants?.sku}</p>
                                                   
-                                                  {/* 📦 NEW: INVENTORY DISPLAY BADGE */}
                                                   {activeTab === 'processing' && !isBackordered && (
                                                     <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold flex items-center gap-1 border shadow-sm ${currentStockVariants >= item.quantity_variants ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
                                                       <Package size={10} /> 
@@ -800,7 +838,6 @@ export default function Warehouse() {
 
                                             <div className="flex items-center gap-3 shrink-0 ml-4">
                                               
-                                              {/* 🚀 NEW: CLEANER SHORTAGE ACTIONS MENU */}
                                               {activeTab === 'processing' && !isBackordered && !isPicked && (
                                                 <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2 mr-2 pr-4 border-r border-slate-100">
                                                   {item.quantity_variants > 1 && (
@@ -842,19 +879,18 @@ export default function Warehouse() {
                                 </div>
 
                                 <div className="space-y-6">
-                                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                    <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2 border-b border-slate-100 pb-3"><MapPin size={16} className="text-slate-400" /> Delivery Route</h4>
-                                    <div className="space-y-4">
-                                      <div>
-                                        <p className="font-bold text-slate-900 text-sm mb-2">{shipName}</p>
-                                        <div className="space-y-1.5 text-xs font-medium text-slate-600">
-                                          {shipEmail && <p className="flex items-center gap-1.5"><Mail size={12} className="text-slate-400"/> {shipEmail}</p>}
-                                          {shipPhone && <p className="flex items-center gap-1.5"><Phone size={12} className="text-slate-400"/> {shipPhone}</p>}
-                                          <div className="flex items-start gap-1.5">
-                                            <MapPin size={12} className="text-slate-400 mt-0.5 shrink-0"/>
-                                            <div><p>{shipAddress}</p>{shipCityState && <p>{shipCityState}</p>}</div>
-                                          </div>
-                                        </div>
+                                  {/* SHIP TO CARD */}
+                                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm group hover:border-slate-300 transition-colors">
+                                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Package size={14}/> Ship To</h4>
+                                    <p className="font-bold text-slate-900 text-base mb-2 flex items-center gap-2"><User size={16} className="text-slate-400"/> {shipName}</p>
+                                    <div className="space-y-2 text-sm font-medium text-slate-600">
+                                      <div className="flex flex-col gap-1.5 text-xs text-slate-500">
+                                        {shipEmail ? (<p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {shipEmail}</p>) : (<p className="flex items-center gap-2 text-slate-400 italic"><Mail size={14} className="opacity-50"/> No email saved</p>)}
+                                        {shipPhone ? (<p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {shipPhone}</p>) : (<p className="flex items-center gap-2 text-slate-400 italic"><Phone size={14} className="opacity-50"/> No phone saved</p>)}
+                                      </div>
+                                      <div className="flex items-start gap-2 pt-2 border-t border-slate-100 mt-2">
+                                        <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
+                                        <div className="whitespace-normal leading-relaxed text-sm"><p>{shipAddress}</p>{shipCityState && <p>{shipCityState}</p>}</div>
                                       </div>
                                     </div>
                                   </div>
