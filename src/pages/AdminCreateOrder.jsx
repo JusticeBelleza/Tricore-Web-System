@@ -18,8 +18,11 @@ export default function AdminCreateOrder() {
   const [retailUsers, setRetailUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  
+  // 🚀 NEW: Patient Search State
+  const [patientSearchTerm, setPatientSearchTerm] = useState('');
 
-  // Fetch initial data (Facilities and Retail Users)
+  // Fetch initial data (Facilities, Patient Counts, and Retail Users)
   useEffect(() => {
     fetchData();
   }, []);
@@ -27,36 +30,53 @@ export default function AdminCreateOrder() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Fetch B2B Facilities
-      const { data: b2bData } = await supabase
-        .from('companies')
-        .select('*')
-        .eq('account_type', 'B2B')
-        .order('name');
-      
-      // 🚀 FIX: Filter out duplicate company names
-      const uniqueFacilities = [];
-      const seenNames = new Set();
-      if (b2bData) {
-        b2bData.forEach(comp => {
-          const normalizedName = comp.name?.trim().toLowerCase();
-          if (!seenNames.has(normalizedName)) {
-            seenNames.add(normalizedName);
-            uniqueFacilities.push(comp);
+      // 1. Fetch B2B Facilities, Patient counts, and Retail users in parallel
+      const [b2bRes, patientsCountRes, retailRes] = await Promise.all([
+        supabase
+          .from('companies')
+          .select('*')
+          .eq('account_type', 'B2B')
+          .order('name'),
+        supabase
+          .from('agency_patients')
+          .select('agency_id')
+          .eq('status', 'active'),
+        supabase
+          .from('user_profiles')
+          .select('*, companies(*)')
+          .in('role', ['retail', 'user'])
+          .eq('status', 'active')
+          .order('full_name')
+      ]);
+
+      // 2. Build patient count dictionary per agency
+      const patientCountMap = {};
+      if (patientsCountRes.data) {
+        patientsCountRes.data.forEach(p => {
+          if (p.agency_id) {
+            patientCountMap[p.agency_id] = (patientCountMap[p.agency_id] || 0) + 1;
           }
         });
       }
       
-      // Fetch Retail Customers (Using user_profiles joined with companies)
-      const { data: retailData } = await supabase
-        .from('user_profiles')
-        .select('*, companies(*)')
-        .in('role', ['retail', 'user'])
-        .eq('status', 'active')
-        .order('full_name');
+      // 3. Attach patient count and filter duplicate facility names
+      const uniqueFacilities = [];
+      const seenNames = new Set();
+      if (b2bRes.data) {
+        b2bRes.data.forEach(comp => {
+          const normalizedName = comp.name?.trim().toLowerCase();
+          if (!seenNames.has(normalizedName)) {
+            seenNames.add(normalizedName);
+            uniqueFacilities.push({
+              ...comp,
+              patient_count: patientCountMap[comp.id] || 0
+            });
+          }
+        });
+      }
 
       setFacilities(uniqueFacilities);
-      setRetailUsers(retailData || []);
+      setRetailUsers(retailRes.data || []);
     } catch (error) {
       console.error("Error fetching data:", error);
     } finally {
@@ -67,19 +87,26 @@ export default function AdminCreateOrder() {
   // Fetch Patients when a Facility is selected
   useEffect(() => {
     if (selectedFacility) {
+      setPatientSearchTerm(''); // Reset patient search when switching facilities
       const fetchPatients = async () => {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from('agency_patients')
           .select('*')
           .eq('agency_id', selectedFacility.id)
           .eq('status', 'active')
-          .order('last_name');
+          .order('full_name');
+          
+        if (error) {
+          console.error("Error fetching patients:", error.message);
+        }
+        
         setPatients(data || []);
       };
       fetchPatients();
     } else {
       setPatients([]);
       setSelectedPatient(null);
+      setPatientSearchTerm('');
     }
   }, [selectedFacility]);
 
@@ -91,7 +118,7 @@ export default function AdminCreateOrder() {
       targetCompanyId: orderType === 'b2b' ? selectedFacility.id : selectedRetailUser.companies?.id,
       targetPatientId: orderType === 'b2b' ? selectedPatient?.id : null,
       targetUserId: orderType === 'retail' ? selectedRetailUser.id : null,
-      customerName: orderType === 'b2b' ? `${selectedFacility.name} (Patient: ${selectedPatient.first_name} ${selectedPatient.last_name})` : selectedRetailUser.full_name
+      customerName: orderType === 'b2b' ? `${selectedFacility.name} (Patient: ${selectedPatient.full_name})` : selectedRetailUser.full_name
     };
     
     localStorage.setItem('tricore_proxy_session', JSON.stringify(proxySession));
@@ -100,6 +127,9 @@ export default function AdminCreateOrder() {
 
   const filteredFacilities = facilities.filter(f => f.name?.toLowerCase().includes(searchTerm.toLowerCase()));
   const filteredRetailUsers = retailUsers.filter(u => u.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) || u.email?.toLowerCase().includes(searchTerm.toLowerCase()));
+  
+  // 🚀 NEW: Filter Patients
+  const filteredPatients = patients.filter(p => p.full_name?.toLowerCase().includes(patientSearchTerm.toLowerCase()));
 
   const canProceed = (orderType === 'b2b' && selectedFacility && selectedPatient) || (orderType === 'retail' && selectedRetailUser);
 
@@ -154,15 +184,27 @@ export default function AdminCreateOrder() {
                   className={`w-full text-left px-4 py-3 rounded-xl transition-all flex items-center justify-between group ${selectedFacility?.id === facility.id ? 'bg-blue-50 text-blue-700 border border-blue-200 shadow-sm' : 'text-slate-700 border border-transparent hover:bg-white hover:border-slate-200 hover:shadow-sm'}`}
                 >
                   <div className="flex items-center gap-3">
-                    <Building2 size={16} className={selectedFacility?.id === facility.id ? 'text-blue-500' : 'text-slate-400'} />
-                    <div className="flex flex-col">
-                      <span className="font-bold text-sm">{facility.name}</span>
-                      <span className={`text-[10px] font-medium mt-0.5 ${selectedFacility?.id === facility.id ? 'text-blue-500' : 'text-slate-500'}`}>
-                        {facility.city ? `${facility.city}, ${facility.state}` : 'No address on file'}
-                      </span>
+                    <Building2 size={16} className={selectedFacility?.id === facility.id ? 'text-blue-500 shrink-0' : 'text-slate-400 shrink-0'} />
+                    <div className="flex flex-col min-w-0">
+                      <span className="font-bold text-sm truncate">{facility.name}</span>
+                      
+                      {/* 🚀 UPDATED: Moved badge below name, aligned with city/state */}
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className={`text-[10px] font-medium ${selectedFacility?.id === facility.id ? 'text-blue-500' : 'text-slate-500'}`}>
+                          {facility.city ? `${facility.city}, ${facility.state}` : 'No address on file'}
+                        </span>
+                        <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded border ${
+                          selectedFacility?.id === facility.id 
+                            ? 'bg-blue-100/70 text-blue-700 border-blue-300' 
+                            : 'bg-slate-100 text-slate-500 border-slate-200'
+                        }`}>
+                          {facility.patient_count || 0} {facility.patient_count === 1 ? 'patient' : 'patients'}
+                        </span>
+                      </div>
+
                     </div>
                   </div>
-                  {selectedFacility?.id === facility.id && <CheckCircle2 size={16} className="text-blue-500 shrink-0" />}
+                  {selectedFacility?.id === facility.id && <CheckCircle2 size={16} className="text-blue-500 shrink-0 ml-2" />}
                 </button>
               ))
             ) : (
@@ -173,15 +215,15 @@ export default function AdminCreateOrder() {
                   className={`w-full text-left px-4 py-3 rounded-xl transition-all flex items-center justify-between group ${selectedRetailUser?.id === user.id ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-sm' : 'text-slate-700 border border-transparent hover:bg-white hover:border-slate-200 hover:shadow-sm'}`}
                 >
                   <div className="flex items-center gap-3">
-                    <User size={16} className={selectedRetailUser?.id === user.id ? 'text-emerald-500' : 'text-slate-400'} />
-                    <div className="flex flex-col">
-                      <span className="font-bold text-sm">{user.full_name || 'Unnamed Customer'}</span>
-                      <span className={`text-[10px] font-medium font-mono mt-0.5 ${selectedRetailUser?.id === user.id ? 'text-emerald-600' : 'text-slate-500'}`}>
+                    <User size={16} className={selectedRetailUser?.id === user.id ? 'text-emerald-500 shrink-0' : 'text-slate-400 shrink-0'} />
+                    <div className="flex flex-col min-w-0">
+                      <span className="font-bold text-sm truncate">{user.full_name || 'Unnamed Customer'}</span>
+                      <span className={`text-[10px] font-medium font-mono mt-0.5 truncate ${selectedRetailUser?.id === user.id ? 'text-emerald-600' : 'text-slate-500'}`}>
                         {user.email}
                       </span>
                     </div>
                   </div>
-                  {selectedRetailUser?.id === user.id && <CheckCircle2 size={16} className="text-emerald-500 shrink-0" />}
+                  {selectedRetailUser?.id === user.id && <CheckCircle2 size={16} className="text-emerald-500 shrink-0 ml-2" />}
                 </button>
               ))
             )}
@@ -193,10 +235,27 @@ export default function AdminCreateOrder() {
           
           {orderType === 'b2b' && selectedFacility ? (
             <div className="flex-1 flex flex-col animate-in fade-in slide-in-from-right-4 duration-300">
-              <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2 mb-4">
-                <Users size={18} className="text-slate-400"/> 
-                Select Patient for {selectedFacility.name}
-              </h3>
+              <div className="flex items-center justify-between mb-4 gap-2">
+                <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2 truncate">
+                  <Users size={18} className="text-slate-400 shrink-0"/> 
+                  <span className="truncate">Select Patient</span>
+                </h3>
+                <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200 shrink-0">
+                  {patients.length} {patients.length === 1 ? 'Patient' : 'Patients'}
+                </span>
+              </div>
+
+              {/* 🚀 NEW: Patient Search Bar */}
+              <div className="relative mb-3">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input 
+                  type="text" 
+                  placeholder="Search patients..."
+                  value={patientSearchTerm}
+                  onChange={(e) => setPatientSearchTerm(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-slate-900 text-sm transition-all"
+                />
+              </div>
               
               <div className="flex-1 overflow-y-auto space-y-2 max-h-[300px] pr-2">
                 {patients.length === 0 ? (
@@ -204,15 +263,20 @@ export default function AdminCreateOrder() {
                     <Users size={32} className="mx-auto text-slate-300 mb-2"/>
                     <p className="text-sm font-medium text-slate-500">No active patients found for this facility.</p>
                   </div>
+                ) : filteredPatients.length === 0 ? (
+                  <div className="text-center py-10 bg-slate-50 rounded-2xl border border-slate-100">
+                    <Search size={32} className="mx-auto text-slate-300 mb-2"/>
+                    <p className="text-sm font-medium text-slate-500">No patients found matching "{patientSearchTerm}".</p>
+                  </div>
                 ) : (
-                  patients.map(patient => (
+                  filteredPatients.map(patient => (
                     <button
                       key={patient.id}
                       onClick={() => setSelectedPatient(patient)}
                       className={`w-full text-left p-4 rounded-xl border transition-all flex items-center justify-between ${selectedPatient?.id === patient.id ? 'bg-slate-900 border-slate-900 text-white shadow-md' : 'bg-white border-slate-200 text-slate-700 hover:border-slate-400 hover:shadow-sm'}`}
                     >
                       <div>
-                        <p className="font-bold text-sm">{patient.last_name}, {patient.first_name}</p>
+                        <p className="font-bold text-sm">{patient.full_name}</p>
                         {patient.room_number && <p className={`text-[10px] font-medium mt-1 ${selectedPatient?.id === patient.id ? 'text-slate-300' : 'text-slate-500'}`}>Room: {patient.room_number}</p>}
                       </div>
                       {selectedPatient?.id === patient.id && <CheckCircle2 size={18} className="text-white shrink-0" />}
