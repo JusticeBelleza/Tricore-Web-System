@@ -31,6 +31,10 @@ export default function Checkout() {
   // Determine whose data we are looking at
   const targetCompanyId = isProxy ? proxySession.targetCompanyId : profile?.company_id;
   const targetUserId = isProxy ? proxySession.targetUserId : profile?.id;
+  
+  // 🚀 FIX: Extract targetPatientId so we can auto-select them!
+  const targetPatientId = isProxy ? proxySession.targetPatientId : null; 
+  
   const isB2B = isProxy ? proxySession.orderType === 'b2b' : !!profile?.company_id;
 
   const cartKey = targetCompanyId ? `tricore_cart_agency_${targetCompanyId}` : `tricore_cart_user_${targetUserId}`;
@@ -144,7 +148,16 @@ export default function Checkout() {
         supabase.from('companies').select('*').eq('id', targetCompanyId).single()
       ]);
       
-      setPatients(patientsRes.data || []);
+      const fetchedPatients = patientsRes.data || [];
+      setPatients(fetchedPatients);
+      
+      // 🚀 FIX: Auto-select the patient if we started this order via Proxy!
+      if (targetPatientId) {
+        const preSelected = fetchedPatients.find(p => p.id === targetPatientId);
+        if (preSelected) {
+          setSelectedPatient(preSelected);
+        }
+      }
       
       if (companyRes.data) {
         setActiveCompany(companyRes.data);
@@ -323,8 +336,9 @@ export default function Checkout() {
     setCart([]); 
     setShowSuccess(false); 
     
-    // Route Admins back to Admin view, Normal users to My Orders
-    if (isStaff) navigate('/admin/orders');
+    // Route Admins back to Admin orders, Warehouse to Warehouse Orders, Normal users to My Orders
+    if (profile?.role === 'admin') navigate('/admin/orders');
+    else if (profile?.role === 'warehouse') navigate('/warehouse');
     else navigate('/orders'); 
   };
 
@@ -410,7 +424,8 @@ export default function Checkout() {
                       <Package size={14} className={shipToAgency ? "text-blue-600" : "text-emerald-600"} />
                       <h4 className="text-xs font-bold text-slate-700 uppercase tracking-widest">{shipToAgency ? 'Ship To Agency' : 'Ship to Patient'}</h4>
                     </div>
-                    {(selectedPatient && !shipToAgency) && (
+                    {/* Only show "Change" if they are allowed to change (not locked by proxy) */}
+                    {(selectedPatient && !shipToAgency && !targetPatientId) && (
                       <button onClick={() => setSelectedPatient(null)} className="text-[10px] px-2.5 py-1 bg-white border border-slate-200 rounded-lg font-bold text-slate-500 hover:text-red-600 hover:border-red-200 transition-all shadow-sm">
                         Change
                       </button>
@@ -526,7 +541,14 @@ export default function Checkout() {
                     <input 
                       type="checkbox" 
                       checked={shipToAgency} 
-                      onChange={e => setShipToAgency(e.target.checked)} 
+                      onChange={e => {
+                        setShipToAgency(e.target.checked);
+                        // If they uncheck and we have a targetPatientId, put the target patient back
+                        if (!e.target.checked && targetPatientId && patients.length > 0) {
+                          const preSelected = patients.find(p => p.id === targetPatientId);
+                          if (preSelected) setSelectedPatient(preSelected);
+                        }
+                      }} 
                       className="peer w-5 h-5 appearance-none border-2 border-slate-300 rounded-md bg-white checked:bg-slate-900 checked:border-slate-900 cursor-pointer transition-all" 
                     />
                     <CheckCircle2 size={14} className="absolute text-white opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" strokeWidth={3} />

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, Building2, User } from 'lucide-react';
+import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, Building2, User, Info } from 'lucide-react';
 
 // ==========================================
 // 🚀 PRODUCT FAMILY CARD
@@ -475,6 +475,20 @@ export default function Catalog() {
           </button>
         </div>
       </div>
+
+      {/* 🚀 NEW: PROXY WARNING BANNER */}
+      {proxySession?.isProxyOrder && (
+        <div className="bg-blue-50 border border-blue-200 p-4 sm:p-5 rounded-2xl flex items-start gap-3 shadow-sm mb-2 mt-4 animate-in fade-in slide-in-from-top-4">
+          <Info size={20} className="text-blue-600 mt-0.5 shrink-0" />
+          <div>
+            <h3 className="text-sm font-bold text-blue-900 uppercase tracking-widest mb-1">Proxy Order Mode Active</h3>
+            <p className="text-sm text-blue-800 font-medium leading-relaxed">
+              You are shopping on behalf of <span className="font-bold underline">{proxySession.customerName}</span>. 
+              Items added to the cart will be placed under their account, and you will be recorded in the audit trail.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Filters Row - Sticky */}
       <div className="sticky top-0 z-30 py-2 sm:py-0 bg-slate-50 sm:bg-transparent -mx-4 sm:mx-0 px-4 sm:px-0">
