@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, Building2, User, Info } from 'lucide-react';
+import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, Building2, User, Info, ArrowLeft } from 'lucide-react';
 
 // ==========================================
 // 🚀 PRODUCT FAMILY CARD
@@ -111,6 +111,7 @@ export default function Catalog() {
   
   // Only allow staff to hold a proxy session
   const proxySession = (isStaff && rawProxy) ? rawProxy : null;
+  const isProxy = !!proxySession; // 🚀 ADD THIS LINE HERE
 
   useEffect(() => {
     // If a customer logs in and a proxy session bled over, destroy it instantly
@@ -433,7 +434,19 @@ export default function Catalog() {
       {/* Header Area */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 sm:gap-6 pb-2 pt-4">
         <div>
-          <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Catalog</h2>
+          {/* 🚀 ADDED BACK BUTTON AND TITLE */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4 mb-2">
+            {isProxy && (
+              <>
+                <button onClick={() => navigate(-1)} className="flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-900 transition-colors w-fit">
+                  <ArrowLeft size={16} /> Back
+                </button>
+                <div className="hidden sm:block w-px h-6 bg-slate-200 mx-2"></div>
+              </>
+            )}
+            <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Catalog</h2>
+          </div>
+          
           {isB2bMode ? (
             <div className="mt-2 sm:mt-3 flex flex-wrap items-center gap-2 sm:gap-3">
               <span className="px-2.5 py-1 bg-blue-50 text-blue-700 text-[10px] sm:text-[11px] font-bold uppercase tracking-widest rounded-lg border border-blue-100 flex items-center gap-1.5">
