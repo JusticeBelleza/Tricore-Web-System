@@ -133,7 +133,8 @@ export default function App() {
               <Route path="/purchase-orders" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><PurchaseOrders /></RoleProtectedRoute>} />
               <Route path="/admin/reports" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><Reports /></RoleProtectedRoute>} />
               
-              <Route path="/admin/users" element={<RoleProtectedRoute allowedRoles={['admin']}><AdminUsers /></RoleProtectedRoute>} />
+              {/* 🚀 UPDATED: WAREHOUSE NOW ALLOWED ON ADMIN USERS ROUTE */}
+              <Route path="/admin/users" element={<RoleProtectedRoute allowedRoles={['admin', 'warehouse']}><AdminUsers /></RoleProtectedRoute>} />
               <Route path="/driver" element={<RoleProtectedRoute allowedRoles={['admin', 'driver']}><DriverRoutes /></RoleProtectedRoute>} />
             </Route>
 

@@ -148,13 +148,16 @@ export default function Sidebar({ isMobileMenuOpen, closeMobileMenu, profile, ba
                 </>
               )}
 
-              {profile?.role === 'admin' && (
+              {/* 🚀 UPDATED: WAREHOUSE NOW ALLOWED TO SEE RETAIL CUSTOMERS */}
+              {(profile?.role === 'admin' || profile?.role === 'warehouse') && (
                 <>
                   <div className="pt-4 pb-2">
-                    <p className="px-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Administration</p>
+                    <p className="px-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                      {profile?.role === 'admin' ? 'Administration' : 'Customers'}
+                    </p>
                   </div>
                   <Link to="/admin/users" onClick={closeMobileMenu} className={navItemClass('/admin/users')}>
-                    <Users size={18} /> User Management
+                    <Users size={18} /> {profile?.role === 'admin' ? 'User Management' : 'Retail Customers'}
                   </Link>
                 </>
               )}

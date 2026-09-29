@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../lib/AuthContext';
 import { createClient } from '@supabase/supabase-js'; 
 import Papa from 'papaparse'; 
 import { Turnstile } from '@marsidev/react-turnstile';
@@ -24,7 +25,8 @@ const adminAuthClient = createClient(
 );
 
 export default function AdminUsers() {
-  const [activeTab, setActiveTab] = useState('staff'); 
+  const { profile } = useAuth();
+  const [activeTab, setActiveTab] = useState(profile?.role === 'warehouse' ? 'retail' : 'staff'); 
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -685,53 +687,59 @@ export default function AdminUsers() {
         </div>
       </div>
 
-      {/* KPI CARDS */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-          <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-blue-50 transition-transform group-hover:scale-110"></div>
-          <div className="flex justify-between items-start mb-4 relative">
-            <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Active Agencies</h4>
-            <div className="p-2 rounded-xl bg-blue-100 text-blue-600 shadow-sm"><Building2 size={18} /></div>
+      {/* KPI CARDS - ONLY ADMINS SEE THIS */}
+      {profile?.role === 'admin' && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+            <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-blue-50 transition-transform group-hover:scale-110"></div>
+            <div className="flex justify-between items-start mb-4 relative">
+              <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Active Agencies</h4>
+              <div className="p-2 rounded-xl bg-blue-100 text-blue-600 shadow-sm"><Building2 size={18} /></div>
+            </div>
+            <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{kpiData.b2b}</h2>
+            <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Total registered B2B accounts</p>
           </div>
-          <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{kpiData.b2b}</h2>
-          <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Total registered B2B accounts</p>
-        </div>
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-          <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-amber-50 transition-transform group-hover:scale-110"></div>
-          <div className="flex justify-between items-start mb-4 relative">
-            <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Total Outstanding</h4>
-            <div className="p-2 rounded-xl bg-amber-100 text-amber-600 shadow-sm"><Wallet size={18} /></div>
+          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+            <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-amber-50 transition-transform group-hover:scale-110"></div>
+            <div className="flex justify-between items-start mb-4 relative">
+              <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Total Outstanding</h4>
+              <div className="p-2 rounded-xl bg-amber-100 text-amber-600 shadow-sm"><Wallet size={18} /></div>
+            </div>
+            <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">${kpiData.outstanding.toLocaleString(undefined, {minimumFractionDigits: 2})}</h2>
+            <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Unpaid invoices across all agencies</p>
           </div>
-          <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">${kpiData.outstanding.toLocaleString(undefined, {minimumFractionDigits: 2})}</h2>
-          <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Unpaid invoices across all agencies</p>
-        </div>
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-          <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-emerald-50 transition-transform group-hover:scale-110"></div>
-          <div className="flex justify-between items-start mb-4 relative">
-            <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Retail Users</h4>
-            <div className="p-2 rounded-xl bg-emerald-100 text-emerald-600 shadow-sm"><ShoppingBag size={18} /></div>
+          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+            <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-emerald-50 transition-transform group-hover:scale-110"></div>
+            <div className="flex justify-between items-start mb-4 relative">
+              <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Retail Users</h4>
+              <div className="p-2 rounded-xl bg-emerald-100 text-emerald-600 shadow-sm"><ShoppingBag size={18} /></div>
+            </div>
+            <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{kpiData.retail}</h2>
+            <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Standard direct-to-consumer accounts</p>
           </div>
-          <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{kpiData.retail}</h2>
-          <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Standard direct-to-consumer accounts</p>
-        </div>
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
-          <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-purple-50 transition-transform group-hover:scale-110"></div>
-          <div className="flex justify-between items-start mb-4 relative">
-            <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Internal Staff</h4>
-            <div className="p-2 rounded-xl bg-purple-100 text-purple-600 shadow-sm"><Users size={18} /></div>
+          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group">
+            <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-purple-50 transition-transform group-hover:scale-110"></div>
+            <div className="flex justify-between items-start mb-4 relative">
+              <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-1">Internal Staff</h4>
+              <div className="p-2 rounded-xl bg-purple-100 text-purple-600 shadow-sm"><Users size={18} /></div>
+            </div>
+            <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{kpiData.staff}</h2>
+            <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Admins, Warehouse, and Drivers</p>
           </div>
-          <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight relative">{kpiData.staff}</h2>
-          <p className="text-[11px] font-medium text-slate-400 mt-2 relative">Admins, Warehouse, and Drivers</p>
         </div>
-      </div>
+      )}
 
       <div className="flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full lg:w-auto overflow-x-auto shrink-0">
-          <button onClick={() => setActiveTab('staff')} className={`${tabBaseClass} ${activeTab === 'staff' ? tabActiveClass : tabInactiveClass}`}><Users size={16}/> Staff Directory</button>
-          <button onClick={() => setActiveTab('b2b')} className={`${tabBaseClass} ${activeTab === 'b2b' ? tabActiveClass : tabInactiveClass}`}><Building size={16}/> B2B Agencies</button>
+          {profile?.role === 'admin' && (
+            <>
+              <button onClick={() => setActiveTab('staff')} className={`${tabBaseClass} ${activeTab === 'staff' ? tabActiveClass : tabInactiveClass}`}><Users size={16}/> Staff Directory</button>
+              <button onClick={() => setActiveTab('b2b')} className={`${tabBaseClass} ${activeTab === 'b2b' ? tabActiveClass : tabInactiveClass}`}><Building size={16}/> B2B Agencies</button>
+            </>
+          )}
           <button onClick={() => setActiveTab('retail')} className={`${tabBaseClass} ${activeTab === 'retail' ? tabActiveClass : tabInactiveClass}`}><ShoppingBag size={16}/> Retail Customers</button>
         </div>
         <div className="relative w-full lg:w-80 shrink-0">
