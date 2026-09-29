@@ -8,14 +8,48 @@ import {
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
-// 🚀 STRICT DATE FORMATTERS (Ensures MM/DD/YYYY everywhere)
+// 🚀 STRICT DATE FORMATTERS (Ensures California Time everywhere)
+const getCaliforniaDateString = (offsetDays = 0) => {
+  const d = new Date();
+  if (offsetDays) d.setDate(d.getDate() + offsetDays);
+  
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  
+  const parts = formatter.formatToParts(d);
+  const year = parts.find(p => p.type === 'year').value;
+  const month = parts.find(p => p.type === 'month').value;
+  const day = parts.find(p => p.type === 'day').value;
+  
+  return `${year}-${month}-${day}`;
+};
+
 const formatToMMDDYYYY = (dateString) => {
   if (!dateString) return 'N/A';
   const d = new Date(dateString);
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  const yyyy = d.getFullYear();
-  return `${mm}/${dd}/${yyyy}`;
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric'
+  }).format(d);
+};
+
+const getCaliforniaTimestamp = () => {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZoneName: 'short' // 🚀 ADD THIS LINE TO SHOW PDT/PST
+  }).format(new Date());
 };
 
 const formatInputDateForDisplay = (yyyy_mm_dd) => {
@@ -45,14 +79,9 @@ export default function Reports() {
 
   const [warehouseData, setWarehouseData] = useState([]);
 
-  const [startDate, setStartDate] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return d.toISOString().split('T')[0];
-  });
-  const [endDate, setEndDate] = useState(() => {
-    return new Date().toISOString().split('T')[0];
-  });
+  // 🚀 Start and End dates now strictly default to California time
+  const [startDate, setStartDate] = useState(() => getCaliforniaDateString(-30));
+  const [endDate, setEndDate] = useState(() => getCaliforniaDateString(0));
 
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -68,27 +97,20 @@ export default function Reports() {
     { value: 'warehouse_summary', label: 'Warehouse Order Summary' }
   ];
 
-  // 🚀 QUICK DATE SELECTION LOGIC
+  // 🚀 QUICK DATE SELECTION LOGIC (Locked to California time)
   const setQuickDate = (preset) => {
-    const end = new Date();
-    const start = new Date();
+    let startDays = 0;
+    if (preset === '7days') startDays = -7;
+    else if (preset === '30days') startDays = -30;
 
-    if (preset === 'today') {
-      // Both stay as today
-    } else if (preset === '7days') {
-      start.setDate(end.getDate() - 7);
-    } else if (preset === '30days') {
-      start.setDate(end.getDate() - 30);
-    }
-
-    setStartDate(start.toISOString().split('T')[0]);
-    setEndDate(end.toISOString().split('T')[0]);
+    setStartDate(getCaliforniaDateString(startDays));
+    setEndDate(getCaliforniaDateString(0));
   };
 
   const getActiveQuickDate = () => {
-    const today = new Date().toISOString().split('T')[0];
-    const d7 = new Date(); d7.setDate(d7.getDate() - 7); const days7 = d7.toISOString().split('T')[0];
-    const d30 = new Date(); d30.setDate(d30.getDate() - 30); const days30 = d30.toISOString().split('T')[0];
+    const today = getCaliforniaDateString(0);
+    const days7 = getCaliforniaDateString(-7);
+    const days30 = getCaliforniaDateString(-30);
 
     if (endDate === today && startDate === today) return 'today';
     if (endDate === today && startDate === days7) return '7days';
@@ -732,9 +754,10 @@ export default function Reports() {
       
       doc.setFontSize(10); doc.setFont("helvetica", "normal"); doc.setTextColor(100, 100, 100);
       
-      // 🚀 Format PDF Dates to strict MM/DD/YYYY
       doc.text(`Period: ${formatInputDateForDisplay(startDate)} - ${formatInputDateForDisplay(endDate)}`, pageWidth - 14, 25, { align: "right" });
-      doc.text(`Date: ${formatToMMDDYYYY(new Date().toISOString())}`, pageWidth - 14, 30, { align: "right" });
+      
+      // 🚀 Format PDF Stamp to strict California Time
+      doc.text(`Generated: ${getCaliforniaTimestamp()}`, pageWidth - 14, 30, { align: "right" });
       
       tableStartY = textStartY + 12; 
     };
