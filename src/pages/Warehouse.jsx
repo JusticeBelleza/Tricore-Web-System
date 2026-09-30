@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tansta
 import { 
   Search, Package, CheckCircle2, Truck, FileDown, 
   CheckSquare, Square, Box, ChevronDown, Hash, Calendar, MapPin, User, Phone, Mail, Car,
-  ChevronLeft, ChevronRight, CheckCircle, AlertTriangle, XCircle, RefreshCw, ArrowRightCircle, AlertCircle, RotateCcw, CreditCard
+  ChevronLeft, ChevronRight, CheckCircle, AlertTriangle, XCircle, RefreshCw, ArrowRightCircle, AlertCircle, RotateCcw
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -375,19 +375,7 @@ export default function Warehouse() {
     const datePacked = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
-    if (logoData) {
-      const imgWidth = 45; const imgHeight = (logoData.height * imgWidth) / logoData.width; 
-      doc.addImage(logoData.dataURL, 'PNG', 14, 12, imgWidth, imgHeight); 
-    } else {
-      doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
-    }
-    
     const isBackorderRun = order.status === 'delivered_partial' || order.status === 'delivered' || order.status === 'shipped';
-    
-    doc.setFontSize(14); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); 
-    doc.text(isBackorderRun ? "BACKORDER SLIP" : "PACKING SLIP", 140, 18);
-    doc.setFontSize(10); doc.setFont("helvetica", "normal"); 
-    doc.text(`Order #: ${orderNum}${isBackorderRun ? '-B' : ''}`, 140, 24); doc.text(`Date: ${datePacked}`, 140, 29);
 
     const isB2B = !!order.company_id;
     const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || order.shipping_name || 'Retail Customer');
@@ -401,6 +389,24 @@ export default function Warehouse() {
     const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
     const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
     const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
+
+    const drawHeader = () => {
+      if (logoData) {
+        const imgWidth = 45; 
+        const imgHeight = (logoData.height * imgWidth) / logoData.width;
+        doc.addImage(logoData.dataURL, 'PNG', 14, 12, imgWidth, imgHeight);
+      } else {
+        doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
+      }
+      
+      doc.setFontSize(14); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42);
+      doc.text(isBackorderRun ? "BACKORDER SLIP" : "PACKING SLIP", 140, 18);
+      doc.setFontSize(10); doc.setFont("helvetica", "normal");
+      doc.text(`Order #: ${orderNum}${isBackorderRun ? '-B' : ''}`, 140, 24); 
+      doc.text(`Date: ${datePacked}`, 140, 29);
+    };
+
+    drawHeader();
 
     doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.text("SHIP TO", 14, 45); doc.text("BILL TO", 110, 45);
     
@@ -420,73 +426,91 @@ export default function Warehouse() {
 
     const activeItems = order.order_items?.filter(item => {
       const s = item.status?.toLowerCase();
-      // Exclude cancelled and rejected items.
       if (s === 'cancelled' || s === 'rejected') return false;
-      if (isBackorderRun && s === 'delivered') return false; // Hides already delivered items on backorder slips
+      if (isBackorderRun && s === 'delivered') return false; 
       return true;
     }) || [];
 
     const tableRows = activeItems.map(item => {
       const s = item.status?.toLowerCase();
       const isBackordered = s === 'backordered';
-      
-      // Calculate quantities
       const required = item.quantity_variants || 0;
       const shipped = isBackordered ? 0 : required;
       const backOrder = isBackordered ? required : 0;
       
-      // Format SKU & Description
       const sku = item.product_variants?.sku || 'N/A';
       const productName = item.product_variants?.products?.name || 'Item';
       const variantName = item.product_variants?.name || '';
       const description = variantName && variantName !== 'N/A' ? `${productName} (${variantName})` : productName;
 
-      return [
-        required,
-        shipped,
-        backOrder,
-        sku,
-        description
-      ];
+      return [required, shipped, backOrder, sku, description];
     });
 
     autoTable(doc, {
-      startY: maxAddressY + 10, 
-      head: [["Required", "Shipped", "Back Order", "SKU", "Description"]], 
-      body: tableRows, 
+      startY: maxAddressY + 10,
+      head: [["Required", "Shipped", "Back Order", "SKU", "Description"]],
+      body: tableRows,
       theme: 'striped',
       headStyles: { 
-        fillColor: [15, 23, 42], 
-        textColor: [255, 255, 255], 
+        fillColor: [241, 245, 249], // Light grey background
+        textColor: [15, 23, 42],    // Black/Dark slate text
         fontStyle: 'bold', 
-        fontSize: 9,
-        halign: 'center'
+        fontSize: 9, 
+        halign: 'center' 
       },
       styles: { 
         fontSize: 9, 
         cellPadding: 4, 
         textColor: [15, 23, 42] 
       },
-      columnStyles: { 
-        // Increased widths to 32 to guarantee the words never wrap
-        0: { cellWidth: 32, halign: 'center', valign: 'middle' }, 
-        1: { cellWidth: 32, halign: 'center', valign: 'middle' }, 
-        2: { cellWidth: 32, halign: 'center', valign: 'middle' }, 
-        3: { cellWidth: 35, halign: 'center', valign: 'middle' }, 
-        4: { cellWidth: 'auto', valign: 'middle' } 
+      columnStyles: {
+        0: { cellWidth: 32, halign: 'center', valign: 'middle' },
+        1: { cellWidth: 32, halign: 'center', valign: 'middle' },
+        2: { cellWidth: 32, halign: 'center', valign: 'middle' },
+        3: { cellWidth: 35, halign: 'center', valign: 'middle' },
+        4: { cellWidth: 'auto', valign: 'middle' }
+      },
+      margin: { top: 40, bottom: 40 },
+      didDrawPage: (data) => {
+        if (data.pageNumber > 1) {
+          drawHeader(); 
+        }
       }
     });
 
-    const finalY = doc.lastAutoTable.finalY || maxAddressY + 20;
-    doc.setFont("helvetica", "bold"); doc.text("Signed by:", 14, finalY + 20); doc.setFont("helvetica", "normal"); doc.text("________________________________________", 14, finalY + 30);
-    doc.setFont("helvetica", "bold"); doc.text("Delivered by:", 110, finalY + 20); doc.setFont("helvetica", "normal"); doc.text("________________________________________", 110, finalY + 30);
-
     const pageHeight = doc.internal.pageSize.height;
-    doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.text("Thank you for shopping with us!", 105, pageHeight - 30, { align: "center" });
-    doc.setFont("helvetica", "normal"); doc.text("TRICORE MEDICAL SUPPLY", 105, pageHeight - 24, { align: "center" });
-    doc.text("2169 Harbor St, Pittsburg CA 94565, United States", 105, pageHeight - 19, { align: "center" });
-    doc.text("info@tricoremedicalsupply.com", 105, pageHeight - 14, { align: "center" });
-    doc.text("www.tricoremedicalsupply.com", 105, pageHeight - 9, { align: "center" });
+    let finalY = doc.lastAutoTable.finalY || maxAddressY + 20;
+
+    // Increased threshold to 70 to ensure signatures never overlap the footer
+    if (finalY + 70 > pageHeight) {
+        doc.addPage();
+        drawHeader();
+        finalY = 40;
+    }
+
+    // Signatures Section
+    doc.setFont("helvetica", "bold"); 
+    doc.text("Signed by:", 14, finalY + 20); 
+    doc.setFont("helvetica", "normal"); 
+    doc.text("___________________________________", 14, finalY + 30);
+    
+    doc.setFont("helvetica", "bold"); 
+    doc.text("Delivered by:", 110, finalY + 20); 
+    doc.setFont("helvetica", "normal"); 
+    doc.text("___________________________________", 110, finalY + 30);
+
+    const totalPages = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= totalPages; i++) {
+      doc.setPage(i);
+      doc.setFontSize(9);
+      doc.setFont("helvetica", "bold");
+      doc.text("Thank you for shopping with us!", 105, pageHeight - 30, { align: "center" });
+      doc.setFont("helvetica", "normal");
+      doc.text("TRICORE MEDICAL SUPPLY", 105, pageHeight - 24, { align: "center" });
+      doc.text("2169 Harbor St, Pittsburg CA 94565, United States", 105, pageHeight - 19, { align: "center" });
+      doc.text("info@tricoremedicalsupply.com", 105, pageHeight - 14, { align: "center" });
+      doc.text("www.tricoremedicalsupply.com", 105, pageHeight - 9, { align: "center" });
+    }
 
     doc.save(`Packing_Slip_${orderNum}${isBackorderRun ? '_B' : ''}.pdf`);
   };
@@ -881,28 +905,28 @@ export default function Warehouse() {
                                 <div className="space-y-6">
                                   {/* SHIP TO CARD */}
                                   <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm group hover:border-slate-300 transition-colors">
-                                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Package size={14}/> Ship To</h4>
-                                    <p className="font-bold text-slate-900 text-base mb-2 flex items-center gap-2"><User size={16} className="text-slate-400"/> {shipName}</p>
-                                    <div className="space-y-2 text-sm font-medium text-slate-600">
+                                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Package size={14} className="shrink-0"/> Ship To</h4>
+                                    <p className="font-bold text-slate-900 text-base mb-2 flex items-start gap-2 whitespace-normal break-words"><User size={16} className="text-slate-400 mt-0.5 shrink-0"/> {shipName}</p>
+                                    <div className="space-y-2 text-sm font-medium text-slate-600 whitespace-normal break-words">
                                       <div className="flex flex-col gap-1.5 text-xs text-slate-500">
-                                        {shipEmail ? (<p className="flex items-center gap-2"><Mail size={14} className="text-slate-400"/> {shipEmail}</p>) : (<p className="flex items-center gap-2 text-slate-400 italic"><Mail size={14} className="opacity-50"/> No email saved</p>)}
-                                        {shipPhone ? (<p className="flex items-center gap-2"><Phone size={14} className="text-slate-400"/> {shipPhone}</p>) : (<p className="flex items-center gap-2 text-slate-400 italic"><Phone size={14} className="opacity-50"/> No phone saved</p>)}
+                                        {shipEmail ? (<p className="flex items-start gap-2"><Mail size={14} className="text-slate-400 mt-0.5 shrink-0"/> <span className="break-all">{shipEmail}</span></p>) : (<p className="flex items-center gap-2 text-slate-400 italic"><Mail size={14} className="opacity-50 shrink-0"/> No email saved</p>)}
+                                        {shipPhone ? (<p className="flex items-start gap-2"><Phone size={14} className="text-slate-400 mt-0.5 shrink-0"/> {shipPhone}</p>) : (<p className="flex items-center gap-2 text-slate-400 italic"><Phone size={14} className="opacity-50 shrink-0"/> No phone saved</p>)}
                                       </div>
                                       <div className="flex items-start gap-2 pt-2 border-t border-slate-100 mt-2">
                                         <MapPin size={14} className="text-slate-400 mt-0.5 shrink-0"/>
-                                        <div className="whitespace-normal leading-relaxed text-sm"><p>{shipAddress}</p>{shipCityState && <p>{shipCityState}</p>}</div>
+                                        <div className="whitespace-normal break-words leading-relaxed text-sm"><p>{shipAddress}</p>{shipCityState && <p>{shipCityState}</p>}</div>
                                       </div>
                                     </div>
                                   </div>
 
                                   {(isOrderDone || isReturn) && order.driver_name && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><Truck size={16} className="text-slate-400" /> Dispatch Info</h4>
-                                      <div className="space-y-3 text-sm">
-                                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p><p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400"/> {displayDriverName}</p></div>
-                                        {displayDriverPhone && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p><p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400"/> {displayDriverPhone}</p></div>}
-                                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p><p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400"/> {order.vehicle_name || 'Assigned Vehicle'}</p></div>
-                                        {order.vehicle_license && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p><p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400"/> {order.vehicle_license}</p></div>}
+                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><Truck size={16} className="text-slate-400 shrink-0" /> Dispatch Info</h4>
+                                      <div className="space-y-3 text-sm whitespace-normal break-words">
+                                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Assigned Driver</p><p className="font-bold text-slate-900 flex items-center gap-1.5"><User size={14} className="text-slate-400 shrink-0"/> {displayDriverName}</p></div>
+                                        {displayDriverPhone && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Contact Number</p><p className="font-medium text-slate-600 flex items-center gap-1.5"><Phone size={14} className="text-slate-400 shrink-0"/> {displayDriverPhone}</p></div>}
+                                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Vehicle</p><p className="font-medium text-slate-700 flex items-center gap-1.5"><Car size={14} className="text-slate-400 shrink-0"/> {order.vehicle_name || 'Assigned Vehicle'}</p></div>
+                                        {order.vehicle_license && <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">License Plate</p><p className="font-mono font-bold text-slate-700 flex items-center gap-1.5"><Hash size={14} className="text-slate-400 shrink-0"/> {order.vehicle_license}</p></div>}
                                       </div>
                                     </div>
                                   )}

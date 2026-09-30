@@ -772,13 +772,20 @@ export default function Reports() {
     drawHeader();
     drawFooter();
 
+    // 🚀 NEW: Reusable Light Theme Header Styles
+    const commonHeadStyles = { 
+      fillColor: [241, 245, 249], // Light grey background
+      textColor: [15, 23, 42],    // Dark slate text
+      fontStyle: 'bold' 
+    };
+
     if (reportType === 'warehouse_summary') {
       const tableRows = [];
       warehouseData.forEach(cust => {
         tableRows.push([{ 
           content: `${cust.name.toUpperCase()} \n${cust.address}`, 
-          colSpan: 6, // ✨ Updated Colspan
-          styles: { fontStyle: 'bold', fontSize: 10, fillColor: [240, 245, 250], textColor: [15, 23, 42] } 
+          colSpan: 6,
+          styles: { fontStyle: 'bold', fontSize: 10, fillColor: [248, 250, 252], textColor: [15, 23, 42] } 
         }]);
         
         cust.patients.forEach(p => {
@@ -808,12 +815,13 @@ export default function Reports() {
         head: [["REQUIRED", "SHIPPED", "BACKORDER", "VARIANT", "PRODUCT", "SKU"]],
         body: tableRows,
         theme: 'plain', 
-        headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold', halign: 'center' },
-        styles: { fontSize: 8, cellPadding: 2.5 }, 
+        headStyles: { ...commonHeadStyles, halign: 'center' },
+        styles: { fontSize: 8, cellPadding: 2.5, textColor: [15, 23, 42] }, 
         columnStyles: { 
-          0: { cellWidth: 18, halign: 'center', fontStyle: 'bold' }, 
-          1: { cellWidth: 18, halign: 'center', fontStyle: 'bold' }, 
-          2: { cellWidth: 20, halign: 'center', fontStyle: 'bold' }, 
+          // Increased widths to 24 and 26 to prevent awkward word wrapping
+          0: { cellWidth: 24, halign: 'center', fontStyle: 'bold' }, 
+          1: { cellWidth: 24, halign: 'center', fontStyle: 'bold' }, 
+          2: { cellWidth: 26, halign: 'center', fontStyle: 'bold' }, 
           3: { cellWidth: 30, halign: 'center', textColor: [100, 100, 100] },
           4: { cellWidth: 'auto' },
           5: { cellWidth: 25 }
@@ -831,11 +839,12 @@ export default function Reports() {
         startY: tableStartY,
         head: [["RANK", "PRODUCT", "UNITS SOLD", "REVENUE", "TOP BUYERS"]],
         body: tableRows,
-        theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
-        styles: { fontSize: 8, cellPadding: 4 }, 
+        theme: 'striped', 
+        headStyles: commonHeadStyles,
+        styles: { fontSize: 8, cellPadding: 4, textColor: [15, 23, 42] }, 
         columnStyles: { 0: { cellWidth: 15, halign: 'center' }, 2: { halign: 'center' }, 3: { halign: 'right' } },
         didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
-        margin: { top: tableStartY } 
+        margin: { top: tableStartY, bottom: 20 } 
       });
       doc.save(`Tricore_Top_Products_${startDate}_to_${endDate}.pdf`);
 
@@ -847,11 +856,12 @@ export default function Reports() {
         startY: tableStartY,
         head: [["RANK", "PRODUCT", "UNITS SOLD", "TOTAL COGS", "GROSS REVENUE", "GROSS PROFIT", "MARGIN %"]],
         body: tableRows,
-        theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
-        styles: { fontSize: 8, cellPadding: 4 }, 
+        theme: 'striped', 
+        headStyles: commonHeadStyles,
+        styles: { fontSize: 8, cellPadding: 4, textColor: [15, 23, 42] }, 
         columnStyles: { 0: { cellWidth: 15, halign: 'center' }, 2: { halign: 'center' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right', fontStyle: 'bold' } },
         didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
-        margin: { top: tableStartY } 
+        margin: { top: tableStartY, bottom: 20 } 
       });
       doc.save(`Tricore_Profitability_Report_${startDate}_to_${endDate}.pdf`);
 
@@ -865,11 +875,12 @@ export default function Reports() {
           startY: tableStartY,
           head: [["ORDER ID", "DATE", "AGENCY", "STREET", "CITY", "ST", "ZIP", "CA?", "SUBTOTAL", "SHIPPING", "TAX", "TOTAL"]],
           body: tableRows,
-          theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
-          styles: { fontSize: 7, cellPadding: 3 }, 
+          theme: 'striped', 
+          headStyles: commonHeadStyles,
+          styles: { fontSize: 7, cellPadding: 3, textColor: [15, 23, 42] }, 
           columnStyles: { 8: { halign: 'right' }, 9: { halign: 'right' }, 10: { halign: 'right' }, 11: { halign: 'right' } },
           didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
-          margin: { top: tableStartY } 
+          margin: { top: tableStartY, bottom: 20 } 
         });
         doc.save(`Tricore_CA_Tax_Report_${startDate}_to_${endDate}.pdf`);
       } else {
@@ -878,11 +889,12 @@ export default function Reports() {
           startY: tableStartY,
           head: [["ORDER ID", "DATE", "AGENCY", "PATIENT NAME", "PRODUCT", "VARIANT", "SKU", "QTY", "STREET", "CITY", "ST", "ZIP"]],
           body: tableRows,
-          theme: 'striped', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
-          styles: { fontSize: 7, cellPadding: 3 }, 
+          theme: 'striped', 
+          headStyles: commonHeadStyles,
+          styles: { fontSize: 7, cellPadding: 3, textColor: [15, 23, 42] }, 
           columnStyles: { 7: { halign: 'center' } },
           didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
-          margin: { top: tableStartY } 
+          margin: { top: tableStartY, bottom: 20 } 
         });
         doc.save(`Tricore_Itemized_Summary_${startDate}_to_${endDate}.pdf`);
       }
