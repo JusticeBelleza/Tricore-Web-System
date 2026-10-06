@@ -19,7 +19,7 @@ export default function AdminCreateOrder() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   
-  // 🚀 NEW: Patient Search State
+  // Patient Search State
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
 
   // Fetch initial data (Facilities, Patient Counts, and Retail Users)
@@ -40,7 +40,7 @@ export default function AdminCreateOrder() {
         supabase
           .from('agency_patients')
           .select('agency_id')
-          .eq('status', 'active'),
+          .eq('status', 'active'), // REVERTED to exact working query
         supabase
           .from('user_profiles')
           .select('*, companies(*)')
@@ -60,20 +60,28 @@ export default function AdminCreateOrder() {
       }
       
       // 3. Attach patient count and filter duplicate facility names
+      // Sort by patient count FIRST so we keep the duplicate ID that actually has patients
+      let facilitiesWithCounts = (b2bRes.data || []).map(comp => ({
+        ...comp,
+        patient_count: patientCountMap[comp.id] || 0
+      }));
+
+      // Sort descending by patient count so the active agency is processed first
+      facilitiesWithCounts.sort((a, b) => b.patient_count - a.patient_count);
+
       const uniqueFacilities = [];
       const seenNames = new Set();
-      if (b2bRes.data) {
-        b2bRes.data.forEach(comp => {
-          const normalizedName = comp.name?.trim().toLowerCase();
-          if (!seenNames.has(normalizedName)) {
-            seenNames.add(normalizedName);
-            uniqueFacilities.push({
-              ...comp,
-              patient_count: patientCountMap[comp.id] || 0
-            });
-          }
-        });
-      }
+      
+      facilitiesWithCounts.forEach(comp => {
+        const normalizedName = comp.name?.trim().toLowerCase();
+        if (!seenNames.has(normalizedName)) {
+          seenNames.add(normalizedName);
+          uniqueFacilities.push(comp);
+        }
+      });
+
+      // Sort A-Z again for the sidebar UI
+      uniqueFacilities.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
       setFacilities(uniqueFacilities);
       setRetailUsers(retailRes.data || []);
@@ -92,7 +100,7 @@ export default function AdminCreateOrder() {
         const { data, error } = await supabase
           .from('agency_patients')
           .select('*')
-          .eq('agency_id', selectedFacility.id)
+          .eq('agency_id', selectedFacility.id) // REVERTED to agency_id
           .eq('status', 'active')
           .order('full_name');
           
@@ -112,13 +120,15 @@ export default function AdminCreateOrder() {
 
   // Proceed to Catalog to shop on behalf of the customer
   const handleStartShopping = () => {
+    const patientDisplayName = selectedPatient?.full_name || `${selectedPatient?.first_name || ''} ${selectedPatient?.last_name || ''}`.trim();
+
     const proxySession = {
       isProxyOrder: true,
       orderType,
       targetCompanyId: orderType === 'b2b' ? selectedFacility.id : selectedRetailUser.companies?.id,
       targetPatientId: orderType === 'b2b' ? selectedPatient?.id : null,
       targetUserId: orderType === 'retail' ? selectedRetailUser.id : null,
-      customerName: orderType === 'b2b' ? `${selectedFacility.name} (Patient: ${selectedPatient.full_name})` : selectedRetailUser.full_name
+      customerName: orderType === 'b2b' ? `${selectedFacility.name} (Patient: ${patientDisplayName})` : selectedRetailUser.full_name
     };
     
     localStorage.setItem('tricore_proxy_session', JSON.stringify(proxySession));
@@ -128,8 +138,11 @@ export default function AdminCreateOrder() {
   const filteredFacilities = facilities.filter(f => f.name?.toLowerCase().includes(searchTerm.toLowerCase()));
   const filteredRetailUsers = retailUsers.filter(u => u.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) || u.email?.toLowerCase().includes(searchTerm.toLowerCase()));
   
-  // 🚀 NEW: Filter Patients
-  const filteredPatients = patients.filter(p => p.full_name?.toLowerCase().includes(patientSearchTerm.toLowerCase()));
+  // Filter Patients
+  const filteredPatients = patients.filter(p => {
+    const nameStr = p.full_name || `${p.first_name || ''} ${p.last_name || ''}`;
+    return nameStr.toLowerCase().includes(patientSearchTerm.toLowerCase());
+  });
 
   const canProceed = (orderType === 'b2b' && selectedFacility && selectedPatient) || (orderType === 'retail' && selectedRetailUser);
 
@@ -188,7 +201,6 @@ export default function AdminCreateOrder() {
                     <div className="flex flex-col min-w-0">
                       <span className="font-bold text-sm truncate">{facility.name}</span>
                       
-                      {/* 🚀 UPDATED: Moved badge below name, aligned with city/state */}
                       <div className="flex items-center gap-2 mt-0.5">
                         <span className={`text-[10px] font-medium ${selectedFacility?.id === facility.id ? 'text-blue-500' : 'text-slate-500'}`}>
                           {facility.city ? `${facility.city}, ${facility.state}` : 'No address on file'}
@@ -245,7 +257,7 @@ export default function AdminCreateOrder() {
                 </span>
               </div>
 
-              {/* 🚀 NEW: Patient Search Bar */}
+              {/* Patient Search Bar */}
               <div className="relative mb-3">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                 <input 
@@ -269,19 +281,22 @@ export default function AdminCreateOrder() {
                     <p className="text-sm font-medium text-slate-500">No patients found matching "{patientSearchTerm}".</p>
                   </div>
                 ) : (
-                  filteredPatients.map(patient => (
-                    <button
-                      key={patient.id}
-                      onClick={() => setSelectedPatient(patient)}
-                      className={`w-full text-left p-4 rounded-xl border transition-all flex items-center justify-between ${selectedPatient?.id === patient.id ? 'bg-slate-900 border-slate-900 text-white shadow-md' : 'bg-white border-slate-200 text-slate-700 hover:border-slate-400 hover:shadow-sm'}`}
-                    >
-                      <div>
-                        <p className="font-bold text-sm">{patient.full_name}</p>
-                        {patient.room_number && <p className={`text-[10px] font-medium mt-1 ${selectedPatient?.id === patient.id ? 'text-slate-300' : 'text-slate-500'}`}>Room: {patient.room_number}</p>}
-                      </div>
-                      {selectedPatient?.id === patient.id && <CheckCircle2 size={18} className="text-white shrink-0" />}
-                    </button>
-                  ))
+                  filteredPatients.map(patient => {
+                    const displayName = patient.full_name || `${patient.last_name || ''}, ${patient.first_name || ''}`.trim() || 'Unnamed Patient';
+                    return (
+                      <button
+                        key={patient.id}
+                        onClick={() => setSelectedPatient(patient)}
+                        className={`w-full text-left p-4 rounded-xl border transition-all flex items-center justify-between ${selectedPatient?.id === patient.id ? 'bg-slate-900 border-slate-900 text-white shadow-md' : 'bg-white border-slate-200 text-slate-700 hover:border-slate-400 hover:shadow-sm'}`}
+                      >
+                        <div>
+                          <p className="font-bold text-sm">{displayName}</p>
+                          {patient.room_number && <p className={`text-[10px] font-medium mt-1 ${selectedPatient?.id === patient.id ? 'text-slate-300' : 'text-slate-500'}`}>Room: {patient.room_number}</p>}
+                        </div>
+                        {selectedPatient?.id === patient.id && <CheckCircle2 size={18} className="text-white shrink-0" />}
+                      </button>
+                    )
+                  })
                 )}
               </div>
             </div>

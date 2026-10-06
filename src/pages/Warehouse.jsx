@@ -378,17 +378,20 @@ export default function Warehouse() {
     const isBackorderRun = order.status === 'delivered_partial' || order.status === 'delivered' || order.status === 'shipped';
 
     const isB2B = !!order.company_id;
-    const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || order.shipping_name || 'Retail Customer');
+    
+    // BILL TO: Agency or Retail Customer (Removed 'profile' fallback)
+    const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || order.shipping_name || 'Retail Customer');
     const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
     const billCityState = isB2B ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
-    const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '');
-    const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || profile?.email || '');
+    const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || '');
+    const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || '');
 
+    // SHIP TO: Patient or Retail Customer
     const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
     const shipAddress = order.shipping_address || 'No shipping address provided';
     const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-    const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
-    const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
+    const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
+    const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || '';
 
     const drawHeader = () => {
       if (logoData) {
@@ -452,8 +455,8 @@ export default function Warehouse() {
       body: tableRows,
       theme: 'striped',
       headStyles: { 
-        fillColor: [241, 245, 249], // Light grey background
-        textColor: [15, 23, 42],    // Black/Dark slate text
+        fillColor: [241, 245, 249],
+        textColor: [15, 23, 42],
         fontStyle: 'bold', 
         fontSize: 9, 
         halign: 'center' 
@@ -481,14 +484,12 @@ export default function Warehouse() {
     const pageHeight = doc.internal.pageSize.height;
     let finalY = doc.lastAutoTable.finalY || maxAddressY + 20;
 
-    // Increased threshold to 70 to ensure signatures never overlap the footer
     if (finalY + 70 > pageHeight) {
         doc.addPage();
         drawHeader();
         finalY = 40;
     }
 
-    // Signatures Section
     doc.setFont("helvetica", "bold"); 
     doc.text("Signed by:", 14, finalY + 20); 
     doc.setFont("helvetica", "normal"); 
@@ -721,11 +722,12 @@ export default function Warehouse() {
                   const currentPickedCount = isOrderDone ? activeItems.length : Object.values(pickedItems).filter(Boolean).length;
                   const allItemsPicked = requiredPickItems.length > 0 && requiredPickItems.every(item => pickedItems[item.id]);
                   
-                  const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || order.shipping_name || 'Retail Customer');
+                  // Updated fallback logic exactly as instructed
+                  const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || order.shipping_name || 'Retail Customer');
 
                   const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
-                  const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
-                  const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
+                  const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || '';
+                  const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
                   const shipAddress = order.shipping_address || 'No shipping address provided';
                   const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
 

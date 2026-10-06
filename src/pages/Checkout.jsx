@@ -261,21 +261,21 @@ export default function Checkout() {
 
       // 1. Create the base order (🚀 WITH PROXY ID INJECTION)
       const { data: order, error: orderError } = await supabase.from('orders').insert({
-          user_id: targetUserId, 
-          company_id: targetCompanyId || null, 
-          patient_id: (isB2B && !shipToAgency) ? selectedPatient.id : null,
-          shipping_name: sName, 
-          shipping_address: sAddress,
-          shipping_city: sCity, 
-          shipping_state: sState,
-          shipping_zip: sZip,
-          shipping_email: sEmail,
-          shipping_phone: sPhone,
-          status: isProxy ? 'processing' : 'pending', // Auto-approve if proxy
-          payment_method: paymentMethod, 
-          payment_status: 'unpaid',
-          subtotal, tax_amount: taxAmount, shipping_amount: shippingFee, total_amount: totalAmount,
-        }).select().single();
+        user_id: targetUserId,
+        company_id: targetCompanyId || null,
+        patient_id: (isB2B && !shipToAgency) ? selectedPatient.id : null,
+        shipping_name: sName,
+        shipping_address: sAddress,
+        shipping_city: sCity,
+        shipping_state: sState,
+        shipping_zip: sZip,
+        shipping_email: sEmail,
+        shipping_phone: sPhone,
+        status: 'pending', // 🚀 FIX: Force ALL orders (even proxy) to 'pending' for approval
+        payment_method: paymentMethod,
+        payment_status: 'unpaid',
+        subtotal, tax_amount: taxAmount, shipping_amount: shippingFee, total_amount: totalAmount,
+      }).select().single();
 
       if (orderError) throw orderError;
 
