@@ -18,6 +18,12 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   
+  // 🚀 Remember Me State (defaults to true or saved preference)
+  const [rememberMe, setRememberMe] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    return localStorage.getItem('tricore_remember_me') !== 'false';
+  });
+
   const [captchaToken, setCaptchaToken] = useState(null);
   const [resetCaptchaToken, setResetCaptchaToken] = useState(null);
   const turnstileRef = useRef(null); 
@@ -28,18 +34,39 @@ export default function Login() {
   const [resetLoading, setResetLoading] = useState(false);
 
   const navigate = useNavigate();
-  const { user } = useAuth(); // Globally tracked user
+  const { user, profile } = useAuth(); // Globally tracked user & profile
+
+  // 🚀 Load remembered email on mount
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const savedEmail = localStorage.getItem('tricore_remember_email');
+    if (savedEmail) {
+      setEmail(savedEmail);
+      setRememberMe(true);
+    }
+  }, []);
 
   // Automatically navigate once the context says we are logged in
   useEffect(() => {
     if (user) {
-      navigate('/dashboard', { replace: true });
+      if (profile?.role === 'driver') {
+        navigate('/driver', { replace: true });
+      } else {
+        navigate('/dashboard', { replace: true });
+      }
     }
-  }, [user, navigate]);
+  }, [user, profile, navigate]);
 
   const handleGoogleSignIn = async () => {
     setLoading(true);
     try {
+      if (rememberMe) {
+        localStorage.setItem('tricore_remember_me', 'true');
+      } else {
+        localStorage.setItem('tricore_remember_me', 'false');
+        localStorage.removeItem('tricore_remember_email');
+      }
+
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: { redirectTo: `${window.location.origin}/dashboard` }
@@ -64,8 +91,17 @@ export default function Login() {
       }
 
       if (isLogin) {
+        // Save or clear Remember Me preferences
+        if (rememberMe) {
+          localStorage.setItem('tricore_remember_me', 'true');
+          localStorage.setItem('tricore_remember_email', email.trim());
+        } else {
+          localStorage.setItem('tricore_remember_me', 'false');
+          localStorage.removeItem('tricore_remember_email');
+        }
+
         const { error: signInError } = await supabase.auth.signInWithPassword({
-          email, 
+          email: email.trim(), 
           password, 
           options: { captchaToken }
         });
@@ -89,7 +125,7 @@ export default function Login() {
         if (password.length < 6) throw new Error('Password must be at least 6 characters long.');
         
         const { error: signUpError } = await supabase.auth.signUp({
-          email, 
+          email: email.trim(), 
           password, 
           options: { data: { full_name: fullName }, captchaToken } 
         });
@@ -262,7 +298,13 @@ export default function Login() {
           {isLogin && (
             <div className="flex items-center justify-between pt-1 pb-2 px-1">
               <div className="flex items-center gap-2">
-                <input type="checkbox" id="remember" className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer" />
+                <input 
+                  type="checkbox" 
+                  id="remember" 
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer" 
+                />
                 <label htmlFor="remember" className="text-xs font-bold text-slate-600 cursor-pointer select-none">Remember me</label>
               </div>
               <button type="button" onClick={() => setShowForgotModal(true)} className="text-[11px] font-bold text-blue-600 hover:text-blue-700 transition-colors uppercase tracking-wider bg-transparent border-none">

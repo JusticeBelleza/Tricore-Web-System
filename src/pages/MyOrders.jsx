@@ -1,3 +1,4 @@
+import { parsePhotoUrls } from '../lib/utils';
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
@@ -833,13 +834,17 @@ export default function MyOrders() {
                                       )}
 
                                       <div className="grid grid-cols-2 gap-3">
-                                        {order.photo_url && (
+                                        {parsePhotoUrls(order.photo_url).length > 0 && (
                                           <div>
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Photo</p>
-                                            <a href={order.photo_url} target="_blank" rel="noreferrer" className="block relative group rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-slate-50">
-                                              <img src={order.photo_url} alt="Delivery Proof" className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300" />
-                                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors"></div>
-                                            </a>
+                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Photo{parsePhotoUrls(order.photo_url).length > 1 ? `s (${parsePhotoUrls(order.photo_url).length})` : ''}</p>
+                                            <div className={`grid gap-2 ${parsePhotoUrls(order.photo_url).length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                                              {parsePhotoUrls(order.photo_url).map((url, idx) => (
+                                                <a key={idx} href={url} target="_blank" rel="noreferrer" className="block relative group rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-slate-50">
+                                                  <img src={url} alt={`Delivery Proof ${idx + 1}`} className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300" />
+                                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors"></div>
+                                                </a>
+                                              ))}
+                                            </div>
                                           </div>
                                         )}
                                         {order.signature_url && (

@@ -48,6 +48,7 @@ export default function AdminUsers() {
   const [showAddB2bModal, setShowAddB2bModal] = useState(false);
   const [showAddRetailModal, setShowAddRetailModal] = useState(false);
   const [showEditAgencyModal, setShowEditAgencyModal] = useState(false);
+  const [showEditRetailModal, setShowEditRetailModal] = useState(false);
   const [creditLimitModal, setCreditLimitModal] = useState({ show: false, companyId: null, companyName: '', limit: '' });
   const [shippingFeeModal, setShippingFeeModal] = useState({ show: false, companyId: null, companyName: '', fee: '' });
   
@@ -71,6 +72,7 @@ export default function AdminUsers() {
   const [b2bForm, setB2bForm] = useState({ company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_email: '', admin_phone: '', password: '', confirm_password: '', credit_limit: '', shipping_fee: '' });
   const [retailForm, setRetailForm] = useState({ full_name: '', email: '', contact_number: '', address: '', city: '', state: '', zip: '', password: '', confirm_password: '' });
   const [editAgencyForm, setEditAgencyForm] = useState({ userId: '', companyId: '', company_name: '', address: '', city: '', state: '', zip: '', admin_name: '', admin_phone: '' });
+  const [editRetailForm, setEditRetailForm] = useState({ userId: '', companyId: '', full_name: '', address: '', city: '', state: '', zip: '', contact_number: '' });
 
   const resetCaptcha = () => {
     setCaptchaToken(null);
@@ -297,15 +299,52 @@ export default function AdminUsers() {
         email: confirmAction.data.email, password: confirmAction.data.password, 
         options: { 
           captchaToken,
-          data: { full_name: confirmAction.data.full_name, role: 'retail', contact_number: confirmAction.data.contact_number, company_id: company.id, status: 'active' } 
+          data: { 
+            full_name: confirmAction.data.full_name, 
+            role: 'retail', 
+            contact_number: confirmAction.data.contact_number || null, 
+            company_id: company.id, 
+            status: 'active',
+            address: confirmAction.data.address || null,
+            city: confirmAction.data.city || null,
+            state: confirmAction.data.state || null,
+            zip: confirmAction.data.zip || null,
+            billing_address: confirmAction.data.address || null,
+            billing_city: confirmAction.data.city || null,
+            billing_state: confirmAction.data.state || null,
+            billing_zip: confirmAction.data.zip || null
+          } 
         } 
       });
       if (authError) throw authError;
 
       if (data?.user?.id) {
-        await supabase.from('user_profiles').update({
-          address: confirmAction.data.address, city: confirmAction.data.city, state: confirmAction.data.state, zip: confirmAction.data.zip, company_id: company.id
+        const { error: profileUpdateError } = await supabase.from('user_profiles').update({
+          address: confirmAction.data.address || null,
+          city: confirmAction.data.city || null,
+          state: confirmAction.data.state || null,
+          zip: confirmAction.data.zip || null,
+          billing_address: confirmAction.data.address || null,
+          billing_city: confirmAction.data.city || null,
+          billing_state: confirmAction.data.state || null,
+          billing_zip: confirmAction.data.zip || null,
+          contact_number: confirmAction.data.contact_number || null,
+          company_id: company.id
         }).eq('id', data.user.id);
+
+        if (profileUpdateError) {
+          console.warn("Direct profile update failed, attempting RPC fallback:", profileUpdateError);
+          const { error: rpcError } = await supabase.rpc('save_customer_profile_info', {
+            p_user_id: data.user.id,
+            p_address: confirmAction.data.address || null,
+            p_city: confirmAction.data.city || null,
+            p_state: confirmAction.data.state || null,
+            p_zip: confirmAction.data.zip || null,
+            p_contact_number: confirmAction.data.contact_number || null,
+            p_company_id: company.id
+          });
+          if (rpcError) console.error("RPC fallback error:", rpcError);
+        }
       }
 
       setTimeout(() => { 
@@ -346,17 +385,51 @@ export default function AdminUsers() {
         email: confirmAction.data.admin_email, password: confirmAction.data.password, 
         options: { 
           captchaToken,
-          data: { full_name: confirmAction.data.admin_name, role: 'b2b', contact_number: confirmAction.data.admin_phone, company_id: company.id, status: 'active' } 
+          data: { 
+            full_name: confirmAction.data.admin_name, 
+            role: 'b2b', 
+            contact_number: confirmAction.data.admin_phone || null, 
+            company_id: company.id, 
+            status: 'active',
+            address: confirmAction.data.address || null,
+            city: confirmAction.data.city || null,
+            state: confirmAction.data.state || null,
+            zip: confirmAction.data.zip || null,
+            billing_address: confirmAction.data.address || null,
+            billing_city: confirmAction.data.city || null,
+            billing_state: confirmAction.data.state || null,
+            billing_zip: confirmAction.data.zip || null
+          } 
         } 
       });
       if (authError) throw authError;
 
       if (authData?.user?.id) {
         const { error: updateError } = await supabase.from('user_profiles').update({
-          company_id: company.id
+          company_id: company.id,
+          address: confirmAction.data.address || null,
+          city: confirmAction.data.city || null,
+          state: confirmAction.data.state || null,
+          zip: confirmAction.data.zip || null,
+          billing_address: confirmAction.data.address || null,
+          billing_city: confirmAction.data.city || null,
+          billing_state: confirmAction.data.state || null,
+          billing_zip: confirmAction.data.zip || null,
+          contact_number: confirmAction.data.admin_phone || null
         }).eq('id', authData.user.id);
         
-        if (updateError) throw updateError;
+        if (updateError) {
+          console.warn("Direct B2B profile update error, trying RPC fallback:", updateError);
+          await supabase.rpc('save_customer_profile_info', {
+            p_user_id: authData.user.id,
+            p_address: confirmAction.data.address || null,
+            p_city: confirmAction.data.city || null,
+            p_state: confirmAction.data.state || null,
+            p_zip: confirmAction.data.zip || null,
+            p_contact_number: confirmAction.data.admin_phone || null,
+            p_company_id: company.id
+          });
+        }
       }
 
       setTimeout(() => { 
@@ -394,20 +467,149 @@ export default function AdminUsers() {
     } finally { setIsSubmitting(false); }
   };
 
-  const triggerDeleteConfirmation = (id, name) => setConfirmAction({ show: true, type: 'delete', title: 'Deactivate Account?', message: `Are you sure you want to deactivate ${name}? Their past orders and invoices will be safely preserved.`, data: id });
+  const handleEditRetailSubmit = async (e) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    try {
+      const { error: profileError } = await supabase.from('user_profiles').update({
+        full_name: editRetailForm.full_name,
+        contact_number: editRetailForm.contact_number || null,
+        address: editRetailForm.address || null,
+        city: editRetailForm.city || null,
+        state: editRetailForm.state || null,
+        zip: editRetailForm.zip || null,
+        billing_address: editRetailForm.address || null,
+        billing_city: editRetailForm.city || null,
+        billing_state: editRetailForm.state || null,
+        billing_zip: editRetailForm.zip || null
+      }).eq('id', editRetailForm.userId);
+
+      if (profileError) {
+        console.warn("Direct profile update error in edit retail, falling back to RPC:", profileError);
+        const { error: rpcError } = await supabase.rpc('save_customer_profile_info', {
+          p_user_id: editRetailForm.userId,
+          p_address: editRetailForm.address || null,
+          p_city: editRetailForm.city || null,
+          p_state: editRetailForm.state || null,
+          p_zip: editRetailForm.zip || null,
+          p_contact_number: editRetailForm.contact_number || null,
+          p_company_id: editRetailForm.companyId || null
+        });
+        if (rpcError) throw rpcError;
+      }
+
+      if (editRetailForm.companyId) {
+        await supabase.from('companies').update({
+          name: editRetailForm.full_name,
+          phone: editRetailForm.contact_number || null,
+          address: editRetailForm.address || null,
+          city: editRetailForm.city || null,
+          state: editRetailForm.state || null,
+          zip: editRetailForm.zip || null
+        }).eq('id', editRetailForm.companyId);
+      }
+
+      fetchUsers();
+      setShowEditRetailModal(false);
+      showToast('Customer profile updated!');
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const triggerDeleteConfirmation = (userOrId, optionalName) => {
+    setActiveMenuId(null);
+    let id, name, companyId, role;
+    if (typeof userOrId === 'object' && userOrId !== null) {
+      id = userOrId.id;
+      name = userOrId.full_name || userOrId.name || userOrId.companies?.name || 'this customer';
+      companyId = userOrId.company_id || userOrId.companies?.id;
+      role = userOrId.role;
+    } else {
+      id = userOrId;
+      name = optionalName || 'this customer';
+      const found = users.find(u => u.id === id);
+      companyId = found?.company_id || found?.companies?.id;
+      role = found?.role;
+    }
+
+    setConfirmAction({
+      show: true,
+      type: 'delete',
+      title: 'Deactivate Account?',
+      message: `Are you sure you want to deactivate ${name}? Their past orders and invoices will be safely preserved.`,
+      data: { id, name, companyId, role }
+    });
+  };
   
   const executeDeleteUser = async () => {
-    setConfirmAction({ show: false });
+    const target = confirmAction.data;
+    const targetId = typeof target === 'object' ? target?.id : target;
+    const targetCompId = typeof target === 'object' ? target?.companyId : null;
+    const targetRole = typeof target === 'object' ? target?.role : null;
+
+    if (!targetId) {
+      showToast('Error: Invalid user selected.', true);
+      setConfirmAction({ show: false, type: '', title: '', message: '', data: null });
+      return;
+    }
+
+    setConfirmAction({ show: false, type: '', title: '', message: '', data: null });
+    setIsSubmitting(true);
+
     try {
-      const { error } = await supabase
-        .from('user_profiles')
-        .update({ status: 'inactive' })
-        .eq('id', confirmAction.data);
-        
-      if (error) throw error;
-      fetchUsers(); fetchKPIs(); showToast('Account safely deactivated.');
-    } catch (error) { 
-      showToast(error.message, true); 
+      // 1. Try secure database RPC first
+      let success = false;
+      const { data: rpcData, error: rpcError } = await supabase.rpc('deactivate_user_account', { p_user_id: targetId });
+      
+      if (!rpcError && rpcData?.success) {
+        success = true;
+      } else if (rpcError) {
+        console.warn('RPC deactivate_user_account returned error, falling back to direct update:', rpcError.message);
+      }
+
+      // 2. Direct update fallback
+      if (!success) {
+        const { data: updatedRows, error: updateError } = await supabase
+          .from('user_profiles')
+          .update({ status: 'inactive' })
+          .eq('id', targetId)
+          .select();
+
+        if (updateError) throw updateError;
+        if (!updatedRows || updatedRows.length === 0) {
+          throw new Error('Permission denied or account not found.');
+        }
+
+        // If it was a B2B agency, also deactivate other user profiles under the same company
+        if (targetRole === 'b2b' && targetCompId) {
+          await supabase
+            .from('user_profiles')
+            .update({ status: 'inactive' })
+            .eq('company_id', targetCompId);
+        }
+      }
+
+      // 3. Optimistic local state removal so the UI updates immediately
+      setUsers(prev => prev.filter(u => {
+        if (u.id === targetId) return false;
+        if (targetRole === 'b2b' && targetCompId && (u.companies?.id === targetCompId || u.company_id === targetCompId)) return false;
+        return true;
+      }));
+      setTotalCount(prev => Math.max(0, prev - 1));
+
+      // 4. Background refresh of users list & KPIs
+      fetchUsers();
+      fetchKPIs();
+
+      showToast('Account safely deactivated.');
+    } catch (error) {
+      console.error('Error deactivating user:', error);
+      showToast(error.message || 'Failed to deactivate account.', true);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -933,13 +1135,27 @@ export default function AdminUsers() {
                           {/* 🚀 ADDED RETAIL PRICING/SHIPPING OPTIONS */}
                           {activeTab === 'retail' && (
                             <>
+                              <button onClick={() => { 
+                                setActiveMenuId(null); 
+                                setEditRetailForm({ 
+                                  userId: user.id, 
+                                  companyId: user.companies?.id || user.company_id || '', 
+                                  full_name: user.full_name || '', 
+                                  address: user.address || user.companies?.address || '', 
+                                  city: user.city || user.companies?.city || '', 
+                                  state: user.state || user.companies?.state || '', 
+                                  zip: user.zip || user.companies?.zip || '', 
+                                  contact_number: user.contact_number || user.phone || user.companies?.phone || '' 
+                                }); 
+                                setShowEditRetailModal(true); 
+                              }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-3"><Edit size={16} className="text-slate-400" /> Edit Customer Profile</button>
                               <button onClick={() => { setActiveMenuId(null); handleRetailPricing(user); }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-3"><DollarSign size={16} className="text-slate-400" /> Manage Pricing</button>
                               <button onClick={() => { setActiveMenuId(null); handleRetailShipping(user); }} className="w-full px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-3"><Truck size={16} className="text-slate-400" /> Edit Shipping Fee</button>
                               <div className="h-px w-full bg-slate-100 my-1"></div>
                             </>
                           )}
                           
-                          <button onClick={() => triggerDeleteConfirmation(user.id, user.full_name)} className="w-full px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100 transition-colors flex items-center gap-3"><UserMinus size={16} /> Deactivate Account</button>
+                          <button onClick={() => { setActiveMenuId(null); triggerDeleteConfirmation(user); }} className="w-full px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100 transition-colors flex items-center gap-3"><UserMinus size={16} /> Deactivate Account</button>
                         </div>
                       )}
                     </td>
@@ -1213,6 +1429,72 @@ export default function AdminUsers() {
               </div>
 
               <div className="pt-2 flex gap-3"><button type="button" onClick={() => setShowEditAgencyModal(false)} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button><button type="submit" disabled={isSubmitting} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all">{isSubmitting ? 'Saving...' : <><Save size={16} /> Save Changes</>}</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- EDIT RETAIL CUSTOMER MODAL --- */}
+      {showEditRetailModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-xl flex flex-col border border-slate-100 overflow-hidden">
+            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <h3 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2"><Edit size={18}/> Edit Customer Profile</h3>
+              <button onClick={() => setShowEditRetailModal(false)} className="p-1 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-full active:scale-95 transition-all"><X size={16} /></button>
+            </div>
+            
+            <form onSubmit={handleEditRetailSubmit} className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 mb-3 border-b border-slate-100 pb-2">Customer Details</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Full Name</label>
+                    <div className="relative">
+                      <User className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                      <input type="text" required value={editRetailForm.full_name} onChange={e => setEditRetailForm({...editRetailForm, full_name: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-bold transition-all" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Phone Number</label>
+                    <div className="relative">
+                      <Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                      <input type="tel" value={editRetailForm.contact_number} onChange={e => setEditRetailForm({...editRetailForm, contact_number: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 mb-3 border-b border-slate-100 pb-2">Shipping Address</h4>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Street Address</label>
+                    <div className="relative">
+                      <MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                      <input type="text" value={editRetailForm.address} onChange={e => setEditRetailForm({...editRetailForm, address: e.target.value})} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="col-span-1">
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">City</label>
+                      <input type="text" value={editRetailForm.city} onChange={e => setEditRetailForm({...editRetailForm, city: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" />
+                    </div>
+                    <div className="col-span-1">
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">State</label>
+                      <input type="text" value={editRetailForm.state} onChange={e => setEditRetailForm({...editRetailForm, state: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" />
+                    </div>
+                    <div className="col-span-1">
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">ZIP Code</label>
+                      <input type="text" value={editRetailForm.zip} onChange={e => setEditRetailForm({...editRetailForm, zip: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-sm font-medium transition-all" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 flex gap-3">
+                <button type="button" onClick={() => setShowEditRetailModal(false)} className="w-full py-3 text-sm bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-95 transition-all">Cancel</button>
+                <button type="submit" disabled={isSubmitting} className="w-full py-3 text-sm bg-slate-900 text-white font-bold rounded-xl flex justify-center gap-2 items-center shadow-md hover:bg-slate-800 active:scale-95 disabled:opacity-50 transition-all">{isSubmitting ? 'Saving...' : <><Save size={16} /> Save Changes</>}</button>
+              </div>
             </form>
           </div>
         </div>

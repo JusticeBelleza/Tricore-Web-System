@@ -1,3 +1,4 @@
+import { parsePhotoUrls } from '../lib/utils';
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
@@ -594,11 +595,15 @@ export default function DispatchMonitor() {
                 </div>
               )}
 
-              {selectedPod.photo_url && (
+              {parsePhotoUrls(selectedPod.photo_url).length > 0 && (
                 <div className="space-y-3">
-                  <h4 className="text-sm font-semibold text-slate-900">Delivery Photo</h4>
-                  <div className="rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-slate-50">
-                    <img src={selectedPod.photo_url} alt="Delivery Proof" className="w-full h-auto object-cover" />
+                  <h4 className="text-sm font-semibold text-slate-900">Delivery Photo{parsePhotoUrls(selectedPod.photo_url).length > 1 ? `s (${parsePhotoUrls(selectedPod.photo_url).length})` : ''}</h4>
+                  <div className={`grid gap-3 ${parsePhotoUrls(selectedPod.photo_url).length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                    {parsePhotoUrls(selectedPod.photo_url).map((url, idx) => (
+                      <a key={idx} href={url} target="_blank" rel="noreferrer" className="rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-slate-50 block hover:opacity-95 transition-opacity">
+                        <img src={url} alt={`Delivery Proof ${idx + 1}`} className="w-full h-auto max-h-48 object-cover" />
+                      </a>
+                    ))}
                   </div>
                 </div>
               )}

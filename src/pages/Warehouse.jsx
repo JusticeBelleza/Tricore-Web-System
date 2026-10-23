@@ -383,15 +383,11 @@ export default function Warehouse() {
     const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || order.shipping_name || 'Retail Customer');
     const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
     const billCityState = isB2B ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
-    const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || '');
-    const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || '');
 
     // SHIP TO: Patient or Retail Customer
     const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
     const shipAddress = order.shipping_address || 'No shipping address provided';
     const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-    const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
-    const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || '';
 
     const drawHeader = () => {
       if (logoData) {
@@ -416,14 +412,10 @@ export default function Warehouse() {
     let currentYShip = 52; doc.setFont("helvetica", "bold"); doc.text(shipName, 14, currentYShip); currentYShip += 5; doc.setFont("helvetica", "normal");
     if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 14, currentYShip); currentYShip += 5; }
     if (shipCityState) { doc.text(shipCityState, 14, currentYShip); currentYShip += 5; }
-    if (shipPhone) { doc.text(`Phone: ${shipPhone}`, 14, currentYShip); currentYShip += 5; }
-    if (shipEmail) { doc.text(`Email: ${shipEmail}`, 14, currentYShip); currentYShip += 5; }
 
     let currentYBill = 52; doc.setFont("helvetica", "bold"); doc.text(billName, 110, currentYBill); currentYBill += 5; doc.setFont("helvetica", "normal");
     if (billAddress && billAddress !== 'No billing address provided') { doc.text(billAddress, 110, currentYBill); currentYBill += 5; }
     if (billCityState) { doc.text(billCityState, 110, currentYBill); currentYBill += 5; }
-    if (billPhone) { doc.text(`Phone: ${billPhone}`, 110, currentYBill); currentYBill += 5; }
-    if (billEmail) { doc.text(`Email: ${billEmail}`, 110, currentYBill); currentYBill += 5; }
 
     const maxAddressY = Math.max(currentYBill, currentYShip);
 

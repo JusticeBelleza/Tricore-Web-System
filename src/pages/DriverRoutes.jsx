@@ -230,9 +230,9 @@ export default function DriverRoutes() {
   
   const [lastRefreshed, setLastRefreshed] = useState(new Date());
 
+  const MAX_POD_PHOTOS = 4;
   const [activeOrder, setActiveOrder] = useState(null); 
-  const [photoPreview, setPhotoPreview] = useState(null);
-  const [photoFile, setPhotoFile] = useState(null);
+  const [podPhotos, setPodPhotos] = useState([]); // [{ id, file, previewUrl }]
   const [receivedBy, setReceivedBy] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   
@@ -252,6 +252,20 @@ export default function DriverRoutes() {
   const [triggerMapOpen, setTriggerMapOpen] = useState(0);
 
   const sigCanvasRef = useRef(null);
+
+  // 🚀 Auto-refresh routes when returning to foreground from Google Maps
+  useEffect(() => {
+    if (!profile?.id || profile?.role?.toLowerCase() !== 'driver') return;
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        fetchMyRoutes();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [profile?.id]);
 
   useEffect(() => {
     if (!profile?.id || profile?.role?.toLowerCase() !== 'driver') return;
@@ -393,6 +407,17 @@ export default function DriverRoutes() {
       setOrders(validOrders);
       setCompletedThisWeek(completedCount || 0);
       setLastRefreshed(new Date()); 
+
+      // 🚀 Auto-restore active POD order if returning from background/Google Maps
+      try {
+        const savedOrderId = sessionStorage.getItem('tricore_driver_active_order_id');
+        if (savedOrderId) {
+          const matched = validOrders.find(o => o.id === savedOrderId);
+          if (matched) {
+            setActiveOrder(matched);
+          }
+        }
+      } catch {}
     } catch (error) {
       console.error('Error fetching routes:', error.message);
       toast.error('Failed to load routes.');
@@ -417,8 +442,41 @@ export default function DriverRoutes() {
   };
 
   const handlePhotoCapture = (e) => {
-    const file = e.target.files[0];
-    if (file) { setPhotoFile(file); setPhotoPreview(URL.createObjectURL(file)); }
+    const selectedFiles = Array.from(e.target.files || []);
+    if (selectedFiles.length === 0) return;
+
+    setPodPhotos((prev) => {
+      const remainingSlots = MAX_POD_PHOTOS - prev.length;
+      if (remainingSlots <= 0) {
+        toast.info(`Maximum of ${MAX_POD_PHOTOS} photos allowed.`);
+        return prev;
+      }
+
+      const filesToAdd = selectedFiles.slice(0, remainingSlots);
+      if (selectedFiles.length > remainingSlots) {
+        toast.info(`Only ${remainingSlots} more photo(s) added (max ${MAX_POD_PHOTOS}).`);
+      }
+
+      const newPhotos = filesToAdd.map((file) => ({
+        id: `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+        file,
+        previewUrl: URL.createObjectURL(file),
+      }));
+
+      return [...prev, ...newPhotos];
+    });
+
+    e.target.value = '';
+  };
+
+  const handleRemovePhoto = (photoId) => {
+    setPodPhotos((prev) => {
+      const toRemove = prev.find((p) => p.id === photoId);
+      if (toRemove?.previewUrl) {
+        URL.revokeObjectURL(toRemove.previewUrl);
+      }
+      return prev.filter((p) => p.id !== photoId);
+    });
   };
 
   const clearSignature = () => { 
@@ -509,12 +567,18 @@ export default function DriverRoutes() {
       let signatureUrlStr = null; 
       const uniquePrefix = `${Date.now()}-${activeOrder.id}`;
       
-      if (photoFile) {
-        const compressedFile = await compressImage(photoFile); 
-        const photoPath = `pod-photos/${uniquePrefix}.jpg`;
-        const { error: photoErr } = await supabase.storage.from('delivery-proofs').upload(photoPath, compressedFile);
-        if (photoErr) throw photoErr;
-        photoUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(photoPath).data.publicUrl;
+      if (podPhotos.length > 0) {
+        const uploadedUrls = [];
+        for (let i = 0; i < podPhotos.length; i++) {
+          const photo = podPhotos[i];
+          const compressedFile = await compressImage(photo.file);
+          const photoPath = `pod-photos/${uniquePrefix}-${i + 1}.jpg`;
+          const { error: photoErr } = await supabase.storage.from('delivery-proofs').upload(photoPath, compressedFile);
+          if (photoErr) throw photoErr;
+          const publicUrl = supabase.storage.from('delivery-proofs').getPublicUrl(photoPath).data.publicUrl;
+          uploadedUrls.push(publicUrl);
+        }
+        photoUrlStr = uploadedUrls.length === 1 ? uploadedUrls[0] : JSON.stringify(uploadedUrls);
       }
       
       if (totalDeliveredQty > 0 && sigCanvasRef.current && !sigCanvasRef.current.isEmpty()) {
@@ -686,7 +750,25 @@ export default function DriverRoutes() {
     }
   };
 
-  const closeModal = () => { setActiveOrder(null); setPhotoFile(null); setPhotoPreview(null); setReceivedBy(''); setDeliveredQuantities({}); };
+  const openPodModal = (order) => {
+    setActiveOrder(order);
+    try {
+      sessionStorage.setItem('tricore_driver_active_order_id', order.id);
+    } catch {}
+  };
+
+  const closeModal = () => {
+    try {
+      sessionStorage.removeItem('tricore_driver_active_order_id');
+    } catch {}
+    setActiveOrder(null);
+    podPhotos.forEach(p => {
+      if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
+    });
+    setPodPhotos([]);
+    setReceivedBy('');
+    setDeliveredQuantities({});
+  };
   const closeCancelModal = () => { setCancellingOrder(null); setCancelReason(''); };
   const closeAttemptModal = () => { setAttemptingOrder(null); setAttemptReason(''); };
 
@@ -884,7 +966,7 @@ export default function DriverRoutes() {
                       <Truck size={18} /> Start Route
                     </button>
                   ) : (
-                    <button onClick={() => setActiveOrder(order)} className="w-full py-3.5 text-sm bg-emerald-500 text-white font-bold rounded-xl shadow-md hover:bg-emerald-600 active:scale-95 transition-all flex justify-center items-center gap-2">
+                    <button onClick={() => openPodModal(order)} className="w-full py-3.5 text-sm bg-emerald-500 text-white font-bold rounded-xl shadow-md hover:bg-emerald-600 active:scale-95 transition-all flex justify-center items-center gap-2">
                       <CheckCircle2 size={18} /> Complete POD
                     </button>
                   )}
@@ -1051,21 +1133,56 @@ export default function DriverRoutes() {
               <div className="h-px w-full bg-slate-100"></div>
 
               <div className="space-y-3">
-                <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
-                  <div className="w-5 h-5 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-[10px]">4</div>
-                  Take Photo (Optional)
-                </label>
-                {photoPreview ? (
-                  <div className="relative w-full h-36 rounded-2xl overflow-hidden border-2 border-slate-200 shadow-sm">
-                    <img src={photoPreview} alt="Preview" className="w-full h-full object-cover" />
-                    <button onClick={() => { setPhotoPreview(null); setPhotoFile(null); }} className="absolute top-2 right-2 p-1.5 bg-slate-900/70 backdrop-blur text-white rounded-full active:scale-95"><X size={14}/></button>
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
+                    <div className="w-5 h-5 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-[10px]">4</div>
+                    Proof of Delivery Photos (Optional)
+                  </label>
+                  <span className="text-[11px] font-bold text-slate-400">
+                    {podPhotos.length} / {MAX_POD_PHOTOS}
+                  </span>
+                </div>
+
+                {/* Grid of uploaded photos */}
+                {podPhotos.length > 0 && (
+                  <div className="grid grid-cols-2 gap-2.5">
+                    {podPhotos.map((photo, index) => (
+                      <div key={photo.id} className="relative aspect-video rounded-xl overflow-hidden border-2 border-slate-200 shadow-sm bg-slate-100 group">
+                        <img src={photo.previewUrl} alt={`POD ${index + 1}`} className="w-full h-full object-cover" />
+                        <span className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 bg-slate-900/70 backdrop-blur text-white text-[9px] font-bold rounded">
+                          #{index + 1}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemovePhoto(photo.id)}
+                          className="absolute top-1.5 right-1.5 p-1 bg-red-600/80 hover:bg-red-600 backdrop-blur text-white rounded-full active:scale-95 transition-all shadow-sm"
+                          title="Remove photo"
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ))}
                   </div>
-                ) : (
+                )}
+
+                {/* Camera / Upload trigger if under max */}
+                {podPhotos.length < MAX_POD_PHOTOS && (
                   <div className="relative group">
-                    <input type="file" accept="image/*" capture="environment" onChange={handlePhotoCapture} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
-                    <div className="w-full h-24 border-2 border-dashed border-slate-300 rounded-2xl bg-slate-50 flex flex-col items-center justify-center text-slate-500 gap-2 active:bg-slate-100 transition-colors">
-                      <div className="p-2 bg-white rounded-full shadow-sm"><Camera size={18} className="text-blue-500" /></div>
-                      <span className="text-[10px] font-bold uppercase tracking-widest">Tap for Camera</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      multiple
+                      onChange={handlePhotoCapture}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                    />
+                    <div className="w-full h-20 border-2 border-dashed border-slate-300 rounded-2xl bg-slate-50 flex flex-col items-center justify-center text-slate-500 gap-1.5 active:bg-slate-100 transition-colors">
+                      <div className="p-1.5 bg-white rounded-full shadow-sm">
+                        <Camera size={16} className="text-blue-500" />
+                      </div>
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-slate-600">
+                        {podPhotos.length === 0 ? 'Tap for Camera / Upload' : `Add Another Photo (${MAX_POD_PHOTOS - podPhotos.length} remaining)`}
+                      </span>
                     </div>
                   </div>
                 )}

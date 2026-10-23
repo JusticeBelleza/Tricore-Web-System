@@ -186,6 +186,13 @@ function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVari
 export default function Home() {
   const { profile, session } = useAuth();
   const navigate = useNavigate();
+
+  // Auto-redirect authenticated drivers directly to /driver
+  useEffect(() => {
+    if (profile?.role === 'driver') {
+      navigate('/driver', { replace: true });
+    }
+  }, [profile, navigate]);
   
   const [activeCategory, setActiveCategory] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');

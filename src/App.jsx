@@ -61,7 +61,7 @@ export const ProtectedRoute = ({ children }) => {
     );
   }
   
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user && !profile) return <Navigate to="/login" replace />;
   
   return children;
 };
@@ -71,7 +71,7 @@ export const RoleProtectedRoute = ({ allowedRoles, children }) => {
   const { user, profile, loading } = useAuth();
   
   if (loading) return <PageLoader />;
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user && !profile) return <Navigate to="/login" replace />;
 
   const userRole = profile?.role || 'user'; 
   if (!allowedRoles.includes(userRole)) {
