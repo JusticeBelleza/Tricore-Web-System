@@ -71,14 +71,24 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
 
   useEffect(() => {
     if (autoTrigger > 0 && !showMap) {
-      handleOptimizeRoute();
+      handleOptimizeRoute(true);
     }
   }, [autoTrigger]);
 
-  const handleOptimizeRoute = () => {
+  const handleOptimizeRoute = (isAuto = false) => {
     if (orders.length === 0) return;
     if (directions) {
       setShowMap(true);
+      return;
+    }
+
+    if (!window.google?.maps?.DirectionsService) {
+      console.warn("Google Maps DirectionsService not available.");
+      if (!isAuto) {
+        toast.info("Map services are loading. Opening Google Maps directly...");
+        const routeUrl = getGoogleMapsRouteUrl();
+        if (routeUrl) window.open(routeUrl, '_blank');
+      }
       return;
     }
 
@@ -86,8 +96,15 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
 
     const addresses = orders.map(order => {
       const cityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.trim();
-      return `${order.shipping_address}, ${cityState}`;
-    });
+      const addr = `${order.shipping_address || ''}, ${cityState}`.trim();
+      return addr.replace(/^,\s*|,\s*$/g, '');
+    }).filter(addr => addr.length > 3);
+
+    if (addresses.length === 0) {
+      setIsCalculating(false);
+      if (!isAuto) toast.error("No valid delivery addresses found to optimize.");
+      return;
+    }
 
     const routeAddresses = addresses.slice(0, 25);
     
@@ -98,34 +115,44 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
     
     const directionsService = new window.google.maps.DirectionsService();
 
-    directionsService.route(
-      {
-        origin: WAREHOUSE_ADDRESS,
-        destination: WAREHOUSE_ADDRESS, 
-        waypoints: waypoints,
-        optimizeWaypoints: true, 
-        travelMode: window.google.maps.TravelMode.DRIVING,
-      },
-      (result, status) => {
-        if (status === window.google.maps.DirectionsStatus.OK) {
-          setDirections(result);
-          setShowMap(true);
-          
-          if (result.routes[0]) {
-             const sequence = result.routes[0].waypoint_order;
-             const legsData = result.routes[0].legs.map(leg => ({
-               distance: leg.distance.text,
-               duration: leg.duration.text
-             }));
-             onRouteOptimized(sequence, legsData);
+    const requestRoute = (optimize) => {
+      directionsService.route(
+        {
+          origin: WAREHOUSE_ADDRESS,
+          destination: WAREHOUSE_ADDRESS, 
+          waypoints: waypoints,
+          optimizeWaypoints: optimize, 
+          travelMode: window.google.maps.TravelMode.DRIVING,
+        },
+        (result, status) => {
+          if (status === window.google.maps.DirectionsStatus.OK) {
+            setDirections(result);
+            setShowMap(true);
+            
+            if (result.routes[0]) {
+               const sequence = result.routes[0].waypoint_order;
+               const legsData = result.routes[0].legs.map(leg => ({
+                 distance: leg.distance.text,
+                 duration: leg.duration.text
+               }));
+               onRouteOptimized(sequence, legsData);
+            }
+            setIsCalculating(false);
+          } else if (optimize && (status === 'REQUEST_DENIED' || status === 'MAX_WAYPOINTS_EXCEEDED')) {
+            console.warn(`Master Route optimization failed with ${status}. Retrying without waypoint optimization...`);
+            requestRoute(false);
+          } else {
+            console.warn("Master Route calculation unavailable. Status:", status);
+            setIsCalculating(false);
+            if (!isAuto) {
+              toast.error("In-app preview unavailable. Use 'Open Full Route in Maps' to navigate via Google Maps.");
+            }
           }
-        } else {
-          console.error("Master Route Error:", status);
-          alert(`Could not calculate master route. Status: ${status}`);
         }
-        setIsCalculating(false);
-      }
-    );
+      );
+    };
+
+    requestRoute(true);
   };
 
   const activeLegInfo = useMemo(() => {
@@ -149,27 +176,71 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
   }, [directions, activeLegIndex]);
 
   const getGoogleMapsRouteUrl = () => {
-    if (!directions || !directions.routes[0]) return '';
     const origin = encodeURIComponent(WAREHOUSE_ADDRESS);
-    const legs = directions.routes[0].legs;
-    const wpAddresses = legs.slice(0, -1).map(leg => encodeURIComponent(leg.end_address));
+    if (directions?.routes?.[0]?.legs) {
+      const legs = directions.routes[0].legs;
+      const wpAddresses = legs.slice(0, -1).map(leg => encodeURIComponent(leg.end_address));
+      const waypointsParam = wpAddresses.length > 0 ? `&waypoints=${wpAddresses.join('|')}` : '';
+      return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${origin}${waypointsParam}&travelmode=driving`;
+    }
+
+    // Direct fallback: construct multi-stop route from orders directly
+    const wpAddresses = orders
+      .map(order => {
+        const cityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.trim();
+        const fullAddr = `${order.shipping_address || ''}, ${cityState}`.trim().replace(/^,\s*|,\s*$/g, '');
+        return fullAddr ? encodeURIComponent(fullAddr) : null;
+      })
+      .filter(Boolean);
+
     const waypointsParam = wpAddresses.length > 0 ? `&waypoints=${wpAddresses.join('|')}` : '';
     return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${origin}${waypointsParam}&travelmode=driving`;
   };
 
-  if (!isLoaded) return <div className="w-full h-12 bg-slate-100 rounded-xl animate-pulse mt-4"></div>;
+  if (!isLoaded) {
+    const fallbackRouteUrl = getGoogleMapsRouteUrl();
+    if (!fallbackRouteUrl) return <div className="w-full h-12 bg-slate-100 rounded-xl animate-pulse mt-4"></div>;
+    return (
+      <div className="mt-4">
+        <a
+          href={fallbackRouteUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="w-full py-3.5 px-4 bg-white border border-slate-200 text-slate-800 font-bold rounded-2xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex justify-center items-center gap-2 text-sm"
+        >
+          <Navigation size={18} className="text-blue-600" />
+          Open Full Route in Google Maps
+        </a>
+      </div>
+    );
+  }
+
   if (orders.length === 0) return null;
 
   if (!showMap) {
+    const directRouteUrl = getGoogleMapsRouteUrl();
     return (
-      <button 
-        onClick={handleOptimizeRoute}
-        disabled={isCalculating}
-        className="w-full py-4 mt-4 bg-blue-600 text-white font-black rounded-2xl shadow-lg shadow-blue-600/30 hover:bg-blue-700 active:scale-95 transition-all flex justify-center items-center gap-2 disabled:opacity-70"
-      >
-        <Map size={20} />
-        {isCalculating ? "Calculating Fastest Round Trip..." : "Optimize Round-Trip Route"}
-      </button>
+      <div className="flex flex-col sm:flex-row gap-2.5 mt-4">
+        <button 
+          onClick={() => handleOptimizeRoute(false)}
+          disabled={isCalculating}
+          className="flex-1 py-3.5 bg-blue-600 text-white font-black rounded-2xl shadow-lg shadow-blue-600/20 hover:bg-blue-700 active:scale-95 transition-all flex justify-center items-center gap-2 disabled:opacity-70 text-sm"
+        >
+          <Map size={18} />
+          {isCalculating ? "Calculating Fastest Route..." : "Optimize Round-Trip Route"}
+        </button>
+        {directRouteUrl && (
+          <a
+            href={directRouteUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="py-3.5 px-4 bg-white border border-slate-200 text-slate-800 font-bold rounded-2xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex justify-center items-center gap-2 text-sm shrink-0"
+          >
+            <Navigation size={18} className="text-blue-600" />
+            Open Full Route in Maps
+          </a>
+        )}
+      </div>
     );
   }
 

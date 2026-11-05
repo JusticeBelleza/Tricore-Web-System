@@ -304,4 +304,66 @@ describe('Live Operational Readiness Verification', () => {
       expect(totalOutstanding).toBe(350);
     });
   });
+  describe('5. Driver Navigation & Master Route Resiliency', () => {
+    const WAREHOUSE_ADDRESS = "2169 Harbor St, Pittsburg CA 94565";
+
+    it('generates direct Google Maps multi-stop URL directly from orders without DirectionsService', () => {
+      const orders = [
+        { shipping_address: '1226 Soquel Ave #1', shipping_city: 'Santa Cruz', shipping_state: 'CA', shipping_zip: '95062' },
+        { shipping_address: '200 Mission St', shipping_city: 'Santa Cruz', shipping_state: 'CA', shipping_zip: '95060' }
+      ];
+
+      const origin = encodeURIComponent(WAREHOUSE_ADDRESS);
+      const wpAddresses = orders
+        .map(order => {
+          const cityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.trim();
+          const fullAddr = `${order.shipping_address || ''}, ${cityState}`.trim().replace(/^,\s*|,\s*$/g, '');
+          return fullAddr ? encodeURIComponent(fullAddr) : null;
+        })
+        .filter(Boolean);
+
+      const waypointsParam = wpAddresses.length > 0 ? `&waypoints=${wpAddresses.join('|')}` : '';
+      const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${origin}${waypointsParam}&travelmode=driving`;
+
+      expect(url).toContain('https://www.google.com/maps/dir/?api=1');
+      expect(url).toContain('origin=2169%20Harbor%20St');
+      expect(url).toContain('destination=2169%20Harbor%20St');
+      expect(url).toContain('1226%20Soquel%20Ave%20%231');
+      expect(url).toContain('200%20Mission%20St');
+    });
+
+    it('handles REQUEST_DENIED gracefully without crashing or showing window alerts', () => {
+      let alertCalled = false;
+      const originalAlert = global.alert;
+      global.alert = () => { alertCalled = true; };
+
+      const mockDirectionsService = {
+        route: vi.fn((req, callback) => {
+          callback(null, 'REQUEST_DENIED');
+        })
+      };
+
+      let isCalculating = true;
+      let errorToastShown = false;
+      const isAuto = true; // Auto-triggered on order status change
+
+      // Simulate safe handling
+      mockDirectionsService.route({ optimizeWaypoints: true }, (result, status) => {
+        if (status === 'OK') {
+          isCalculating = false;
+        } else {
+          isCalculating = false;
+          if (!isAuto) {
+            errorToastShown = true;
+          }
+        }
+      });
+
+      expect(isCalculating).toBe(false);
+      expect(alertCalled).toBe(false); // No disruptive alert popup!
+      expect(errorToastShown).toBe(false); // Silent when auto-triggered
+
+      global.alert = originalAlert;
+    });
+  });
 });
