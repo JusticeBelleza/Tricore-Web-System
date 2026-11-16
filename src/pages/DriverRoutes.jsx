@@ -1,16 +1,25 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useAuth } from '../lib/useAuth';
 import { GoogleMap, useJsApiLoader, DirectionsRenderer, Marker, Polyline } from '@react-google-maps/api';
-import { Truck, MapPin, Phone, User, CheckCircle2, AlertTriangle, XCircle, Navigation, Package, DollarSign, Clock, Check, X, PenTool, UploadCloud, Map, Minus, Plus, PackageCheck, Route, Camera, RefreshCw } from 'lucide-react';
+import { Truck, MapPin, Phone, User, CheckCircle2, AlertTriangle, XCircle, Navigation, Package, DollarSign, Clock, Check, X, PenTool, UploadCloud, Map, Minus, Plus, PackageCheck, Route, Camera, RefreshCw, StickyNote } from 'lucide-react';
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import {
+  WAREHOUSE_ADDRESS,
+  buildSingleStopNavigationUrl,
+  formatOrderDeliveryAddress,
+  getOptimizationWaypointLimit,
+  hasSavedManualRouteOrder,
+  mapWaypointOrderToOrderIds,
+  prepareDirectionsOptimizationInput,
+  reorderOrdersByMappedSequence,
+  sortDriverStops,
+} from '../lib/routingUtils';
+import { evaluatePodProof } from '../lib/podUtils';
 
 import SignatureCanvas from 'react-signature-canvas';
-
-const WAREHOUSE_ADDRESS = "2169 Harbor St, Pittsburg CA 94565";
 
 const compressImage = (file, maxWidth = 800) => {
   return new Promise((resolve) => {
@@ -50,15 +59,30 @@ const getActiveItems = (order) => {
   ) || [];
 };
 
-function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger }) {
+function MasterRouteMap({ orders, onRouteOptimized, currentLocation }) {
   const { isLoaded } = useJsApiLoader({
     id: 'google-map-script',
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY
   });
 
-  const [directions, setDirections] = useState(null);
+  const [directionsState, setDirectionsState] = useState({ key: '', result: null });
   const [showMap, setShowMap] = useState(false);
   const [isCalculating, setIsCalculating] = useState(false);
+
+  const hasManualPlan = useMemo(() => hasSavedManualRouteOrder(orders), [orders]);
+  const maxWaypoints = useMemo(() => getOptimizationWaypointLimit(), []);
+  const optimizationInput = useMemo(
+    () => prepareDirectionsOptimizationInput(orders, maxWaypoints),
+    [orders, maxWaypoints]
+  );
+
+  const stopMembershipKey = useMemo(
+    () => orders.map((o) => `${o.id}:${o.route_position ?? ''}:${o.route_order_version ?? 0}`).sort().join('|'),
+    [orders]
+  );
+
+  const routePreviewKey = `${stopMembershipKey}:${hasManualPlan}`;
+  const directions = directionsState.key === routePreviewKey ? directionsState.result : null;
 
   const activeDelivery = orders.find(o => 
     o.status === 'out_for_delivery' || 
@@ -69,90 +93,62 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
     ? activeDelivery.routeLegIndex 
     : -1;
 
-  useEffect(() => {
-    if (autoTrigger > 0 && !showMap) {
-      handleOptimizeRoute(true);
-    }
-  }, [autoTrigger]);
-
-  const handleOptimizeRoute = (isAuto = false) => {
+  const handleRequestRoutePreview = (allowOptimization) => {
     if (orders.length === 0) return;
+
     if (directions) {
       setShowMap(true);
       return;
     }
 
+    if (!optimizationInput.supported) {
+      toast.warning(optimizationInput.reason);
+      return;
+    }
+
     if (!window.google?.maps?.DirectionsService) {
-      console.warn("Google Maps DirectionsService not available.");
-      if (!isAuto) {
-        toast.info("Map services are loading. Opening Google Maps directly...");
-        const routeUrl = getGoogleMapsRouteUrl();
-        if (routeUrl) window.open(routeUrl, '_blank');
-      }
+      toast.info("Map preview service unavailable right now. Use each stop's Navigate button for turn-by-turn GPS.");
       return;
     }
 
     setIsCalculating(true);
-
-    const addresses = orders.map(order => {
-      const cityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.trim();
-      const addr = `${order.shipping_address || ''}, ${cityState}`.trim();
-      return addr.replace(/^,\s*|,\s*$/g, '');
-    }).filter(addr => addr.length > 3);
-
-    if (addresses.length === 0) {
-      setIsCalculating(false);
-      if (!isAuto) toast.error("No valid delivery addresses found to optimize.");
-      return;
-    }
-
-    const routeAddresses = addresses.slice(0, 25);
-    
-    const waypoints = routeAddresses.map(address => ({
-      location: address,
-      stopover: true
-    }));
-    
+    const shouldOptimize = allowOptimization && !hasManualPlan;
     const directionsService = new window.google.maps.DirectionsService();
 
     const requestRoute = (optimize) => {
       directionsService.route(
         {
           origin: WAREHOUSE_ADDRESS,
-          destination: WAREHOUSE_ADDRESS, 
-          waypoints: waypoints,
-          optimizeWaypoints: optimize, 
+          destination: WAREHOUSE_ADDRESS,
+          waypoints: optimizationInput.waypoints,
+          optimizeWaypoints: optimize,
           travelMode: window.google.maps.TravelMode.DRIVING,
         },
         (result, status) => {
           if (status === window.google.maps.DirectionsStatus.OK) {
-            setDirections(result);
+            setDirectionsState({ key: routePreviewKey, result });
             setShowMap(true);
-            
-            if (result.routes[0]) {
-               const sequence = result.routes[0].waypoint_order;
-               const legsData = result.routes[0].legs.map(leg => ({
-                 distance: leg.distance.text,
-                 duration: leg.duration.text
-               }));
-               onRouteOptimized(sequence, legsData);
+
+            if (optimize && !hasManualPlan && result.routes?.[0]) {
+              const sequence = result.routes[0].waypoint_order || [];
+              const legsData = (result.routes[0].legs || []).map(leg => ({
+                distance: leg.distance?.text,
+                duration: leg.duration?.text
+              }));
+              onRouteOptimized(optimizationInput.stopDescriptors, sequence, legsData);
             }
             setIsCalculating(false);
           } else if (optimize && (status === 'REQUEST_DENIED' || status === 'MAX_WAYPOINTS_EXCEEDED')) {
-            console.warn(`Master Route optimization failed with ${status}. Retrying without waypoint optimization...`);
             requestRoute(false);
           } else {
-            console.warn("Master Route calculation unavailable. Status:", status);
             setIsCalculating(false);
-            if (!isAuto) {
-              toast.error("In-app preview unavailable. Use 'Open Full Route in Maps' to navigate via Google Maps.");
-            }
+            toast.error("In-app map preview unavailable. Use each stop's Navigate button for Google Maps GPS.");
           }
         }
       );
     };
 
-    requestRoute(true);
+    requestRoute(shouldOptimize);
   };
 
   const activeLegInfo = useMemo(() => {
@@ -170,75 +166,53 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
         duration: leg.duration.text,
         path: path
       };
-    } catch (e) {
+    } catch {
       return null;
     }
   }, [directions, activeLegIndex]);
 
-  const getGoogleMapsRouteUrl = () => {
-    const origin = encodeURIComponent(WAREHOUSE_ADDRESS);
-    if (directions?.routes?.[0]?.legs) {
-      const legs = directions.routes[0].legs;
-      const wpAddresses = legs.slice(0, -1).map(leg => encodeURIComponent(leg.end_address));
-      const waypointsParam = wpAddresses.length > 0 ? `&waypoints=${wpAddresses.join('|')}` : '';
-      return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${origin}${waypointsParam}&travelmode=driving`;
-    }
-
-    // Direct fallback: construct multi-stop route from orders directly
-    const wpAddresses = orders
-      .map(order => {
-        const cityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.trim();
-        const fullAddr = `${order.shipping_address || ''}, ${cityState}`.trim().replace(/^,\s*|,\s*$/g, '');
-        return fullAddr ? encodeURIComponent(fullAddr) : null;
-      })
-      .filter(Boolean);
-
-    const waypointsParam = wpAddresses.length > 0 ? `&waypoints=${wpAddresses.join('|')}` : '';
-    return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${origin}${waypointsParam}&travelmode=driving`;
-  };
+  if (orders.length === 0) return null;
 
   if (!isLoaded) {
-    const fallbackRouteUrl = getGoogleMapsRouteUrl();
-    if (!fallbackRouteUrl) return <div className="w-full h-12 bg-slate-100 rounded-xl animate-pulse mt-4"></div>;
     return (
-      <div className="mt-4">
-        <a
-          href={fallbackRouteUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="w-full py-3.5 px-4 bg-white border border-slate-200 text-slate-800 font-bold rounded-2xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex justify-center items-center gap-2 text-sm"
-        >
-          <Navigation size={18} className="text-blue-600" />
-          Open Full Route in Google Maps
-        </a>
+      <div className="mt-4 p-3.5 bg-white border border-slate-200 rounded-2xl text-xs font-semibold text-slate-600 flex items-center gap-2.5 shadow-sm">
+        <Navigation size={16} className="text-blue-600 shrink-0" />
+        <span>Use each stop's Navigate button below to open single-stop Google Maps directions.</span>
       </div>
     );
   }
 
-  if (orders.length === 0) return null;
-
   if (!showMap) {
-    const directRouteUrl = getGoogleMapsRouteUrl();
     return (
-      <div className="flex flex-col sm:flex-row gap-2.5 mt-4">
-        <button 
-          onClick={() => handleOptimizeRoute(false)}
-          disabled={isCalculating}
-          className="flex-1 py-3.5 bg-blue-600 text-white font-black rounded-2xl shadow-lg shadow-blue-600/20 hover:bg-blue-700 active:scale-95 transition-all flex justify-center items-center gap-2 disabled:opacity-70 text-sm"
-        >
-          <Map size={18} />
-          {isCalculating ? "Calculating Fastest Route..." : "Optimize Round-Trip Route"}
-        </button>
-        {directRouteUrl && (
-          <a
-            href={directRouteUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="py-3.5 px-4 bg-white border border-slate-200 text-slate-800 font-bold rounded-2xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex justify-center items-center gap-2 text-sm shrink-0"
+      <div className="mt-4 space-y-2.5">
+        {hasManualPlan && (
+          <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl text-xs font-semibold text-blue-900 flex items-start gap-2.5">
+            <Route size={16} className="text-blue-600 shrink-0 mt-0.5" />
+            <span>Warehouse/Dispatch set your stop sequence. Automatic reordering is paused so your planned route stays intact.</span>
+          </div>
+        )}
+
+        {!optimizationInput.supported && (
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl text-xs font-semibold text-amber-900 flex items-start gap-2.5">
+            <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+            <span>{optimizationInput.reason}</span>
+          </div>
+        )}
+
+        {optimizationInput.supported && (
+          <button
+            type="button"
+            onClick={() => handleRequestRoutePreview(!hasManualPlan)}
+            disabled={isCalculating}
+            className="w-full py-3.5 bg-blue-600 text-white font-black rounded-2xl shadow-lg shadow-blue-600/20 hover:bg-blue-700 active:scale-95 transition-all flex justify-center items-center gap-2 disabled:opacity-70 text-sm"
           >
-            <Navigation size={18} className="text-blue-600" />
-            Open Full Route in Maps
-          </a>
+            <Map size={18} />
+            {isCalculating
+              ? 'Loading Route Map...'
+              : hasManualPlan
+              ? 'Preview Assigned Route on Map'
+              : 'Optimize Round-Trip Preview'}
+          </button>
         )}
       </div>
     );
@@ -250,24 +224,21 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
         <div className="bg-slate-800 p-2.5 rounded-xl shrink-0"><Truck size={20} className="text-blue-400" /></div>
         <div className="flex-1 overflow-hidden">
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate">
-            {activeLegInfo ? `Heading to Stop #${activeLegIndex + 1}` : 'Round Trip Active'}
+            {activeLegInfo ? `Heading to Stop #${activeLegIndex + 1}` : hasManualPlan ? 'Manual Route Map Preview' : 'Round Trip Preview'}
           </p>
           <p className="text-sm font-black text-white truncate">
             {activeLegInfo ? `${activeLegInfo.distance} • ${activeLegInfo.duration}` : 'Start & End: Pittsburg'}
           </p>
         </div>
-        <button onClick={() => setShowMap(false)} className="ml-auto p-2 bg-white/10 hover:bg-white/20 text-white rounded-full active:scale-95 transition-all"><X size={16} /></button>
+        <button type="button" onClick={() => setShowMap(false)} className="ml-auto p-2 bg-white/10 hover:bg-white/20 text-white rounded-full active:scale-95 transition-all"><X size={16} /></button>
       </div>
 
-      <div 
-        onClick={() => window.open(getGoogleMapsRouteUrl(), '_blank')}
-        className="w-full h-64 sm:h-80 rounded-2xl overflow-hidden relative shadow-inner border border-slate-300 group cursor-pointer"
-      >
+      <div className="w-full h-64 sm:h-80 rounded-2xl overflow-hidden relative shadow-inner border border-slate-300">
         <GoogleMap
-          mapContainerStyle={{ width: '100%', height: '100%', pointerEvents: 'none' }}
+          mapContainerStyle={{ width: '100%', height: '100%' }}
           center={currentLocation || { lat: 38.0336, lng: -121.8817 }} 
           zoom={12}
-          options={{ disableDefaultUI: true, zoomControl: false, gestureHandling: 'none' }}
+          options={{ disableDefaultUI: true, zoomControl: true }}
         >
           {directions && (
             <DirectionsRenderer directions={directions} options={{ polylineOptions: { strokeColor: '#10b981', strokeWeight: 4, strokeOpacity: 0.5 }, suppressMarkers: false }} />
@@ -279,12 +250,6 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
             <Marker position={currentLocation} icon={{ url: 'https://cdn-icons-png.flaticon.com/512/3097/3097180.png', scaledSize: new window.google.maps.Size(38, 38) }} zIndex={999} />
           )}
         </GoogleMap>
-        
-        <div className="absolute inset-0 bg-blue-900/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 backdrop-blur-[1px]">
-          <div className="bg-blue-600 text-white px-5 py-3 rounded-xl font-black shadow-xl flex items-center gap-2">
-              <Map size={18} /> Open in GPS App
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -292,7 +257,6 @@ function MasterRouteMap({ orders, onRouteOptimized, currentLocation, autoTrigger
 
 export default function DriverRoutes() {
   const { profile } = useAuth();
-  const queryClient = useQueryClient();
 
   const [orders, setOrders] = useState([]);
   const [completedThisWeek, setCompletedThisWeek] = useState(0);
@@ -306,6 +270,7 @@ export default function DriverRoutes() {
   const [podPhotos, setPodPhotos] = useState([]); // [{ id, file, previewUrl }]
   const [receivedBy, setReceivedBy] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showEmptyPodConfirm, setShowEmptyPodConfirm] = useState(false);
   
   const [deliveredQuantities, setDeliveredQuantities] = useState({});
 
@@ -317,12 +282,100 @@ export default function DriverRoutes() {
   const [attemptReason, setAttemptReason] = useState('');
   const [isAttempting, setIsAttempting] = useState(false);
 
-  const [toastAlert, setToastAlert] = useState({ show: false, message: '', isError: false });
+  const [toastAlert] = useState({ show: false, message: '', isError: false });
 
   const [currentLocation, setCurrentLocation] = useState(null);
-  const [triggerMapOpen, setTriggerMapOpen] = useState(0);
 
   const sigCanvasRef = useRef(null);
+
+  const checkLicenseStatus = useCallback(() => {
+    if (profile?.role?.toLowerCase() !== 'driver') return;
+    if (!profile?.license_expiry) {
+      setLicenseAlert({ type: 'warning', title: 'Action Required', message: 'Please update your driver license details in your profile.' });
+      return;
+    }
+    const expiryDate = new Date(profile.license_expiry);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diffTime = expiryDate - today;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    if (diffDays < 0) {
+      setLicenseAlert({ type: 'danger', title: 'License Expired!', message: `Your driver's license expired on ${expiryDate.toLocaleDateString()}. Please update your profile to continue deliveries.` });
+    } else if (diffDays <= 30) {
+      setLicenseAlert({ type: 'warning', title: 'License Expiring Soon', message: `Your driver's license expires in ${diffDays} day${diffDays === 1 ? '' : 's'} (${expiryDate.toLocaleDateString()}).` });
+    } else {
+      setLicenseAlert(null);
+    }
+  }, [profile?.role, profile?.license_expiry]);
+
+  const fetchMyRoutes = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data: backorderItems } = await supabase.from('order_items').select('order_id').in('status', ['SHIPPED', 'OUT_FOR_DELIVERY']);
+      const backorderOrderIds = backorderItems && backorderItems.length > 0 ? [...new Set(backorderItems.map(i => i.order_id))] : [];
+      const driverOrFilter = profile?.id
+        ? `assigned_driver_id.eq.${profile.id},and(assigned_driver_id.is.null,driver_name.ilike.${profile.full_name}%)`
+        : `driver_name.ilike.${profile.full_name}%`;
+
+      let query = supabase
+        .from('orders')
+        .select(`*, companies ( name, address, city, state, zip, phone ), agency_patients ( contact_number ), user_profiles ( full_name, contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, line_total, unit_price, product_variants ( product_id, name, multiplier, products(name) ) )`)
+        .or(driverOrFilter)
+        .order('created_at', { ascending: true });
+
+      if (backorderOrderIds.length > 0) {
+        query = query.or(`status.in.(ready_for_delivery,shipped,out_for_delivery),id.in.(${backorderOrderIds.join(',')})`);
+      } else {
+        query = query.in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery']);
+      }
+
+      const { data: pendingData, error: pendingError } = await query;
+      if (pendingError) throw pendingError;
+
+      const validOrders = (pendingData || []).filter(order => {
+        const isBackorder = ['delivered_partial', 'delivered'].includes(order.status);
+        if (isBackorder) {
+          return order.order_items?.some(item => ['SHIPPED', 'OUT_FOR_DELIVERY'].includes(item.status?.toUpperCase()));
+        }
+        return true;
+      });
+
+      const sortedOrders = sortDriverStops(validOrders);
+
+      const startOfWeek = new Date();
+      startOfWeek.setHours(0, 0, 0, 0);
+      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+
+      const { count: completedCount } = await supabase
+        .from('orders')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'delivered')
+        .or(driverOrFilter)
+        .gte('updated_at', startOfWeek.toISOString());
+
+      setOrders(sortedOrders);
+      setCompletedThisWeek(completedCount || 0);
+      setLastRefreshed(new Date());
+
+      // 🚀 Auto-restore active POD order if returning from background/Google Maps
+      try {
+        const savedOrderId = sessionStorage.getItem('tricore_driver_active_order_id');
+        if (savedOrderId) {
+          const matched = sortedOrders.find(o => o.id === savedOrderId);
+          if (matched) {
+            setActiveOrder(matched);
+          }
+        }
+      } catch {
+        /* sessionStorage unavailable */
+      }
+    } catch (error) {
+      console.error('Error fetching routes:', error.message);
+      toast.error('Failed to load routes.');
+    } finally {
+      setLoading(false);
+    }
+  }, [profile?.id, profile?.full_name]);
 
   // 🚀 Auto-refresh routes when returning to foreground from Google Maps
   useEffect(() => {
@@ -336,7 +389,7 @@ export default function DriverRoutes() {
 
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [profile?.id]);
+  }, [profile?.id, profile?.role, fetchMyRoutes]);
 
   useEffect(() => {
     if (!profile?.id || profile?.role?.toLowerCase() !== 'driver') return;
@@ -383,8 +436,12 @@ export default function DriverRoutes() {
         schema: 'public', 
         table: 'orders' 
       }, (payload) => {
-        const isMyOrder = 
-          payload.new?.driver_name?.includes(profile.full_name) || 
+        const matchesDriverId =
+          Boolean(profile?.id) &&
+          (payload.new?.assigned_driver_id === profile.id || payload.old?.assigned_driver_id === profile.id);
+        const isMyOrder =
+          matchesDriverId ||
+          payload.new?.driver_name?.includes(profile.full_name) ||
           payload.old?.driver_name?.includes(profile.full_name);
                           
         if (isMyOrder) {
@@ -399,14 +456,14 @@ export default function DriverRoutes() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [profile?.full_name]);
+  }, [profile?.id, profile?.full_name, fetchMyRoutes]);
 
   useEffect(() => {
     if (profile?.id && profile?.full_name) {
       fetchMyRoutes();
       checkLicenseStatus();
     }
-  }, [profile?.id, profile?.full_name, profile?.license_expiry]);
+  }, [profile?.id, profile?.full_name, fetchMyRoutes, checkLicenseStatus]);
 
   useEffect(() => {
     if (activeOrder) {
@@ -420,101 +477,24 @@ export default function DriverRoutes() {
     }
   }, [activeOrder]);
 
-  const checkLicenseStatus = () => {
-    if (profile?.role?.toLowerCase() !== 'driver') return;
-    if (!profile?.license_expiry) {
-      setLicenseAlert({ type: 'warning', title: 'Action Required', message: 'Please update your driver license details in your profile.' });
+  const applyOptimizedOrder = (stopDescriptors, sequence, legsData) => {
+    if (hasSavedManualRouteOrder(orders)) return;
+    if (!sequence || sequence.length === 0) return;
+
+    const mapped = mapWaypointOrderToOrderIds(stopDescriptors, sequence, legsData);
+    if (!mapped) {
+      toast.warning('Could not map optimized route stops safely. Keeping assigned stop order.');
       return;
     }
-    const expiryDate = new Date(profile.license_expiry);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); 
-    const diffTime = expiryDate - today;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    if (diffDays < 0) {
-      setLicenseAlert({ type: 'danger', title: 'License Expired!', message: `Your driver's license expired on ${expiryDate.toLocaleDateString()}. Please update your profile to continue deliveries.` });
-    } else if (diffDays <= 30) {
-      setLicenseAlert({ type: 'warning', title: 'License Expiring Soon', message: `Your driver's license expires in ${diffDays} day${diffDays === 1 ? '' : 's'} (${expiryDate.toLocaleDateString()}).` });
-    } else {
-      setLicenseAlert(null); 
-    }
-  };
 
-  const fetchMyRoutes = async () => {
-    setLoading(true);
-    try {
-      const { data: backorderItems } = await supabase.from('order_items').select('order_id').in('status', ['SHIPPED', 'OUT_FOR_DELIVERY']);
-      const backorderOrderIds = backorderItems && backorderItems.length > 0 ? [...new Set(backorderItems.map(i => i.order_id))] : [];
-
-      let query = supabase
-        .from('orders')
-        .select(`*, companies ( name, address, city, state, zip, phone ), agency_patients ( contact_number ), user_profiles ( full_name, contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, line_total, unit_price, product_variants ( product_id, name, multiplier, products(name) ) )`)
-        .ilike('driver_name', `${profile.full_name}%`) 
-        .order('created_at', { ascending: true }); 
-
-      if (backorderOrderIds.length > 0) {
-        query = query.or(`status.in.(ready_for_delivery,shipped,out_for_delivery),id.in.(${backorderOrderIds.join(',')})`);
-      } else {
-        query = query.in('status', ['ready_for_delivery', 'shipped', 'out_for_delivery']);
-      }
-
-      const { data: pendingData, error: pendingError } = await query;
-      if (pendingError) throw pendingError;
-
-      const validOrders = (pendingData || []).filter(order => {
-        const isBackorder = ['delivered_partial', 'delivered'].includes(order.status);
-        if (isBackorder) {
-          return order.order_items?.some(item => ['SHIPPED', 'OUT_FOR_DELIVERY'].includes(item.status?.toUpperCase()));
-        }
-        return true;
-      });
-
-      const startOfWeek = new Date();
-      startOfWeek.setHours(0, 0, 0, 0);
-      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
-
-      const { count: completedCount } = await supabase.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'delivered').ilike('driver_name', `${profile.full_name}%`).gte('updated_at', startOfWeek.toISOString());
-
-      setOrders(validOrders);
-      setCompletedThisWeek(completedCount || 0);
-      setLastRefreshed(new Date()); 
-
-      // 🚀 Auto-restore active POD order if returning from background/Google Maps
-      try {
-        const savedOrderId = sessionStorage.getItem('tricore_driver_active_order_id');
-        if (savedOrderId) {
-          const matched = validOrders.find(o => o.id === savedOrderId);
-          if (matched) {
-            setActiveOrder(matched);
-          }
-        }
-      } catch {}
-    } catch (error) {
-      console.error('Error fetching routes:', error.message);
-      toast.error('Failed to load routes.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const applyOptimizedOrder = (sequence, legsData) => {
-    if (!sequence || sequence.length === 0) return;
-    const routeOrders = orders.slice(0, 25); 
-    const remainingOrders = orders.slice(25); 
-    const sortedRouteOrders = sequence.map((originalIndex, i) => ({
-      ...routeOrders[originalIndex],
-      travelDistance: legsData[i]?.distance,
-      travelTime: legsData[i]?.duration,
-      routeLegIndex: i 
-    }));
-    const completelySortedOrders = [...sortedRouteOrders, ...remainingOrders];
-    setOrders(completelySortedOrders);
-    toast.success("Route Optimized for Fastest Round Trip!");
+    setOrders((prev) => reorderOrdersByMappedSequence(prev, mapped));
+    toast.success("Route Preview Optimized!");
   };
 
   const handlePhotoCapture = (e) => {
     const selectedFiles = Array.from(e.target.files || []);
     if (selectedFiles.length === 0) return;
+    setShowEmptyPodConfirm(false);
 
     setPodPhotos((prev) => {
       const remainingSlots = MAX_POD_PHOTOS - prev.length;
@@ -573,7 +553,6 @@ export default function DriverRoutes() {
         return order;
       }));
 
-      setTriggerMapOpen(Date.now());
       window.scrollTo({ top: 0, behavior: 'smooth' });
 
       try {
@@ -581,7 +560,7 @@ export default function DriverRoutes() {
         if (itemsToUpdate.length > 0) {
           await supabase.from('order_items').update({ status: 'OUT_FOR_DELIVERY' }).in('id', itemsToUpdate);
         }
-      } catch (error) { 
+      } catch {
         toast.error("Failed to sync route start to database."); 
       }
     } else {
@@ -592,7 +571,6 @@ export default function DriverRoutes() {
       );
 
       if (newStatus === 'out_for_delivery') {
-        setTriggerMapOpen(Date.now());
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
 
@@ -602,15 +580,26 @@ export default function DriverRoutes() {
           .update({ status: newStatus, updated_at: new Date().toISOString() })
           .eq('id', orderId);
         if (error) throw error;
-      } catch (error) { 
+      } catch {
         toast.error("Failed to sync status to database."); 
       }
     }
   };
 
-  const submitDelivery = async () => {
-    if (!receivedBy.trim()) { toast.error('Please enter the full name of the person receiving the order.'); return; }
-    
+  const submitDelivery = async (bypassEmptyConfirmation = false) => {
+    const hasSignature = Boolean(sigCanvasRef.current && !sigCanvasRef.current.isEmpty());
+    const proofEval = evaluatePodProof({
+      receivedBy,
+      hasSignature,
+      photoCount: podPhotos.length,
+    });
+
+    if (proofEval.requiresEmptyProofConfirmation && !bypassEmptyConfirmation) {
+      setShowEmptyPodConfirm(true);
+      return;
+    }
+    setShowEmptyPodConfirm(false);
+
     const activeItems = getActiveItems(activeOrder);
     const isBackorderRun = ['delivered_partial', 'delivered'].includes(activeOrder.status);
     
@@ -624,13 +613,6 @@ export default function DriverRoutes() {
 
     const isTotalRejection = totalDeliveredQty === 0;
     const isPartialRejection = totalDeliveredQty > 0 && totalDeliveredQty < totalOriginalQty;
-    
-    if (totalDeliveredQty > 0) {
-      if (!sigCanvasRef.current || sigCanvasRef.current.isEmpty()) { 
-        toast.error('Please have the customer sign to confirm delivery.'); 
-        return; 
-      }
-    }
 
     setIsSubmitting(true);
     try {
@@ -652,7 +634,7 @@ export default function DriverRoutes() {
         photoUrlStr = uploadedUrls.length === 1 ? uploadedUrls[0] : JSON.stringify(uploadedUrls);
       }
       
-      if (totalDeliveredQty > 0 && sigCanvasRef.current && !sigCanvasRef.current.isEmpty()) {
+      if (hasSignature && sigCanvasRef.current && !sigCanvasRef.current.isEmpty()) {
         const signatureDataUrl = sigCanvasRef.current.getCanvas().toDataURL('image/png');
         const signatureBlob = await (await fetch(signatureDataUrl)).blob();
         const sigPath = `pod-signatures/${uniquePrefix}.png`;
@@ -736,7 +718,7 @@ export default function DriverRoutes() {
         total_amount: finalTotalAmount, 
         photo_url: photoUrlStr, 
         signature_url: signatureUrlStr, 
-        received_by: receivedBy.trim(), 
+        received_by: proofEval.normalizedRecipient,
         cancellation_reason: cancellationReason,
         updated_at: new Date().toISOString() 
       }).eq('id', activeOrder.id);
@@ -822,16 +804,22 @@ export default function DriverRoutes() {
   };
 
   const openPodModal = (order) => {
+    setShowEmptyPodConfirm(false);
     setActiveOrder(order);
     try {
       sessionStorage.setItem('tricore_driver_active_order_id', order.id);
-    } catch {}
+    } catch {
+      /* sessionStorage unavailable */
+    }
   };
 
   const closeModal = () => {
     try {
       sessionStorage.removeItem('tricore_driver_active_order_id');
-    } catch {}
+    } catch {
+      /* sessionStorage unavailable */
+    }
+    setShowEmptyPodConfirm(false);
     setActiveOrder(null);
     podPhotos.forEach(p => {
       if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
@@ -839,6 +827,7 @@ export default function DriverRoutes() {
     setPodPhotos([]);
     setReceivedBy('');
     setDeliveredQuantities({});
+    sigCanvasRef.current?.clear();
   };
   const closeCancelModal = () => { setCancellingOrder(null); setCancelReason(''); };
   const closeAttemptModal = () => { setAttemptingOrder(null); setAttemptReason(''); };
@@ -927,7 +916,7 @@ export default function DriverRoutes() {
       </div>
 
       {!loading && orders.length > 0 && (
-        <MasterRouteMap orders={orders} onRouteOptimized={applyOptimizedOrder} currentLocation={currentLocation} autoTrigger={triggerMapOpen} />
+        <MasterRouteMap orders={orders} onRouteOptimized={applyOptimizedOrder} currentLocation={currentLocation} />
       )}
 
       {loading ? (
@@ -947,8 +936,10 @@ export default function DriverRoutes() {
           {orders.map((order, index) => {
             const isB2B = !!order.company_id;
             const shipName = order.shipping_name || (isB2B ? order.companies?.name : order.user_profiles?.full_name || 'Customer');
-            const shipAddress = order.shipping_address || 'No address provided';
-            const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
+            const addrInfo = formatOrderDeliveryAddress(order);
+            const navUrl = buildSingleStopNavigationUrl(order);
+            const shipAddress = addrInfo.street || 'No address provided';
+            const shipCityState = addrInfo.cityStateZip;
             const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
             const shortId = order.id.split('-')[0].toUpperCase();
 
@@ -1004,22 +995,32 @@ export default function DriverRoutes() {
                   </div>
                 </div>
 
-                <div className="space-y-2 bg-slate-50 p-3.5 rounded-2xl border border-slate-100">
-                  
-                  <a 
-                    href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(shipAddress + ', ' + shipCityState)}&travelmode=driving`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-start gap-2.5 text-sm font-medium text-slate-700 hover:opacity-70 active:scale-95 transition-all group cursor-pointer"
-                  >
-                    <div className="bg-blue-100 p-1.5 rounded-lg shrink-0 group-hover:bg-blue-600 transition-colors">
-                      <MapPin size={16} className="text-blue-600 group-hover:text-white transition-colors mt-0.5 shrink-0"/>
+                <div className="space-y-2.5 bg-slate-50 p-3.5 rounded-2xl border border-slate-100">
+                  <div className="flex items-start gap-2.5 text-sm font-medium text-slate-700">
+                    <div className="bg-blue-100 p-1.5 rounded-lg shrink-0">
+                      <MapPin size={16} className="text-blue-600 mt-0.5 shrink-0"/>
                     </div>
-                    <div className="leading-snug">
-                      <p className="font-bold text-slate-900 text-sm group-hover:text-blue-600 transition-colors">{shipAddress}</p>
-                      <p className="text-slate-500 text-xs mt-0.5">{shipCityState}</p>
+                    <div className="leading-snug flex-1 min-w-0">
+                      <p className="font-bold text-slate-900 text-sm break-words">{shipAddress}</p>
+                      {shipCityState && <p className="text-slate-500 text-xs mt-0.5">{shipCityState}</p>}
                     </div>
-                  </a>
+                  </div>
+
+                  {navUrl ? (
+                    <a
+                      href={navUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-2.5 px-3.5 bg-blue-600 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-700 active:scale-95 transition-all shadow-sm"
+                    >
+                      <Navigation size={15} /> Navigate
+                    </a>
+                  ) : (
+                    <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-xs font-semibold text-amber-800 flex items-center gap-2">
+                      <AlertTriangle size={14} className="text-amber-600 shrink-0" />
+                      <span>{addrInfo.missingReason}</span>
+                    </div>
+                  )}
 
                   {shipPhone && (
                     <div className="flex items-center gap-2.5 text-sm font-medium pt-2.5 border-t border-slate-200/60 mt-1">
@@ -1030,6 +1031,17 @@ export default function DriverRoutes() {
                     </div>
                   )}
                 </div>
+
+                {order.order_notes && order.order_notes.trim() && (
+                  <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50/70 px-3.5 py-2.5">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-amber-700 flex items-center gap-1.5 mb-0.5">
+                      <StickyNote size={12} /> Order Notes
+                    </p>
+                    <p className="text-xs font-medium text-amber-950 whitespace-pre-wrap break-words">
+                      {order.order_notes}
+                    </p>
+                  </div>
+                )}
 
                 <div className="mt-4 flex flex-col gap-2">
                   {!isOutForDelivery ? (
@@ -1196,9 +1208,19 @@ export default function DriverRoutes() {
               <div className="space-y-3">
                 <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
                   <div className="w-5 h-5 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-[10px]">3</div>
-                  Recipient Name
+                  Recipient Name (Optional)
                 </label>
-                <input type="text" placeholder="Enter full name..." value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-900 shadow-sm placeholder:font-medium placeholder:text-slate-400" />
+                <input
+                  type="text"
+                  maxLength={120}
+                  placeholder="Optional — enter recipient name if available..."
+                  value={receivedBy}
+                  onChange={(e) => {
+                    setReceivedBy(e.target.value);
+                    if (showEmptyPodConfirm) setShowEmptyPodConfirm(false);
+                  }}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-900 shadow-sm placeholder:font-medium placeholder:text-slate-400"
+                />
               </div>
 
               <div className="h-px w-full bg-slate-100"></div>
@@ -1265,14 +1287,17 @@ export default function DriverRoutes() {
                 <div className="flex justify-between items-end">
                   <label className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest">
                     <div className="w-5 h-5 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center text-[10px]">5</div>
-                    Customer Signature
+                    Signature (Optional)
                   </label>
-                  <button onClick={clearSignature} className="text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-slate-100 px-3 py-1.5 rounded-lg active:scale-95 hover:bg-slate-200 transition-colors">Clear</button>
+                  <button type="button" onClick={clearSignature} className="text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-slate-100 px-3 py-1.5 rounded-lg active:scale-95 hover:bg-slate-200 transition-colors">Clear</button>
                 </div>
                 
                 <div className="relative w-full h-40 border-2 border-slate-200 rounded-2xl bg-white overflow-hidden shadow-inner touch-none">
                   <SignatureCanvas 
                     ref={sigCanvasRef} 
+                    onEnd={() => {
+                      if (showEmptyPodConfirm) setShowEmptyPodConfirm(false);
+                    }}
                     canvasProps={{ className: "absolute inset-0 w-full h-full cursor-crosshair touch-none" }}
                     minWidth={2}
                     maxWidth={4}
@@ -1286,10 +1311,42 @@ export default function DriverRoutes() {
               </div>
             </div>
 
-            <div className="p-5 border-t border-slate-100 bg-white shrink-0 pb-8 sm:pb-5">
-              <button onClick={submitDelivery} disabled={isSubmitting} className="w-full py-4 bg-emerald-500 text-white text-base font-black rounded-2xl shadow-lg shadow-emerald-500/30 hover:bg-emerald-400 active:scale-[0.98] transition-all flex justify-center items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed">
-                {isSubmitting ? <span className="animate-pulse flex items-center gap-2">Processing Data...</span> : <><UploadCloud size={20} /> Submit Delivery</>}
-              </button>
+            <div className="p-5 border-t border-slate-100 bg-white shrink-0 pb-8 sm:pb-5 space-y-3">
+              {showEmptyPodConfirm ? (
+                <div className="p-4 rounded-2xl border border-amber-200 bg-amber-50 space-y-3">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle size={18} className="text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-black text-amber-950">Complete delivery without recipient proof?</p>
+                      <p className="text-xs font-medium text-amber-800 mt-0.5">
+                        No recipient name, signature, or photo was entered. You can go back to add proof or confirm completion without it.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowEmptyPodConfirm(false)}
+                      disabled={isSubmitting}
+                      className="py-2.5 bg-white border border-slate-200 text-slate-700 text-xs font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all"
+                    >
+                      Go Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => submitDelivery(true)}
+                      disabled={isSubmitting}
+                      className="py-2.5 bg-emerald-600 text-white text-xs font-black rounded-xl hover:bg-emerald-700 active:scale-95 transition-all disabled:opacity-70"
+                    >
+                      {isSubmitting ? 'Submitting...' : 'Confirm & Complete'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button type="button" onClick={() => submitDelivery(false)} disabled={isSubmitting} className="w-full py-4 bg-emerald-500 text-white text-base font-black rounded-2xl shadow-lg shadow-emerald-500/30 hover:bg-emerald-400 active:scale-[0.98] transition-all flex justify-center items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed">
+                  {isSubmitting ? <span className="animate-pulse flex items-center gap-2">Processing Data...</span> : <><UploadCloud size={20} /> Submit Delivery</>}
+                </button>
+              )}
             </div>
 
           </div>

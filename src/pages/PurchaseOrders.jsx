@@ -1,7 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext';
 import { 
   ClipboardList, Search, Plus, CheckCircle2,
   ChevronDown, Building, Trash2, X, FileDown, Mail, PackagePlus, ArrowRight, Box,
@@ -12,7 +11,6 @@ import autoTable from 'jspdf-autotable';
 
 export default function PurchaseOrders() {
   const navigate = useNavigate();
-  const { profile } = useAuth();
   
   const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [variants, setVariants] = useState([]);
@@ -34,11 +32,12 @@ export default function PurchaseOrders() {
     { variant_id: '', product_id: '', name: '', sku: '', multiplier: 1, quantity: 1 }
   ]);
 
-  useEffect(() => {
-    fetchData();
+  const showToast = useCallback((title, message, isError = false) => {
+    setNotification({ show: true, title, message, isError });
+    setTimeout(() => setNotification({ show: false, title: '', message: '', isError: false }), 4000);
   }, []);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const { data: poData, error: poError } = await supabase
@@ -69,12 +68,11 @@ export default function PurchaseOrders() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [showToast]);
 
-  const showToast = (title, message, isError = false) => {
-    setNotification({ show: true, title, message, isError });
-    setTimeout(() => setNotification({ show: false, title: '', message: '', isError: false }), 4000);
-  };
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   const handleAddItem = () => {
     setPoItems([...poItems, { variant_id: '', product_id: '', name: '', sku: '', multiplier: 1, quantity: 1 }]);

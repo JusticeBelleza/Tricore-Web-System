@@ -377,7 +377,7 @@ export default function Products() {
       queryClient.invalidateQueries({ queryKey: ['admin_products'] });
       queryClient.invalidateQueries({ queryKey: ['admin_categories'] });
       queryClient.invalidateQueries({ queryKey: ['admin_product_tab_counts'] });
-    } catch (error) {
+    } catch {
       showToast('Import Failed', 'Failed to parse CSV.', true);
     } finally {
       setImporting(false);
@@ -429,7 +429,7 @@ export default function Products() {
       else setMediaLibraryFiles(prev => [...prev, ...validFiles]);
       setHasMoreMedia(data.length === MEDIA_LIMIT);
       setMediaOffset(offset);
-    } catch (error) {
+    } catch {
       showToast('Media Error', 'Failed to load Media Library.', true);
     } finally {
       setLoadingMedia(false);

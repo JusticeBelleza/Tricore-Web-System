@@ -1,19 +1,26 @@
-import { parsePhotoUrls } from '../lib/utils';
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext';
+import { useAuth } from '../lib/useAuth';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'; 
 import { 
   Search, Package, CheckCircle2, XCircle, Clock, 
   Truck, X, AlertCircle, PackageCheck, User, Car, Hash, Building, MapPin,
   ChevronDown, DollarSign, CreditCard, FileText, Calendar, ShieldAlert, Phone, FileDown, Mail,
-  ChevronLeft, ChevronRight, AlertTriangle, Receipt, Edit3, RefreshCw, Plus
+  ChevronLeft, ChevronRight, AlertTriangle, Receipt, Edit3, RefreshCw, Plus, RotateCcw, StickyNote, History
 } from 'lucide-react';
 
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import OrderPodCard from '../components/OrderPodCard';
+import ReturnToApprovalModal from '../components/ReturnToApprovalModal';
+import {
+  MAX_ORDER_NOTES_LENGTH,
+  evaluateReturnToApprovalEligibility,
+  normalizeOrderNotes,
+  normalizeOrderSearchQuery,
+} from '../lib/orderApprovalUtils';
 
 export default function AdminOrders() {
   const { profile } = useAuth(); 
@@ -38,6 +45,8 @@ export default function AdminOrders() {
   const [selectedSubstitute, setSelectedSubstitute] = useState(null);
 
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
+  const [returnApprovalModal, setReturnApprovalModal] = useState({ show: false, order: null });
+  const [notesModal, setNotesModal] = useState({ show: false, order: null, notes: '' });
 
   useEffect(() => {
     const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
@@ -104,16 +113,42 @@ export default function AdminOrders() {
     enabled: !!profile?.id
   });
 
-  const { data: ordersData, isLoading } = useQuery({
+  const { data: ordersData, isLoading, isError, error: ordersError, refetch: refetchOrders } = useQuery({
     queryKey: ['admin_orders', activeTab, debouncedSearch, page],
     queryFn: async () => {
-      let query = supabase.from('orders').select(`
+      const orderSelect = `
           *, 
           companies ( name, address, city, state, zip, phone, email ), 
           agency_patients ( contact_number, email ),
           user_profiles ( full_name, contact_number, email ),
           order_items ( id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, cancellation_reason, product_variants ( id, product_id, name, sku, price, multiplier, products(name, base_sku) ) )
-        `); 
+        `;
+      const cleanedSearch = normalizeOrderSearchQuery(debouncedSearch);
+      const from = page * pageSize;
+
+      if (cleanedSearch) {
+        const { data: matchedRows, error: searchError } = await supabase.rpc('search_admin_orders', {
+          p_tab: activeTab,
+          p_search: cleanedSearch,
+          p_limit: pageSize + 1,
+          p_offset: from,
+        });
+        if (searchError) throw searchError;
+
+        const matchedIds = (matchedRows || []).map((r) => r.order_id).filter(Boolean);
+        if (matchedIds.length === 0) return [];
+
+        const { data: fetchedOrders, error: fetchErr } = await supabase
+          .from('orders')
+          .select(orderSelect)
+          .in('id', matchedIds);
+        if (fetchErr) throw fetchErr;
+
+        const byId = new Map((fetchedOrders || []).map((o) => [o.id, o]));
+        return matchedIds.map((id) => byId.get(id)).filter(Boolean);
+      }
+
+      let query = supabase.from('orders').select(orderSelect);
 
       if (activeTab === 'pending') query = query.eq('status', 'pending');
       else if (activeTab === 'processing') query = query.eq('status', 'processing');
@@ -129,16 +164,7 @@ export default function AdminOrders() {
         query = query.in('status', ['delivered', 'delivered_partial']).eq('payment_method', 'net_30').eq('payment_status', 'unpaid').lte('created_at', thresholdDate.toISOString());
       }
 
-      if (debouncedSearch) {
-        const clean = debouncedSearch.trim();
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clean);
-        if (isUUID) query = query.or(`id.eq.${clean},shipping_name.ilike.%${clean}%,companies.name.ilike.%${clean}%`);
-        else query = query.or(`shipping_name.ilike.%${clean}%,companies.name.ilike.%${clean}%`);
-      }
-
       const sortColumn = (['completed', 'partially_delivered', 'cancelled', 'paid', 'attempted', 'restocked'].includes(activeTab)) ? 'updated_at' : 'created_at';
-      
-      const from = page * pageSize;
       const to = from + pageSize; 
       query = query.order(sortColumn, { ascending: false }).range(from, to);
 
@@ -148,6 +174,21 @@ export default function AdminOrders() {
     },
     placeholderData: keepPreviousData,
     enabled: !!profile?.id
+  });
+
+  const { data: expandedAuditLogs = [] } = useQuery({
+    queryKey: ['order_audit_logs', expandedOrderId],
+    enabled: !!expandedOrderId && !!profile?.id,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('order_audit_logs')
+        .select('id, action, actor_role, previous_status, new_status, reason, details, created_at')
+        .eq('order_id', expandedOrderId)
+        .order('created_at', { ascending: false })
+        .limit(20);
+      if (error) return [];
+      return data || [];
+    },
   });
 
   const hasNextPage = ordersData && ordersData.length > pageSize;
@@ -218,21 +259,55 @@ export default function AdminOrders() {
     onError: (error) => toast.error(`Add failed: ${error.message}`)
   });
 
-  const assignDriverMutation = useMutation({
-    mutationFn: async ({ orderId, driverObj }) => {
-      const driverPayload = `${driverObj.full_name} | ${driverObj.contact_number || 'No Phone'}`;
-      const { error } = await supabase.from('orders').update({ 
-        driver_name: driverPayload,
-        status: 'ready_for_delivery'
-      }).eq('id', orderId);
+  const returnToApprovalMutation = useMutation({
+    mutationFn: async ({ orderId, reason }) => {
+      const { data, error } = await supabase.rpc('return_order_to_approval', {
+        p_order_id: orderId,
+        p_reason: reason,
+      });
       if (error) throw error;
+      return data;
     },
     onSuccess: () => {
-      toast.success('Driver assigned successfully.');
+      toast.success('Order returned to Pending approval. Review or edit items before re-approving.');
+      setReturnApprovalModal({ show: false, order: null });
+      queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
+      queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['warehouse_tab_counts'] });
+      queryClient.invalidateQueries({ queryKey: ['dispatch_deliveries'] });
+      queryClient.invalidateQueries({ queryKey: ['dispatch_tab_counts'] });
+      queryClient.invalidateQueries({ queryKey: ['order_audit_logs'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard_metrics'] });
+      queryClient.invalidateQueries({ queryKey: ['driver_route_stops_manager'] });
+    },
+    onError: (error) => {
+      toast.error(error.message || 'Failed to return order to approval.');
       queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
       queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
     },
-    onError: (error) => toast.error(`Failed to assign driver: ${error.message}`)
+  });
+
+  const updateOrderNotesMutation = useMutation({
+    mutationFn: async ({ orderId, notes }) => {
+      const normalized = normalizeOrderNotes(notes);
+      if (!normalized.valid) throw new Error(normalized.error);
+      const { data, error } = await supabase.rpc('update_order_notes', {
+        p_order_id: orderId,
+        p_notes: normalized.value,
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      toast.success('Order notes updated.');
+      setNotesModal({ show: false, order: null, notes: '' });
+      queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['my_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['order_audit_logs'] });
+    },
+    onError: (error) => toast.error(error.message || 'Failed to update order notes.'),
   });
 
   const toggleOrderDetails = (orderId) => setExpandedOrderId(expandedOrderId === orderId ? null : orderId);
@@ -545,11 +620,11 @@ export default function AdminOrders() {
             <button onClick={() => setActiveTab('restocked')} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'restocked' ? 'bg-slate-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-200/50'}`}>Restocked ({tabCounts.restocked})</button>
           </div>
         </div>
-        <div className="relative w-full xl:w-64 shrink-0">
+        <div className="relative w-full xl:w-72 shrink-0">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
           <Input 
             type="text" 
-            placeholder="Search..." 
+            placeholder="Search agency, customer, recipient, or ID..."
             value={searchTerm} 
             onChange={(e) => setSearchTerm(e.target.value)} 
             className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border-transparent rounded-xl focus-visible:bg-white focus-visible:border-slate-300 focus-visible:ring-2 focus-visible:ring-slate-900" 
@@ -559,6 +634,15 @@ export default function AdminOrders() {
 
       {isLoading ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 flex justify-center"><div className="w-8 h-8 border-4 border-slate-900 border-t-transparent rounded-full animate-spin"></div></div>
+      ) : isError ? (
+        <div className="p-10 text-center bg-red-50 rounded-3xl border border-red-200 mt-6 space-y-3">
+          <AlertTriangle size={40} className="mx-auto text-red-500" />
+          <h3 className="text-lg font-bold text-red-900">Unable to load orders</h3>
+          <p className="text-sm text-red-700 font-medium">{ordersError?.message || 'An unexpected error occurred while searching orders.'}</p>
+          <Button variant="outline" onClick={() => refetchOrders()} className="border-red-200 text-red-700 hover:bg-red-100">
+            Retry
+          </Button>
+        </div>
       ) : displayOrders.length === 0 ? (
         <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 mt-6"><Package size={56} strokeWidth={1} className="mx-auto text-slate-300 mb-5" /><h3 className="text-xl font-bold text-slate-900 mb-2">No orders found</h3></div>
       ) : (
@@ -696,6 +780,17 @@ export default function AdminOrders() {
                                       <Button variant="outline" className="text-red-600 border-red-200 hover:bg-red-50" onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(order.id, 'cancelled'); }}>Reject</Button>
                                       <Button className="bg-slate-900 text-white hover:bg-slate-800" onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(order.id, 'processing'); }}><CheckCircle2 size={16} className="mr-2"/> Approve to Warehouse</Button>
                                     </>
+                                  )}
+
+                                  {evaluateReturnToApprovalEligibility(order).eligible && (
+                                    <Button
+                                      variant="outline"
+                                      className="text-amber-700 border-amber-200 bg-amber-50 hover:bg-amber-100"
+                                      disabled={returnToApprovalMutation.isPending}
+                                      onClick={(e) => { e.stopPropagation(); setReturnApprovalModal({ show: true, order }); }}
+                                    >
+                                      <RotateCcw size={16} className="mr-2" /> Send Back to Approval
+                                    </Button>
                                   )}
                                   
                                   {['delivered', 'delivered_partial'].includes(order.status) && (
@@ -867,13 +962,63 @@ export default function AdminOrders() {
                                       </div>
                                     </div>
                                   )}
-                                  {['delivered', 'delivered_partial'].includes(order.status) && (order.photo_url || order.signature_url || order.received_by) && (
-                                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2"><PackageCheck size={16} className="text-slate-400" /> Proof of Delivery</h4>
-                                      {order.received_by && (<div className="mb-4 p-3 bg-emerald-50 rounded-xl border border-emerald-100"><p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">Received By</p><p className="font-bold text-slate-900 flex items-center gap-2 text-sm"><User size={14} className="text-emerald-500" /> {order.received_by}</p></div>)}
-                                      <div className="grid grid-cols-2 gap-3">
-                                        {parsePhotoUrls(order.photo_url).length > 0 && (<div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Photo{parsePhotoUrls(order.photo_url).length > 1 ? `s (${parsePhotoUrls(order.photo_url).length})` : ''}</p><div className={`grid gap-2 ${parsePhotoUrls(order.photo_url).length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>{parsePhotoUrls(order.photo_url).map((url, idx) => (<a key={idx} href={url} target="_blank" rel="noreferrer" className="block relative group rounded-xl overflow-hidden border border-slate-200 shadow-sm"><img src={url} alt={`Delivery Proof ${idx + 1}`} className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300" /><div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors"></div></a>))}</div></div>)}
-                                        {order.signature_url && (<div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Signature</p><a href={order.signature_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-slate-200 bg-white p-2 hover:border-slate-300 transition-colors shadow-sm"><img src={order.signature_url} alt="Customer Signature" className="w-full h-20 object-contain mix-blend-multiply" /></a></div>)}
+                                  {(order.order_notes?.trim() || order.status === 'pending') && (
+                                    <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-5 shadow-sm">
+                                      <div className="flex items-center justify-between gap-2 mb-2">
+                                        <h4 className="text-[10px] font-bold text-amber-800 uppercase tracking-widest flex items-center gap-1.5">
+                                          <StickyNote size={14} /> Order Notes
+                                        </h4>
+                                        {order.status === 'pending' && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => { e.stopPropagation(); setNotesModal({ show: true, order, notes: order.order_notes || '' }); }}
+                                            className="text-[11px] font-bold text-amber-800 bg-white border border-amber-200 px-2.5 py-1 rounded-lg hover:bg-amber-100 transition-colors"
+                                          >
+                                            {order.order_notes?.trim() ? 'Edit Note' : 'Add Note'}
+                                          </button>
+                                        )}
+                                      </div>
+                                      {order.order_notes?.trim() ? (
+                                        <p className="text-sm font-medium text-slate-800 whitespace-pre-wrap break-words leading-relaxed">
+                                          {order.order_notes.trim()}
+                                        </p>
+                                      ) : (
+                                        <p className="text-xs italic text-amber-700/80">
+                                          No order notes added. Staff can add or edit customer-visible notes while pending approval.
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  <OrderPodCard order={order} />
+
+                                  {expandedAuditLogs.length > 0 && (
+                                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-3">
+                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider">
+                                        <History size={16} className="text-slate-400" /> Audit History
+                                      </h4>
+                                      <div className="space-y-2.5 max-h-56 overflow-y-auto pr-1">
+                                        {expandedAuditLogs.map((log) => (
+                                          <div key={log.id} className="p-3 bg-slate-50 border border-slate-100 rounded-xl text-xs space-y-1">
+                                            <div className="flex items-center justify-between gap-2">
+                                              <span className="font-bold text-slate-800 uppercase tracking-wider text-[10px]">
+                                                {String(log.action || 'EVENT').replace(/_/g, ' ')}
+                                              </span>
+                                              <span className="text-[10px] text-slate-400 font-medium">
+                                                {new Date(log.created_at).toLocaleString()}
+                                              </span>
+                                            </div>
+                                            {log.details && <p className="text-slate-600 font-medium leading-snug">{log.details}</p>}
+                                            {log.reason && !log.details?.includes(log.reason) && (
+                                              <p className="text-amber-800 font-medium">Reason: {log.reason}</p>
+                                            )}
+                                            {log.actor_role && (
+                                              <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">
+                                                Role: {log.actor_role}
+                                              </p>
+                                            )}
+                                          </div>
+                                        ))}
                                       </div>
                                     </div>
                                   )}
@@ -1114,6 +1259,74 @@ export default function AdminOrders() {
 
         </DialogContent>
       </Dialog>
+
+      {/* 3. Edit Order Notes Dialog (Pending only) */}
+      <Dialog
+        open={notesModal.show}
+        onOpenChange={(isOpen) => !isOpen && !updateOrderNotesMutation.isPending && setNotesModal({ show: false, order: null, notes: '' })}
+      >
+        <DialogContent className="sm:max-w-md p-6 sm:p-8">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold text-slate-900">Edit Order Notes</DialogTitle>
+            <DialogDescription className="text-sm text-slate-500">
+              Customer-visible fulfillment or delivery notes for Order #{notesModal.order?.id?.substring(0, 8).toUpperCase()}. Editable while Pending approval only.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 mt-2">
+            <textarea
+              rows={4}
+              maxLength={MAX_ORDER_NOTES_LENGTH}
+              value={notesModal.notes}
+              onChange={(e) => setNotesModal((prev) => ({ ...prev, notes: e.target.value }))}
+              placeholder="Enter delivery or packing instructions..."
+              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:bg-white focus:ring-2 focus:ring-slate-900 outline-none resize-y"
+            />
+            <p className="text-[11px] text-slate-400 text-right">
+              {notesModal.notes.length}/{MAX_ORDER_NOTES_LENGTH}
+            </p>
+          </div>
+          <div className="flex gap-3 pt-4">
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1 py-5"
+              disabled={updateOrderNotesMutation.isPending}
+              onClick={() => setNotesModal({ show: false, order: null, notes: '' })}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="flex-1 py-5 bg-slate-900 text-white hover:bg-slate-800"
+              disabled={updateOrderNotesMutation.isPending}
+              onClick={() => {
+                if (!notesModal.order?.id) return;
+                updateOrderNotesMutation.mutate({
+                  orderId: notesModal.order.id,
+                  notes: notesModal.notes,
+                });
+              }}
+            >
+              {updateOrderNotesMutation.isPending ? 'Saving...' : 'Save Notes'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 4. Return to Approval Confirmation Modal */}
+      <ReturnToApprovalModal
+        open={returnApprovalModal.show}
+        order={returnApprovalModal.order}
+        isPending={returnToApprovalMutation.isPending}
+        onClose={() => setReturnApprovalModal({ show: false, order: null })}
+        onConfirm={(reason) => {
+          if (!returnApprovalModal.order?.id) return;
+          returnToApprovalMutation.mutate({
+            orderId: returnApprovalModal.order.id,
+            reason,
+          });
+        }}
+      />
     </div>
   );
 }

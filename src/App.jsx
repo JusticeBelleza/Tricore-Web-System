@@ -1,7 +1,8 @@
 import React, { Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AlertTriangle, RefreshCw, LogOut } from 'lucide-react';
 import Layout from './Layout';
-import { useAuth } from './lib/AuthContext';
+import { useAuth } from './lib/useAuth';
 import { ErrorBoundary } from './components/ErrorBoundary'; 
 import { Toaster } from "@/components/ui/sonner"; 
 
@@ -43,12 +44,84 @@ const PageLoader = () => (
   </div>
 );
 
+const AuthRecoveryScreen = ({ authError, onRetry, onSignOut }) => {
+  const [isResetting, setIsResetting] = React.useState(false);
+  const mountedRef = React.useRef(true);
+
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const handleSignOut = async () => {
+    if (isResetting) return;
+    setIsResetting(true);
+    try {
+      await onSignOut?.();
+    } finally {
+      if (mountedRef.current) {
+        setIsResetting(false);
+      }
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
+      <div className="w-full max-w-md bg-white border border-slate-200 rounded-3xl p-8 shadow-sm text-center space-y-5">
+        <div className="w-14 h-14 bg-amber-50 text-amber-600 border border-amber-200 rounded-2xl flex items-center justify-center mx-auto">
+          <AlertTriangle size={28} />
+        </div>
+        <div className="space-y-2">
+          <h2 className="text-xl font-bold text-slate-900 tracking-tight">
+            Authentication Problem
+          </h2>
+          <p className="text-sm text-slate-600 font-medium leading-relaxed">
+            {authError?.message || 'Unable to verify your session or load your account profile.'}
+          </p>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-3 pt-2">
+          {authError?.retryable !== false && typeof onRetry === 'function' && (
+            <button
+              type="button"
+              onClick={() => onRetry()}
+              disabled={isResetting}
+              className="flex-1 py-3 px-4 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-800 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+            >
+              <RefreshCw size={16} />
+              Retry
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleSignOut}
+            disabled={isResetting}
+            className="flex-1 py-3 px-4 bg-white border border-slate-200 text-slate-700 text-sm font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+          >
+            <LogOut size={16} />
+            {authError?.retryable === false ? 'Sign In Again' : 'Sign Out'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // Component to protect routes
 export const ProtectedRoute = ({ children }) => {
-  const { user, profile, loading } = useAuth();
-  
-  // MUST wait for loading to finish to prevent false kick-outs
-  if (loading || (user && !profile)) {
+  const {
+    user,
+    profile,
+    loading,
+    authError,
+    retryAuth,
+    clearSessionToLogin,
+    signOut,
+  } = useAuth() || {};
+
+  // Wait only while initial verification or active retry is in progress
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-4">
@@ -60,9 +133,35 @@ export const ProtectedRoute = ({ children }) => {
       </div>
     );
   }
-  
+
+  const handleRecoverySignOut = clearSessionToLogin || signOut;
+
+  // Recoverable error UI if verification failed or session succeeded without a profile
+  if (authError && !(user && profile)) {
+    return (
+      <AuthRecoveryScreen
+        authError={authError}
+        onRetry={retryAuth}
+        onSignOut={handleRecoverySignOut}
+      />
+    );
+  }
+
+  if (user && !profile) {
+    return (
+      <AuthRecoveryScreen
+        authError={{
+          message: 'Your session is active, but your account profile could not be loaded. Retry or sign out to continue.',
+          retryable: true,
+        }}
+        onRetry={retryAuth}
+        onSignOut={handleRecoverySignOut}
+      />
+    );
+  }
+
   if (!user && !profile) return <Navigate to="/login" replace />;
-  
+
   return children;
 };
 

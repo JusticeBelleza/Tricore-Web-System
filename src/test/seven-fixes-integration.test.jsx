@@ -1,0 +1,713 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
+
+const mockRpc = vi.fn();
+const mockFrom = vi.fn();
+const mockStorageFrom = vi.fn();
+const mockChannel = vi.fn();
+const mockRemoveChannel = vi.fn();
+const mockAuthState = {
+  profile: {
+    id: 'staff-admin-1',
+    role: 'admin',
+    full_name: 'Admin Tester',
+    license_expiry: '2099-01-01',
+  },
+  user: { id: 'staff-admin-1', email: 'admin@tricore.test' },
+};
+
+let sigIsEmptyMock = true;
+
+vi.mock('../lib/supabase', () => {
+  const channelObj = {
+    on: () => channelObj,
+    subscribe: () => channelObj,
+  };
+  return {
+    supabase: {
+      rpc: (...args) => mockRpc(...args),
+      from: (...args) => mockFrom(...args),
+      storage: {
+        from: (...args) => mockStorageFrom(...args),
+      },
+      channel: (...args) => {
+        mockChannel(...args);
+        return channelObj;
+      },
+      removeChannel: (...args) => mockRemoveChannel(...args),
+    },
+  };
+});
+
+vi.mock('../lib/useAuth', () => ({
+  useAuth: () => mockAuthState,
+}));
+
+vi.mock('@react-google-maps/api', () => ({
+  useJsApiLoader: () => ({ isLoaded: false }),
+  GoogleMap: ({ children }) => <div data-testid="mock-gmap">{children}</div>,
+  DirectionsRenderer: () => null,
+  Marker: () => null,
+  Polyline: () => null,
+}));
+
+vi.mock('react-signature-canvas', () => ({
+  default: React.forwardRef(function MockSignatureCanvas(_props, ref) {
+    React.useImperativeHandle(ref, () => ({
+      isEmpty: () => sigIsEmptyMock,
+      clear: () => {
+        sigIsEmptyMock = true;
+      },
+      getCanvas: () => ({
+        toDataURL: () => 'data:image/png;base64,ZmFrZQ==',
+      }),
+    }));
+    return <canvas data-testid="mock-signature-canvas" />;
+  }),
+}));
+
+vi.mock('sonner', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+    warning: vi.fn(),
+  },
+}));
+
+import DriverRouteOrderManager from '../components/DriverRouteOrderManager';
+import AdminOrders from '../pages/AdminOrders';
+import DriverRoutes from '../pages/DriverRoutes';
+import Checkout from '../pages/Checkout';
+import Catalog from '../pages/Catalog';
+
+function createChainQuery(resultPromiseOrValue) {
+  const result =
+    typeof resultPromiseOrValue === 'function'
+      ? resultPromiseOrValue
+      : () => Promise.resolve(resultPromiseOrValue);
+
+  const chain = {
+    select: () => chain,
+    insert: () => chain,
+    update: () => chain,
+    delete: () => chain,
+    eq: () => chain,
+    in: () => chain,
+    or: () => chain,
+    not: () => chain,
+    ilike: () => chain,
+    gte: () => chain,
+    lte: () => chain,
+    order: () => chain,
+    limit: () => chain,
+    range: () => chain,
+    single: () => result(),
+    maybeSingle: () => result(),
+    then: (onFulfilled, onRejected) => result().then(onFulfilled, onRejected),
+  };
+  return chain;
+}
+
+function renderWithProviders(ui) {
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+    },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
+describe('Seven-Fix Component Integration Verification', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    sigIsEmptyMock = true;
+    mockAuthState.profile = {
+      id: 'staff-admin-1',
+      role: 'admin',
+      full_name: 'Admin Tester',
+      license_expiry: '2099-01-01',
+    };
+    mockAuthState.user = { id: 'staff-admin-1', email: 'admin@tricore.test' };
+
+    if (!globalThis.navigator.geolocation) {
+      Object.defineProperty(globalThis.navigator, 'geolocation', {
+        value: {
+          watchPosition: vi.fn(() => 1),
+          clearWatch: vi.fn(),
+        },
+        configurable: true,
+      });
+    }
+    globalThis.scrollTo = vi.fn();
+  });
+
+  it('Fix 2: DriverRouteOrderManager sorts manual stops, alerts other run dates, and persists Save Route Order via RPC', async () => {
+    const today = (() => {
+      const now = new Date();
+      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+        now.getDate()
+      ).padStart(2, '0')}`;
+    })();
+
+    const driverId = 'drv-1111';
+    const orderA = {
+      id: 'aaaaaaaa-0000-0000-0000-000000000001',
+      status: 'shipped',
+      created_at: '2026-11-16T08:00:00Z',
+      assigned_driver_id: driverId,
+      driver_name: 'Carlos Vega',
+      route_position: 2,
+      route_run_date: today,
+      route_order_version: 3,
+      shipping_name: 'Alpha Clinic',
+      shipping_address: '100 First St',
+      shipping_city: 'Pittsburg',
+      shipping_state: 'CA',
+      shipping_zip: '94565',
+      companies: { name: 'Alpha Care' },
+      order_items: [{ id: 'i1', status: 'SHIPPED' }],
+    };
+    const orderB = {
+      id: 'bbbbbbbb-0000-0000-0000-000000000002',
+      status: 'shipped',
+      created_at: '2026-11-16T09:00:00Z',
+      assigned_driver_id: driverId,
+      driver_name: 'Carlos Vega',
+      route_position: 1,
+      route_run_date: today,
+      route_order_version: 5,
+      shipping_name: 'Bravo Clinic',
+      shipping_address: '200 Second St',
+      shipping_city: 'Pittsburg',
+      shipping_state: 'CA',
+      shipping_zip: '94565',
+      companies: { name: 'Bravo Care' },
+      order_items: [{ id: 'i2', status: 'SHIPPED' }],
+    };
+    const otherDateStop = {
+      id: 'cccccccc-0000-0000-0000-000000000003',
+      status: 'shipped',
+      created_at: '2026-11-15T09:00:00Z',
+      assigned_driver_id: driverId,
+      driver_name: 'Carlos Vega',
+      route_position: 1,
+      route_run_date: '2026-11-14',
+      route_order_version: 1,
+      shipping_name: 'Yesterday Clinic',
+      shipping_address: '300 Third St',
+      shipping_city: 'Pittsburg',
+      shipping_state: 'CA',
+      shipping_zip: '94565',
+      companies: { name: 'Yesterday Care' },
+      order_items: [{ id: 'i3', status: 'SHIPPED' }],
+    };
+
+    mockFrom.mockImplementation((table) => {
+      if (table === 'order_items') {
+        return createChainQuery({ data: [], error: null });
+      }
+      if (table === 'orders') {
+        return createChainQuery({ data: [orderA, orderB, otherDateStop], error: null });
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    mockRpc.mockResolvedValue({ data: { updated_count: 2 }, error: null });
+
+    renderWithProviders(
+      <DriverRouteOrderManager drivers={[{ id: driverId, full_name: 'Carlos Vega' }]} />
+    );
+
+    await screen.findByText(/Bravo Care — Bravo Clinic/);
+    expect(screen.getByText('2026-11-14 (1)')).toBeInTheDocument();
+
+    // Bravo (#BBBBBBBB) is position 1, Alpha (#AAAAAAAA) is position 2; move Alpha up
+    fireEvent.click(screen.getByLabelText('Move order AAAAAAAA up'));
+    expect(screen.getByText('Unsaved route order changes')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /save route order/i }));
+
+    await waitFor(() => {
+      expect(mockRpc).toHaveBeenCalledWith('save_driver_stop_order', {
+        p_driver_id: driverId,
+        p_run_scope: today,
+        p_ordered_order_ids: [orderA.id, orderB.id],
+        p_expected_versions: {
+          [orderA.id]: 3,
+          [orderB.id]: 5,
+        },
+      });
+    });
+  });
+
+  it('Fix 6: AdminOrders searches server-side via search_admin_orders RPC and surfaces retryable search errors', async () => {
+    const matchedOrder = {
+      id: 'dddddddd-0000-0000-0000-000000000004',
+      status: 'pending',
+      created_at: '2026-11-16T10:00:00Z',
+      updated_at: '2026-11-16T10:00:00Z',
+      company_id: 'comp-1',
+      shipping_name: 'Maria Gonzalez',
+      shipping_address: '45 Health Blvd',
+      shipping_city: 'Concord',
+      shipping_state: 'CA',
+      shipping_zip: '94520',
+      subtotal: 100,
+      shipping_amount: 0,
+      tax_amount: 0,
+      total_amount: 100,
+      payment_method: 'net_30',
+      payment_status: 'unpaid',
+      order_notes: 'Gate #44',
+      companies: { name: 'Delta Hospice', address: '45 Health Blvd', city: 'Concord', state: 'CA', zip: '94520' },
+      order_items: [],
+    };
+
+    let shouldFailSearch = true;
+
+    mockRpc.mockImplementation((fnName, params) => {
+      if (fnName === 'get_order_tab_counts') {
+        return Promise.resolve({
+          data: { pending: 1, processing: 0, shipped: 0, cancelled: 0, paid: 0, due: 0, restocked: 0 },
+          error: null,
+        });
+      }
+      if (fnName === 'search_admin_orders') {
+        if (shouldFailSearch) {
+          return Promise.resolve({ data: null, error: { message: 'Temporary DB timeout' } });
+        }
+        expect(params.p_search).toBe('Maria Gonzalez');
+        return Promise.resolve({ data: [{ order_id: matchedOrder.id }], error: null });
+      }
+      return Promise.resolve({ data: [], error: null });
+    });
+
+    mockFrom.mockImplementation((table) => {
+      if (table === 'orders') {
+        return createChainQuery({ data: [matchedOrder], error: null });
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    renderWithProviders(<AdminOrders />);
+    await screen.findByText('Delta Hospice');
+
+    const searchInput = screen.getByPlaceholderText(/search agency, customer, recipient, or id/i);
+    fireEvent.change(searchInput, { target: { value: 'Maria Gonzalez' } });
+
+    await screen.findByText(/Unable to load orders/i);
+    expect(screen.getByText(/Temporary DB timeout/i)).toBeInTheDocument();
+
+    shouldFailSearch = false;
+    fireEvent.click(screen.getByRole('button', { name: /^Retry$/i }));
+
+    await waitFor(() => {
+      expect(mockRpc).toHaveBeenCalledWith('search_admin_orders', {
+        p_tab: 'all',
+        p_search: 'Maria Gonzalez',
+        p_limit: 11,
+        p_offset: 0,
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Unable to load orders/i)).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('Delta Hospice')).toBeInTheDocument();
+  });
+
+  it('Fix 2, 4 & 5: DriverRoutes keeps manual route order, shows single-stop Navigate + Order Notes, and allows confirming empty POD', async () => {
+    mockAuthState.profile = {
+      id: 'drv-999',
+      role: 'driver',
+      full_name: 'Sam Driver',
+      license_expiry: '2099-01-01',
+    };
+
+    const orderUpdates = [];
+    const activeStop = {
+      id: 'eeeeeeee-0000-0000-0000-000000000005',
+      status: 'out_for_delivery',
+      created_at: '2026-11-16T08:00:00Z',
+      assigned_driver_id: 'drv-999',
+      driver_name: 'Sam Driver',
+      route_position: 1,
+      route_run_date: '2026-11-16',
+      route_order_version: 2,
+      shipping_name: 'No Proof Patient',
+      shipping_address: '900 Oak Ln',
+      shipping_city: 'Antioch',
+      shipping_state: 'CA',
+      shipping_zip: '94509',
+      subtotal: 50,
+      tax_amount: 0,
+      shipping_amount: 0,
+      total_amount: 50,
+      payment_method: 'net_30',
+      order_notes: 'Deliver to back porch.',
+      order_items: [
+        {
+          id: 'oi-1',
+          product_variant_id: 'pv-1',
+          quantity_variants: 1,
+          total_base_units: 10,
+          unit_price: 50,
+          line_total: 50,
+          status: 'OUT_FOR_DELIVERY',
+          product_variants: { product_id: 'p1', name: 'Box', multiplier: 10, products: { name: 'Gauze' } },
+        },
+      ],
+    };
+
+    mockFrom.mockImplementation((table) => {
+      if (table === 'order_items') {
+        const chain = createChainQuery({ data: [], error: null });
+        chain.update = () => createChainQuery({ data: [], error: null });
+        return chain;
+      }
+      if (table === 'orders') {
+        const chain = createChainQuery({ data: [activeStop], error: null });
+        chain.update = (payload) => {
+          orderUpdates.push(payload);
+          return createChainQuery({ data: [activeStop], error: null });
+        };
+        return chain;
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    renderWithProviders(<DriverRoutes />);
+
+    await screen.findByText('No Proof Patient');
+    expect(screen.getByText('Deliver to back porch.')).toBeInTheDocument();
+
+    const navLink = screen.getByRole('link', { name: /navigate/i });
+    expect(navLink.getAttribute('href')).toContain('https://www.google.com/maps/dir/?api=1&destination=');
+    expect(navLink.getAttribute('href')).not.toContain('waypoints=');
+
+    fireEvent.click(screen.getByRole('button', { name: /complete pod/i }));
+    await screen.findByText(/Recipient Name \(Optional\)/i);
+    expect(screen.getByText(/Signature \(Optional\)/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /submit delivery/i }));
+    await screen.findByText(/Complete delivery without recipient proof\?/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /confirm & complete/i }));
+
+    await waitFor(() => {
+      expect(orderUpdates).toHaveLength(1);
+    });
+    expect(orderUpdates[0]).toMatchObject({
+      status: 'delivered',
+      received_by: null,
+      signature_url: null,
+      photo_url: null,
+    });
+  });
+
+  it('Fix 7 & 5: Checkout edits item quantities across pages, removes items safely, and tracks Order Notes', async () => {
+    const userId = 'retail-user-1';
+    mockAuthState.profile = {
+      id: userId,
+      role: 'customer',
+      full_name: 'Jane Retail',
+      address: '50 Oak Ave',
+      city: 'Pittsburg',
+      state: 'CA',
+      zip: '94565',
+      contact_number: '555-0100',
+    };
+    mockAuthState.user = { id: userId, email: 'jane@example.com' };
+
+    const cartItems = Array.from({ length: 6 }, (_, idx) => ({
+      product_id: `prod-${idx + 1}`,
+      variant_id: `var-${idx + 1}`,
+      name: `Supply Item ${idx + 1}`,
+      unit_price: 10,
+      quantity: 1,
+      line_total: 10,
+    }));
+    localStorage.setItem(`tricore_cart_user_${userId}`, JSON.stringify(cartItems));
+
+    mockFrom.mockImplementation((table) => {
+      if (table === 'tax_rates') {
+        return createChainQuery({ data: { EstimatedCombinedRate: 0.1 }, error: null });
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    renderWithProviders(<Checkout />);
+
+    await screen.findByText('Supply Item 1');
+    // Tax fetches after 500ms debounce: Subtotal 60 + shipping 10 + tax 6 = 76.00
+    await screen.findByText('$76.00', {}, { timeout: 2000 });
+
+    fireEvent.click(screen.getByLabelText('Increase quantity for Supply Item 1'));
+    // Subtotal 70 + shipping 10 + tax 7 = 87.00
+    expect(screen.getByText('$87.00')).toBeInTheDocument();
+
+    // Verify quantity editing & item removal on page 2
+    fireEvent.click(screen.getByLabelText('Next cart page'));
+    await screen.findByText('Supply Item 6');
+    const qty6Input = screen.getByLabelText('Quantity for Supply Item 6');
+    fireEvent.change(qty6Input, { target: { value: '3' } });
+    // Subtotal 90 + shipping 10 + tax 9 = 109.00
+    expect(screen.getByText('$109.00')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Remove Supply Item 6'));
+    fireEvent.click(screen.getByRole('button', { name: /^Remove$/i }));
+    await waitFor(() => {
+      expect(screen.queryByText('Supply Item 6')).not.toBeInTheDocument();
+    });
+    // Removing Supply Item 6 (qty 1 on page 1? Wait: qty 3 removed -> back to 60? Item 1 has qty 2, items 2..5 qty 1 -> subtotal 60, tax 6, total $76.00)
+    expect(screen.getByText('$76.00')).toBeInTheDocument();
+
+    const notesInput = screen.getByLabelText(/Order Notes/i);
+    fireEvent.change(notesInput, { target: { value: 'Call before delivery' } });
+    expect(screen.getAllByText('Call before delivery').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('Phase 3: Catalog isolates carts across accounts/proxy sessions, handles invalid JSON, and renders default variants cleanly', async () => {
+    localStorage.setItem(
+      'tricore_cart_user_user-a',
+      JSON.stringify([{ product_id: 'p1', variant_id: 'v1', name: 'Gloves', quantity: 2, unit_price: 12.5, line_total: 25 }])
+    );
+    localStorage.setItem(
+      'tricore_cart_agency_comp-b',
+      JSON.stringify([{ product_id: 'p2', variant_id: 'v2', name: 'Masks', quantity: 5, unit_price: 10, line_total: 50 }])
+    );
+    localStorage.setItem('tricore_cart_user_user-bad', '{broken json');
+
+    mockRpc.mockResolvedValue({ data: ['Gloves', 'Masks'], error: null });
+    mockFrom.mockImplementation((table) => {
+      if (table === 'products') {
+        return createChainQuery({
+          data: [
+            {
+              id: 'prod-glove-1',
+              name: 'Nitrile Gloves - Medium',
+              category: 'Gloves',
+              base_sku: 'GLV-BASE',
+              retail_base_price: 15,
+              image_urls: [],
+              continue_selling: false,
+              inventory: [{ base_units_on_hand: 20 }],
+              product_variants: [
+                { id: 'var-glv-1', product_id: 'prod-glove-1', name: 'Box of 100', sku: 'GLV-M-100', multiplier: 1, price: 15 },
+              ],
+            },
+          ],
+          error: null,
+        });
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    // 1. Start with profile = null: must NOT overwrite stored user-a cart
+    mockAuthState.profile = null;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <Catalog />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    await screen.findByText('Nitrile Gloves');
+    expect(screen.getByText('Cart (0)')).toBeInTheDocument();
+    expect(screen.getAllByText('GLV-M-100').length).toBeGreaterThanOrEqual(1);
+    expect(JSON.parse(localStorage.getItem('tricore_cart_user_user-a'))).toHaveLength(1);
+
+    // 2. Log in as Retail Customer A -> sees user-a cart cleanly
+    mockAuthState.profile = { id: 'user-a', role: 'retail', full_name: 'Alice' };
+    rerender(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <Catalog />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    expect(screen.getByText('Cart (2)')).toBeInTheDocument();
+    expect(screen.getByText('$25.00')).toBeInTheDocument();
+
+    // 3. Switch to B2B Agency B -> isolates cart to agency_comp-b without leaking user-a items
+    mockAuthState.profile = { id: 'user-b', company_id: 'comp-b', role: 'b2b', full_name: 'Bob Agency' };
+    rerender(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <Catalog />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    expect(screen.getByText('Cart (5)')).toBeInTheDocument();
+    expect(screen.getByText('$50.00')).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem('tricore_cart_user_user-a'))).toHaveLength(1);
+
+    // 4. Corrupt JSON cart for another user does not crash Catalog
+    mockAuthState.profile = { id: 'user-bad', role: 'retail', full_name: 'Corrupt Cart' };
+    rerender(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <Catalog />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    expect(screen.getByText('Cart (0)')).toBeInTheDocument();
+    expect(screen.getByText('$0.00')).toBeInTheDocument();
+  });
+
+  it('Phase 4: DriverRoutes creates one realtime channel, refreshes on foreground visibilitychange, and cleans up on unmount', async () => {
+    mockAuthState.profile = {
+      id: 'drv-phase4',
+      role: 'driver',
+      full_name: 'Phase Four Driver',
+      license_expiry: '2099-01-01',
+    };
+
+    let routeFetchCount = 0;
+    mockFrom.mockImplementation((table) => {
+      if (table === 'order_items') {
+        routeFetchCount += 1;
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    const originalVisibilityDescriptor = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    try {
+      const { rerender, unmount } = render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter>
+            <DriverRoutes />
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+
+      await waitFor(() => {
+        expect(routeFetchCount).toBe(1);
+      });
+      expect(mockChannel).toHaveBeenCalledTimes(1);
+      expect(mockChannel).toHaveBeenCalledWith('driver-dispatch-updates');
+
+      rerender(
+        <QueryClientProvider client={client}>
+          <MemoryRouter>
+            <DriverRoutes />
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+      expect(mockChannel).toHaveBeenCalledTimes(1);
+
+      Object.defineProperty(document, 'visibilityState', {
+        value: 'visible',
+        configurable: true,
+      });
+      fireEvent(document, new Event('visibilitychange'));
+
+      await waitFor(() => {
+        expect(routeFetchCount).toBe(2);
+      });
+      expect(mockChannel).toHaveBeenCalledTimes(1);
+
+      unmount();
+      expect(mockRemoveChannel).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalVisibilityDescriptor) {
+        Object.defineProperty(document, 'visibilityState', originalVisibilityDescriptor);
+      } else {
+        delete document.visibilityState;
+      }
+    }
+  });
+
+  it('Phase 4: Checkout fetches B2B proxy patient and company data once without infinite refetch loops', async () => {
+    mockAuthState.profile = {
+      id: 'staff-admin-1',
+      role: 'admin',
+      full_name: 'Admin Tester',
+    };
+
+    localStorage.setItem(
+      'tricore_proxy_session',
+      JSON.stringify({
+        targetCompanyId: 'comp-1',
+        targetUserId: 'user-p1',
+        targetPatientId: 'pat-1',
+        orderType: 'b2b',
+      })
+    );
+    localStorage.setItem(
+      'tricore_cart_agency_comp-1',
+      JSON.stringify([
+        {
+          product_id: 'prod-1',
+          variant_id: 'var-1',
+          name: 'Surgical Masks',
+          unit_price: 25,
+          quantity: 2,
+          line_total: 50,
+        },
+      ])
+    );
+
+    let companyFetchCount = 0;
+    mockFrom.mockImplementation((table) => {
+      if (table === 'agency_patients') {
+        return createChainQuery({
+          data: [
+            {
+              id: 'pat-1',
+              full_name: 'Jane Doe',
+              address: '123 Elm St',
+              city: 'Pittsburg',
+              state: 'CA',
+              zip: '94565',
+            },
+          ],
+          error: null,
+        });
+      }
+      if (table === 'orders') {
+        return createChainQuery({ data: [{ total_amount: 100 }], error: null });
+      }
+      if (table === 'companies') {
+        companyFetchCount += 1;
+        return createChainQuery({
+          data: {
+            id: 'comp-1',
+            name: 'Care Agency',
+            shipping_fee: 15,
+            credit_limit: 500,
+          },
+          error: null,
+        });
+      }
+      if (table === 'tax_rates') {
+        return createChainQuery({ data: { EstimatedCombinedRate: 0.1 }, error: null });
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    renderWithProviders(<Checkout />);
+
+    await screen.findByText('Jane Doe');
+    expect(screen.getByText('Care Agency')).toBeInTheDocument();
+    expect(companyFetchCount).toBe(1);
+  });
+});

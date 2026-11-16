@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext';
+import { useAuth } from '../lib/useAuth';
 import { Mail, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight, ShieldCheck, X, Key, CheckCircle2 } from 'lucide-react';
 import { Turnstile } from '@marsidev/react-turnstile';
 import { toast } from "sonner";
@@ -34,7 +34,7 @@ export default function Login() {
   const [resetLoading, setResetLoading] = useState(false);
 
   const navigate = useNavigate();
-  const { user, profile } = useAuth(); // Globally tracked user & profile
+  const { user, profile, authError } = useAuth(); // Globally tracked user & profile
 
   // 🚀 Load remembered email on mount
   useEffect(() => {
@@ -46,16 +46,16 @@ export default function Login() {
     }
   }, []);
 
-  // Automatically navigate once the context says we are logged in
+  // Automatically navigate once the context says we are logged in cleanly
   useEffect(() => {
-    if (user) {
+    if (user && !authError) {
       if (profile?.role === 'driver') {
         navigate('/driver', { replace: true });
       } else {
         navigate('/dashboard', { replace: true });
       }
     }
-  }, [user, profile, navigate]);
+  }, [user, profile, authError, navigate]);
 
   const handleGoogleSignIn = async () => {
     setLoading(true);

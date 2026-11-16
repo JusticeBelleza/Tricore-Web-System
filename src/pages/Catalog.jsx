@@ -1,27 +1,19 @@
-import React, { useEffect, useState, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext';
+import { useAuth } from '../lib/useAuth';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { readCartFromStorage, writeCartToStorage } from '../lib/cartUtils';
 import { ShoppingCart, PackageOpen, Plus, Minus, X, CheckCircle2, Search, Wallet, ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, Building2, User, Info, ArrowLeft } from 'lucide-react';
 
 // ==========================================
 // 🚀 PRODUCT FAMILY CARD
 // ==========================================
 function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVariantPrice, onClick }) {
-  const [selectedProductId, setSelectedProductId] = useState(familyProducts[0].id);
+  const [selectedProductId] = useState(familyProducts[0].id);
   const activeProduct = familyProducts.find(p => p.id === selectedProductId) || familyProducts[0];
   const activeVariants = globalVariants.filter(v => v.product_id === activeProduct.id);
-
-  const [selectedVariantId, setSelectedVariantId] = useState(activeVariants[0]?.id || '');
-
-  useEffect(() => {
-    const newVariants = globalVariants.filter(v => v.product_id === selectedProductId);
-    if (newVariants.length > 0) setSelectedVariantId(newVariants[0].id);
-    else setSelectedVariantId('');
-  }, [selectedProductId, globalVariants]);
-
-  const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
+  const activeVariant = activeVariants[0];
   const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
 
   let stockAmount = 0;
@@ -99,9 +91,6 @@ export default function Catalog() {
   const categoryDropdownRef = useRef(null);
 
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  
-  const [cart, setCart] = useState([]);
-  const [cartLoaded, setCartLoaded] = useState(false);
 
   // ==========================================
   // 🚀 PROXY SESSION DETECTION & SECURITY
@@ -127,6 +116,29 @@ export default function Catalog() {
     ? (proxySession.targetCompanyId ? `tricore_cart_agency_${proxySession.targetCompanyId}` : `tricore_cart_user_${proxySession.targetUserId}`)
     : (profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`);
 
+  const activeCartKey = profile?.id ? cartKey : null;
+  const [cartState, setCartState] = useState(() => ({
+    key: activeCartKey,
+    items: activeCartKey ? readCartFromStorage(activeCartKey) : [],
+  }));
+
+  const cart = useMemo(() => {
+    if (!activeCartKey) return [];
+    if (cartState.key === activeCartKey) return cartState.items;
+    return readCartFromStorage(activeCartKey);
+  }, [activeCartKey, cartState]);
+
+  const setCart = useCallback((updater) => {
+    if (!activeCartKey) return;
+    setCartState((prev) => {
+      const baseItems = prev.key === activeCartKey ? prev.items : readCartFromStorage(activeCartKey);
+      const nextItems = typeof updater === 'function' ? updater(baseItems) : updater;
+      const safeItems = Array.isArray(nextItems) ? nextItems : [];
+      writeCartToStorage(activeCartKey, safeItems);
+      return { key: activeCartKey, items: safeItems };
+    });
+  }, [activeCartKey]);
+
   // Close custom dropdown on outside click
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -144,24 +156,11 @@ export default function Catalog() {
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
-  // Reset page when category changes
-  useEffect(() => { setPage(0); }, [selectedCategory]);
-
-  // Cart Local Storage Sync
-  useEffect(() => {
-    if (profile?.id) {
-      const savedCart = localStorage.getItem(cartKey);
-      if (savedCart) setCart(JSON.parse(savedCart));
-      else setCart([]); 
-      setCartLoaded(true);
-    }
-  }, [profile?.id, cartKey]);
-
-  useEffect(() => {
-    if (cartLoaded && profile?.id) {
-      localStorage.setItem(cartKey, JSON.stringify(cart));
-    }
-  }, [cart, cartLoaded, profile?.id, cartKey]);
+  const handleCategoryChange = (category) => {
+    setSelectedCategory(category);
+    setPage(0);
+    setIsCategoryOpen(false);
+  };
 
   // ==========================================
   // 🚀 REACT QUERY 1: FETCH CATEGORIES
@@ -532,10 +531,7 @@ export default function Catalog() {
                 {['All Categories', ...categories.filter(c => c !== 'All Categories')].map(c => (
                   <button
                     key={c}
-                    onClick={() => {
-                      setSelectedCategory(c);
-                      setIsCategoryOpen(false);
-                    }}
+                    onClick={() => handleCategoryChange(c)}
                     className={`w-full text-left px-4 py-3 text-xs sm:text-sm transition-colors border-b border-slate-50 last:border-0 ${selectedCategory === c ? 'bg-blue-50 text-blue-700 font-bold' : 'text-slate-700 hover:bg-slate-50 font-medium'}`}
                   >
                     {c}

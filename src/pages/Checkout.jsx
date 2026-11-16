@@ -1,12 +1,22 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext';
+import { useAuth } from '../lib/useAuth';
 import { 
   ArrowLeft, CheckCircle2, Package, CreditCard, Receipt, 
   X, Building, MapPin, Search, User, Trash2, AlertCircle, 
-  ChevronDown, Mail, Phone, Edit2, Save, ChevronLeft, ChevronRight, AlertTriangle, Check, Info
+  ChevronDown, Mail, Phone, Edit2, Save, ChevronLeft, ChevronRight, AlertTriangle, Check, Info, Minus, Plus, StickyNote
 } from 'lucide-react';
+import {
+  normalizeCartItems,
+  updateCartItemQuantity,
+  calculateCheckoutTotals,
+  validateCartForSubmission,
+} from '../lib/cartUtils';
+import {
+  MAX_ORDER_NOTES_LENGTH,
+  normalizeOrderNotes,
+} from '../lib/orderApprovalUtils';
 
 export default function Checkout() {
   const { profile, user } = useAuth();
@@ -15,10 +25,13 @@ export default function Checkout() {
   const [cart, setCart] = useState([]);
   const [cartLoaded, setCartLoaded] = useState(false);
 
-  // CART PAGINATION & DELETE STATE
+  // CART PAGINATION, QUANTITY & DELETE STATE
   const [cartPage, setCartPage] = useState(1);
-  const [itemToDelete, setItemToDelete] = useState(null); 
+  const [itemToDelete, setItemToDelete] = useState(null);
+  const [qtyDrafts, setQtyDrafts] = useState({});
   const ITEMS_PER_PAGE = 5;
+
+  const [orderNotes, setOrderNotes] = useState('');
 
   // ==========================================
   // 🚀 PROXY SESSION DETECTION & SECURITY
@@ -52,8 +65,16 @@ export default function Checkout() {
   useEffect(() => {
     if (targetUserId || targetCompanyId) {
       const savedCart = localStorage.getItem(cartKey);
-      if (savedCart) setCart(JSON.parse(savedCart));
-      else setCart([]);
+      if (savedCart) {
+        try {
+          setCart(normalizeCartItems(JSON.parse(savedCart)));
+        } catch {
+          setCart([]);
+        }
+      } else {
+        setCart([]);
+      }
+      setQtyDrafts({});
       setCartLoaded(true);
     }
   }, [targetUserId, targetCompanyId, cartKey]);
@@ -128,19 +149,7 @@ export default function Checkout() {
   }, [isB2B, targetUserId, isProxy, profile, user]);
 
   // 🚀 Fetch B2B Data (handles Proxy vs Personal)
-  useEffect(() => {
-    if (isB2B && targetCompanyId) fetchB2BData();
-  }, [isB2B, targetCompanyId]);
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) setShowDropdown(false);
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const fetchB2BData = async () => {
+  const fetchB2BData = useCallback(async () => {
     try {
       const [patientsRes, unpaidRes, companyRes] = await Promise.all([
         supabase.from('agency_patients').select('*').eq('agency_id', targetCompanyId).order('full_name', { ascending: true }),
@@ -167,7 +176,19 @@ export default function Checkout() {
         setFinancials({ limit, outstanding, available: limit - outstanding });
       }
     } catch (err) { console.error(err); }
-  };
+  }, [targetCompanyId, targetPatientId]);
+
+  useEffect(() => {
+    if (isB2B && targetCompanyId) fetchB2BData();
+  }, [isB2B, targetCompanyId, fetchB2BData]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) setShowDropdown(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   useEffect(() => {
     const activeZip = isB2B 
@@ -216,8 +237,47 @@ export default function Checkout() {
 
   const executeRemoveFromCart = () => {
     if (itemToDelete !== null) {
+      const removed = cart[itemToDelete];
       setCart(prevCart => prevCart.filter((_, index) => index !== itemToDelete));
+      if (removed?.variant_id) {
+        setQtyDrafts(prev => {
+          const next = { ...prev };
+          delete next[removed.variant_id];
+          return next;
+        });
+      }
       setItemToDelete(null);
+    }
+  };
+
+  const handleQuantityChange = (targetIndex, rawNextQty) => {
+    setCart(prevCart => updateCartItemQuantity(prevCart, targetIndex, rawNextQty));
+  };
+
+  const handleQuantityInputChange = (targetIndex, variantKey, rawValue) => {
+    if (rawValue === '') {
+      setQtyDrafts(prev => ({ ...prev, [variantKey]: '' }));
+      return;
+    }
+    if (!/^\d+$/.test(rawValue)) return;
+    const parsed = Number.parseInt(rawValue, 10);
+    setQtyDrafts(prev => ({ ...prev, [variantKey]: rawValue }));
+    if (parsed >= 1) {
+      handleQuantityChange(targetIndex, parsed);
+    }
+  };
+
+  const handleQuantityInputBlur = (targetIndex, variantKey, currentQty) => {
+    const rawDraft = qtyDrafts[variantKey];
+    if (rawDraft !== undefined) {
+      const parsed = Number.parseInt(String(rawDraft), 10);
+      const safeQty = Number.isFinite(parsed) && parsed >= 1 ? parsed : Math.max(1, Number(currentQty) || 1);
+      handleQuantityChange(targetIndex, safeQty);
+      setQtyDrafts(prev => {
+        const next = { ...prev };
+        delete next[variantKey];
+        return next;
+      });
     }
   };
 
@@ -233,17 +293,37 @@ export default function Checkout() {
     setError(''); setIsEditingRetail(false); 
   };
 
-  const subtotal = cart.reduce((sum, item) => sum + item.line_total, 0);
-  const shippingFee = isB2B ? (customShippingFee !== null ? customShippingFee : 0) : 10.00; 
-  
-  const taxRate = (isB2B && activeCompany?.tax_exempt) ? 0 : (taxData ? Number(taxData.EstimatedCombinedRate) : 0);
-  const taxAmount = subtotal * taxRate;
-  const totalAmount = subtotal + shippingFee + taxAmount;
+  const {
+    normalizedCart,
+    subtotal,
+    shippingFee,
+    taxAmount,
+    totalAmount,
+  } = calculateCheckoutTotals(cart, {
+    isB2B,
+    customShippingFee,
+    taxRate: taxData ? Number(taxData.EstimatedCombinedRate) : 0,
+    taxExempt: Boolean(activeCompany?.tax_exempt),
+  });
 
   const isCreditExceeded = isB2B && paymentMethod === 'net_30' && totalAmount > financials.available;
 
   const handlePlaceOrder = async () => {
-    if (cart.length === 0 || isCreditExceeded || taxLoading) return;
+    if (loading || normalizedCart.length === 0 || isCreditExceeded || taxLoading) return;
+
+    const cartCheck = validateCartForSubmission(normalizedCart);
+    if (!cartCheck.valid) {
+      setError(cartCheck.error);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    const notesCheck = normalizeOrderNotes(orderNotes);
+    if (!notesCheck.valid) {
+      setError(notesCheck.error);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
     
     if (isB2B && !shipToAgency && !selectedPatient) { setError('Please select a patient or select "Ship to Agency".'); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
     if (!isB2B && (isEditingRetail || !retailInfo.address || !retailInfo.phone)) { setError('Please confirm your shipping address and phone number.'); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
@@ -271,6 +351,7 @@ export default function Checkout() {
         shipping_zip: sZip,
         shipping_email: sEmail,
         shipping_phone: sPhone,
+        ...(notesCheck.value ? { order_notes: notesCheck.value } : {}),
         status: 'pending', // 🚀 FIX: Force ALL orders (even proxy) to 'pending' for approval
         payment_method: paymentMethod,
         payment_status: 'unpaid',
@@ -280,7 +361,7 @@ export default function Checkout() {
       if (orderError) throw orderError;
 
       // 2. Fetch fresh multipliers straight from the database to ensure perfect accuracy
-      const variantIds = cart.map(item => item.variant_id);
+      const variantIds = normalizedCart.map(item => item.variant_id);
       const { data: variantsData, error: variantsError } = await supabase
         .from('product_variants')
         .select('id, multiplier')
@@ -288,8 +369,8 @@ export default function Checkout() {
         
       if (variantsError) throw variantsError;
 
-      // 3. Map the order items using the true database multiplier
-      const orderItems = cart.map(item => {
+      // 3. Map the order items using the true database multiplier and validated cart quantities
+      const orderItems = normalizedCart.map(item => {
         const dbVariant = variantsData?.find(v => v.id === item.variant_id);
         const actualMultiplier = dbVariant?.multiplier || 1;
 
@@ -752,18 +833,56 @@ export default function Checkout() {
             <div className="divide-y divide-slate-100 p-2 flex-1">
               {currentCartItems.map((item, localIndex) => {
                 const actualIndex = (cartPage - 1) * ITEMS_PER_PAGE + localIndex;
-                
+                const variantKey = item.variant_id || `idx-${actualIndex}`;
+                const displayQtyValue = qtyDrafts[variantKey] !== undefined ? qtyDrafts[variantKey] : String(item.quantity);
+                const computedLineTotal = Number(item.unit_price || 0) * Number(item.quantity || 1);
+
                 return (
-                  <div key={actualIndex} className="px-4 py-3 flex items-center justify-between hover:bg-slate-50/80 rounded-xl transition-colors">
-                    <div className="pr-4 flex-1">
+                  <div key={variantKey} className="px-4 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/80 rounded-xl transition-colors">
+                    <div className="pr-2 flex-1 min-w-0">
                       <p className="font-bold text-slate-900 text-sm leading-snug">{item.name}</p>
-                      <p className="text-xs font-medium text-slate-500 mt-0.5">{item.quantity} x ${item.unit_price.toFixed(2)}</p>
+                      <p className="text-xs font-medium text-slate-500 mt-0.5">${Number(item.unit_price || 0).toFixed(2)} each</p>
                     </div>
-                    <div className="flex items-center gap-3 sm:gap-5 shrink-0">
-                      <p className="font-extrabold text-slate-900 text-base">${item.line_total.toFixed(2)}</p>
+
+                    <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
+                      <div className="flex items-center bg-slate-100 rounded-xl p-1 border border-slate-200 shadow-inner">
+                        <button
+                          type="button"
+                          onClick={() => handleQuantityChange(actualIndex, item.quantity - 1)}
+                          disabled={item.quantity <= 1}
+                          aria-label={`Decrease quantity for ${item.name}`}
+                          className="min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-35 disabled:cursor-not-allowed shadow-sm active:scale-95 transition-all"
+                        >
+                          <Minus size={14} strokeWidth={2.5} />
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          inputMode="numeric"
+                          aria-label={`Quantity for ${item.name}`}
+                          value={displayQtyValue}
+                          onChange={(e) => handleQuantityInputChange(actualIndex, variantKey, e.target.value)}
+                          onBlur={() => handleQuantityInputBlur(actualIndex, variantKey, item.quantity)}
+                          className="w-12 text-center text-sm font-extrabold text-slate-900 bg-transparent outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleQuantityChange(actualIndex, item.quantity + 1)}
+                          aria-label={`Increase quantity for ${item.name}`}
+                          className="min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg bg-white text-slate-700 hover:bg-slate-50 shadow-sm active:scale-95 transition-all"
+                        >
+                          <Plus size={14} strokeWidth={2.5} />
+                        </button>
+                      </div>
+
+                      <p className="font-extrabold text-slate-900 text-base w-20 text-right">${computedLineTotal.toFixed(2)}</p>
+
                       <button 
+                        type="button"
                         onClick={() => setItemToDelete(actualIndex)} 
-                        className="p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 rounded-lg transition-all shadow-sm border border-transparent hover:border-red-100 active:scale-90"
+                        aria-label={`Remove ${item.name}`}
+                        className="min-w-[36px] min-h-[36px] flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-600 rounded-lg transition-all shadow-sm border border-transparent hover:border-red-100 active:scale-90"
                         title="Remove Item"
                       >
                         <Trash2 size={16} />
@@ -782,6 +901,8 @@ export default function Checkout() {
                 </span>
                 <div className="flex gap-2">
                   <button 
+                    type="button"
+                    aria-label="Previous cart page"
                     onClick={() => setCartPage(p => Math.max(1, p - 1))} 
                     disabled={cartPage === 1}
                     className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm transition-all active:scale-95"
@@ -789,6 +910,8 @@ export default function Checkout() {
                     <ChevronLeft size={16} />
                   </button>
                   <button 
+                    type="button"
+                    aria-label="Next cart page"
                     onClick={() => setCartPage(p => Math.min(totalCartPages, p + 1))} 
                     disabled={cartPage === totalCartPages}
                     className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm transition-all active:scale-95"
@@ -798,6 +921,37 @@ export default function Checkout() {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* ORDER NOTES (OPTIONAL) CARD */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/30 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-amber-50 text-amber-600 rounded-lg flex items-center justify-center border border-amber-100">
+                  <StickyNote size={16} />
+                </div>
+                <label htmlFor="checkout-order-notes" className="font-bold text-slate-900 text-base tracking-tight cursor-pointer">
+                  Order Notes (Optional)
+                </label>
+              </div>
+              <span className="text-[11px] font-bold text-slate-400">
+                {orderNotes.length}/{MAX_ORDER_NOTES_LENGTH}
+              </span>
+            </div>
+            <div className="p-5 space-y-2">
+              <textarea
+                id="checkout-order-notes"
+                rows={3}
+                maxLength={MAX_ORDER_NOTES_LENGTH}
+                value={orderNotes}
+                onChange={(e) => setOrderNotes(e.target.value)}
+                placeholder="Add delivery instructions, gate codes, or packing notes..."
+                className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none resize-y transition-all"
+              />
+              <p className="text-[11px] text-slate-500 font-medium">
+                Visible on your order summary and packing slip. Please include delivery or packing instructions only — do not enter sensitive medical or diagnosis information.
+              </p>
+            </div>
           </div>
         </div>
 
@@ -902,10 +1056,17 @@ export default function Checkout() {
               <div className="flex justify-between items-end pt-4 border-t border-slate-200 mt-3"><span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Total</span><span className="text-3xl font-black text-slate-900 tracking-tight leading-none">${totalAmount.toFixed(2)}</span></div>
             </div>
 
+            {orderNotes.trim() && (
+              <div className="p-3.5 bg-amber-50/70 border border-amber-200 rounded-xl text-left">
+                <p className="text-[10px] font-bold text-amber-800 uppercase tracking-widest mb-1">Order Notes</p>
+                <p className="text-xs text-slate-700 font-medium whitespace-pre-wrap break-words">{orderNotes.trim()}</p>
+              </div>
+            )}
+
             <button 
               onClick={handlePlaceOrder} 
-              disabled={loading || taxLoading || (isB2B && !shipToAgency && !selectedPatient) || (!isB2B && (isEditingRetail || !retailInfo.address || !retailInfo.phone))} 
-              className={`w-full mt-5 py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-xl transition-all duration-200 ${((isB2B && !shipToAgency && !selectedPatient) || (!isB2B && (isEditingRetail || !retailInfo.address || !retailInfo.phone))) ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none' : 'bg-slate-900 text-white hover:bg-slate-800 hover:-translate-y-0.5 active:translate-y-0 active:scale-95'}`}
+              disabled={loading || taxLoading || isCreditExceeded || (isB2B && !shipToAgency && !selectedPatient) || (!isB2B && (isEditingRetail || !retailInfo.address || !retailInfo.phone))}
+              className={`w-full mt-5 py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-xl transition-all duration-200 ${(loading || taxLoading || isCreditExceeded || (isB2B && !shipToAgency && !selectedPatient) || (!isB2B && (isEditingRetail || !retailInfo.address || !retailInfo.phone))) ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none' : 'bg-slate-900 text-white hover:bg-slate-800 hover:-translate-y-0.5 active:translate-y-0 active:scale-95'}`}
             >
               {loading ? 'Processing...' : taxLoading ? 'Calculating Tax...' : (<><Receipt size={18} /> Place Order</>)}
             </button>
