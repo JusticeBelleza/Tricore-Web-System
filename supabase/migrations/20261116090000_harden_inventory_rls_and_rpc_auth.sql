@@ -26,44 +26,28 @@ WITH CHECK (COALESCE(public.get_user_role(), '') IN ('admin', 'warehouse'));
 
 -- ============================================================================
 -- 3. Restrict direct table INSERT/UPDATE on public.orders & public.order_items
---    - Customers can insert pending/unpaid orders for themselves/their agency
---      and insert initial 'active' order_items ONLY onto their own 'pending' order.
---    - Direct UPDATE on public.orders and UPDATE/DELETE on public.order_items
---      are restricted strictly to Admin and Warehouse staff; direct non-staff
+--    & add idempotency_key for atomic Checkout deduplication
+--    - Customers place orders exclusively via atomic, server-priced
+--      place_customer_order() SECURITY DEFINER RPC (below).
+--    - Direct INSERT/UPDATE/DELETE on public.orders and public.order_items are
+--      restricted strictly to Admin and Warehouse staff; direct non-staff
 --      mutations on orders are additionally blocked by protect_secure_order_columns().
 --    - Drivers perform all valid delivery transitions and POD quantity splits via
 --      assignment-checked transactional SECURITY DEFINER RPCs below.
 -- ============================================================================
+ALTER TABLE public.orders
+ADD COLUMN IF NOT EXISTS idempotency_key uuid;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_idempotency_key
+ON public.orders (idempotency_key)
+WHERE idempotency_key IS NOT NULL;
+
 DROP POLICY IF EXISTS "Admins can insert orders" ON public.orders;
 DROP POLICY IF EXISTS "Insert orders" ON public.orders;
 
 CREATE POLICY "Insert orders" ON public.orders
 FOR INSERT TO authenticated
-WITH CHECK (
-  LOWER(COALESCE(public.get_user_role(), '')) IN ('admin', 'warehouse')
-  OR (
-    public.orders.status::text = 'pending'
-    AND public.orders.payment_status::text = 'unpaid'
-    AND public.orders.assigned_driver_id IS NULL
-    AND COALESCE(public.orders.is_restocked, false) = false
-    AND COALESCE(public.orders.subtotal, 0) >= 0
-    AND COALESCE(public.orders.tax_amount, 0) >= 0
-    AND COALESCE(public.orders.shipping_amount, 0) >= 0
-    AND COALESCE(public.orders.total_amount, 0) >= 0
-    AND (
-      (
-        LOWER(COALESCE(public.get_user_role(), '')) IN ('retail', 'user')
-        AND public.orders.user_id = (SELECT auth.uid())
-      )
-      OR (
-        LOWER(COALESCE(public.get_user_role(), '')) IN ('b2b', 'agency_admin')
-        AND public.orders.user_id = (SELECT auth.uid())
-        AND public.orders.company_id IS NOT NULL
-        AND public.orders.company_id = public.get_my_company_id()
-      )
-    )
-  )
-);
+WITH CHECK (LOWER(COALESCE(public.get_user_role(), '')) IN ('admin', 'warehouse'));
 
 DROP POLICY IF EXISTS "Update orders" ON public.orders;
 
@@ -77,33 +61,7 @@ DROP POLICY IF EXISTS "Insert order items" ON public.order_items;
 
 CREATE POLICY "Insert order items" ON public.order_items
 FOR INSERT TO authenticated
-WITH CHECK (
-  LOWER(COALESCE(public.get_user_role(), '')) IN ('admin', 'warehouse')
-  OR (
-    LOWER(COALESCE(public.get_user_role(), '')) IN ('retail', 'user', 'b2b', 'agency_admin')
-    AND COALESCE(public.order_items.quantity_variants, 0) > 0
-    AND LOWER(COALESCE(public.order_items.status, 'active')) = 'active'
-    AND COALESCE(public.order_items.unit_price, -1) >= 0
-    AND COALESCE(public.order_items.line_total, -1) >= 0
-    AND EXISTS (
-      SELECT 1
-      FROM public.orders o
-      WHERE o.id = public.order_items.order_id
-        AND o.status::text = 'pending'
-        AND (
-          (
-            LOWER(COALESCE(public.get_user_role(), '')) IN ('retail', 'user')
-            AND o.user_id = (SELECT auth.uid())
-          )
-          OR (
-            LOWER(COALESCE(public.get_user_role(), '')) IN ('b2b', 'agency_admin')
-            AND o.company_id IS NOT NULL
-            AND o.company_id = public.get_my_company_id()
-          )
-        )
-    )
-  )
-);
+WITH CHECK (LOWER(COALESCE(public.get_user_role(), '')) IN ('admin', 'warehouse'));
 
 DROP POLICY IF EXISTS "Update order items" ON public.order_items;
 
@@ -305,6 +263,399 @@ REVOKE ALL ON FUNCTION public.save_customer_profile_info(uuid, text, text, text,
 GRANT EXECUTE ON FUNCTION public.save_customer_profile_info(uuid, text, text, text, text, text, uuid) TO authenticated, service_role;
 
 -- ============================================================================
+-- 5b. Atomic, Idempotent, Server-Priced Customer / B2B / Proxy Checkout RPC
+-- ============================================================================
+CREATE OR REPLACE FUNCTION public.place_customer_order(
+  p_idempotency_key uuid,
+  p_target_user_id uuid DEFAULT NULL,
+  p_target_company_id uuid DEFAULT NULL,
+  p_patient_id uuid DEFAULT NULL,
+  p_shipping_name text DEFAULT NULL,
+  p_shipping_address text DEFAULT NULL,
+  p_shipping_city text DEFAULT NULL,
+  p_shipping_state text DEFAULT NULL,
+  p_shipping_zip text DEFAULT NULL,
+  p_shipping_email text DEFAULT NULL,
+  p_shipping_phone text DEFAULT NULL,
+  p_order_notes text DEFAULT NULL,
+  p_payment_method text DEFAULT 'net_30',
+  p_is_proxy boolean DEFAULT false,
+  p_order_mode text DEFAULT NULL,
+  p_items jsonb DEFAULT '[]'::jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public'
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_caller_role text;
+  v_caller_status text;
+  v_caller_company_id uuid;
+  v_is_staff boolean;
+  v_effective_user_id uuid;
+  v_effective_company_id uuid;
+  v_is_b2b boolean;
+  v_payment_method text;
+  v_clean_notes text;
+  v_existing_order public.orders%ROWTYPE;
+  v_company public.companies%ROWTYPE;
+  v_shipping_amount numeric := 10.00;
+  v_tax_rate numeric := 0;
+  v_subtotal numeric := 0;
+  v_tax_amount numeric := 0;
+  v_total_amount numeric := 0;
+  v_outstanding numeric := 0;
+  v_elem jsonb;
+  v_variant_id uuid;
+  v_qty integer;
+  v_qty_text text;
+  v_pv record;
+  v_variant_retail numeric;
+  v_unit_price numeric;
+  v_line_total numeric;
+  v_rule record;
+  v_item_payload jsonb := '[]'::jsonb;
+  v_created_order public.orders%ROWTYPE;
+  v_zip5 text;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Authentication required to place orders.';
+  END IF;
+
+  IF p_idempotency_key IS NULL THEN
+    RAISE EXCEPTION 'Order idempotency key is required.';
+  END IF;
+
+  SELECT LOWER(COALESCE(role, '')), COALESCE(status, 'active'), company_id
+  INTO v_caller_role, v_caller_status, v_caller_company_id
+  FROM public.user_profiles
+  WHERE id = v_uid;
+
+  IF NOT FOUND OR v_caller_status <> 'active' THEN
+    RAISE EXCEPTION 'Active user account required to place orders.';
+  END IF;
+
+  v_is_staff := v_caller_role IN ('admin', 'warehouse');
+
+  IF NOT v_is_staff THEN
+    IF v_caller_role NOT IN ('retail', 'user', 'b2b', 'agency_admin') THEN
+      RAISE EXCEPTION 'Not authorized to submit customer checkout.';
+    END IF;
+
+    IF p_target_user_id IS NOT NULL AND p_target_user_id IS DISTINCT FROM v_uid THEN
+      RAISE EXCEPTION 'Not authorized to place orders on behalf of another user.';
+    END IF;
+
+    IF p_target_company_id IS NOT NULL AND p_target_company_id IS DISTINCT FROM v_caller_company_id THEN
+      RAISE EXCEPTION 'Not authorized to use another company pricing or credit account.';
+    END IF;
+
+    v_effective_user_id := v_uid;
+    v_effective_company_id := v_caller_company_id;
+    v_is_b2b := (v_effective_company_id IS NOT NULL);
+  ELSE
+    v_effective_user_id := p_target_user_id;
+    v_effective_company_id := p_target_company_id;
+
+    IF COALESCE(p_is_proxy, false) THEN
+      IF COALESCE(LOWER(p_order_mode), 'retail') = 'b2b' THEN
+        IF v_effective_company_id IS NULL THEN
+          RAISE EXCEPTION 'Target agency company is required for B2B proxy checkout.';
+        END IF;
+        v_is_b2b := true;
+      ELSE
+        IF v_effective_user_id IS NULL THEN
+          RAISE EXCEPTION 'Target customer user is required for retail proxy checkout.';
+        END IF;
+        v_is_b2b := false;
+      END IF;
+    ELSE
+      IF v_effective_user_id IS NOT NULL AND v_effective_user_id IS DISTINCT FROM v_uid THEN
+        RAISE EXCEPTION 'Non-proxy checkout must target the signed-in account.';
+      END IF;
+      v_effective_user_id := v_uid;
+      v_effective_company_id := v_caller_company_id;
+      v_is_b2b := (v_effective_company_id IS NOT NULL);
+    END IF;
+  END IF;
+
+  IF v_effective_user_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM public.user_profiles WHERE id = v_effective_user_id
+  ) THEN
+    RAISE EXCEPTION 'Target customer user profile not found.';
+  END IF;
+
+  IF v_effective_company_id IS NOT NULL THEN
+    SELECT * INTO v_company
+    FROM public.companies
+    WHERE id = v_effective_company_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Target company account not found.';
+    END IF;
+  END IF;
+
+  IF p_patient_id IS NOT NULL THEN
+    IF v_effective_company_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM public.agency_patients WHERE id = p_patient_id AND agency_id = v_effective_company_id
+    ) THEN
+      RAISE EXCEPTION 'Selected patient does not belong to the target agency.';
+    END IF;
+  END IF;
+
+  -- Idempotency replay guard: safely return existing order if already committed
+  SELECT * INTO v_existing_order
+  FROM public.orders
+  WHERE idempotency_key = p_idempotency_key;
+
+  IF FOUND THEN
+    IF NOT v_is_staff
+       AND v_existing_order.user_id IS DISTINCT FROM v_uid
+       AND (v_caller_company_id IS NULL OR v_existing_order.company_id IS DISTINCT FROM v_caller_company_id) THEN
+      RAISE EXCEPTION 'Idempotency key conflict.';
+    END IF;
+
+    RETURN jsonb_build_object(
+      'id', v_existing_order.id,
+      'status', v_existing_order.status::text,
+      'subtotal', v_existing_order.subtotal,
+      'tax_amount', v_existing_order.tax_amount,
+      'shipping_amount', v_existing_order.shipping_amount,
+      'total_amount', v_existing_order.total_amount,
+      'idempotent_replay', true
+    );
+  END IF;
+
+  v_payment_method := LOWER(COALESCE(btrim(p_payment_method), 'net_30'));
+  IF v_payment_method NOT IN ('net_30', 'cod') THEN
+    RAISE EXCEPTION 'Invalid payment method "%".', p_payment_method;
+  END IF;
+
+  v_clean_notes := NULLIF(btrim(COALESCE(p_order_notes, '')), '');
+  IF v_clean_notes IS NOT NULL AND char_length(v_clean_notes) > 1000 THEN
+    RAISE EXCEPTION 'Order notes cannot exceed 1000 characters.';
+  END IF;
+
+  IF p_items IS NULL OR jsonb_typeof(p_items) <> 'array' OR jsonb_array_length(p_items) = 0 THEN
+    RAISE EXCEPTION 'Your cart is empty.';
+  END IF;
+
+  FOR v_elem IN SELECT value FROM jsonb_array_elements(p_items)
+  LOOP
+    IF jsonb_typeof(v_elem) <> 'object'
+       OR COALESCE(v_elem->>'variant_id', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+      RAISE EXCEPTION 'Invalid cart item payload.';
+    END IF;
+
+    v_variant_id := (v_elem->>'variant_id')::uuid;
+    v_qty_text := v_elem->>'quantity';
+    IF v_qty_text IS NULL OR v_qty_text !~ '^\d+$' OR v_qty_text::integer <= 0 THEN
+      RAISE EXCEPTION 'Invalid quantity for variant %.', v_variant_id;
+    END IF;
+    v_qty := v_qty_text::integer;
+
+    SELECT pv.id, pv.product_id, pv.price, COALESCE(pv.multiplier, 1) AS multiplier, p.retail_base_price
+    INTO v_pv
+    FROM public.product_variants pv
+    JOIN public.products p ON p.id = pv.product_id
+    WHERE pv.id = v_variant_id;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Product variant % not found.', v_variant_id;
+    END IF;
+
+    v_variant_retail := CASE
+      WHEN COALESCE(v_pv.price, 0) > 0 THEN v_pv.price
+      ELSE COALESCE(v_pv.retail_base_price, 0) * GREATEST(COALESCE(v_pv.multiplier, 1), 1)
+    END;
+
+    v_unit_price := v_variant_retail;
+
+    IF v_effective_company_id IS NOT NULL THEN
+      SELECT rule_type::text AS rule_type, value
+      INTO v_rule
+      FROM public.pricing_rules
+      WHERE company_id = v_effective_company_id
+        AND variant_id = v_pv.id
+      ORDER BY created_at DESC
+      LIMIT 1;
+
+      IF FOUND THEN
+        IF v_rule.rule_type = 'percentage' THEN
+          v_unit_price := v_variant_retail * (1.0 - (COALESCE(v_rule.value, 0) / 100.0));
+        ELSIF v_rule.rule_type = 'fixed' THEN
+          v_unit_price := COALESCE(v_rule.value, v_variant_retail);
+        END IF;
+      END IF;
+    END IF;
+
+    v_unit_price := ROUND(GREATEST(COALESCE(v_unit_price, 0), 0), 2);
+    v_line_total := ROUND(v_unit_price * v_qty, 2);
+    v_subtotal := v_subtotal + v_line_total;
+
+    v_item_payload := v_item_payload || jsonb_build_array(
+      jsonb_build_object(
+        'variant_id', v_pv.id,
+        'quantity', v_qty,
+        'multiplier', GREATEST(COALESCE(v_pv.multiplier, 1), 1),
+        'unit_price', v_unit_price,
+        'line_total', v_line_total
+      )
+    );
+  END LOOP;
+
+  v_subtotal := ROUND(v_subtotal, 2);
+
+  IF v_is_b2b THEN
+    v_shipping_amount := ROUND(GREATEST(COALESCE(v_company.shipping_fee, 0), 0), 2);
+  ELSE
+    v_shipping_amount := 10.00;
+  END IF;
+
+  IF v_is_b2b AND COALESCE(v_company.tax_exempt, false) THEN
+    v_tax_rate := 0;
+  ELSE
+    v_zip5 := LEFT(btrim(COALESCE(p_shipping_zip, '')), 5);
+    IF char_length(v_zip5) = 5 THEN
+      SELECT GREATEST(COALESCE("EstimatedCombinedRate", 0), 0)
+      INTO v_tax_rate
+      FROM public.tax_rates
+      WHERE "ZipCode" = v_zip5
+      LIMIT 1;
+      v_tax_rate := COALESCE(v_tax_rate, 0);
+    ELSE
+      v_tax_rate := 0;
+    END IF;
+  END IF;
+
+  v_tax_amount := ROUND(v_subtotal * v_tax_rate, 2);
+  v_total_amount := ROUND(v_subtotal + v_shipping_amount + v_tax_amount, 2);
+
+  IF v_is_b2b AND v_payment_method = 'net_30' THEN
+    SELECT COALESCE(SUM(total_amount), 0)
+    INTO v_outstanding
+    FROM public.orders
+    WHERE company_id = v_effective_company_id
+      AND payment_status = 'unpaid'::public.payment_status;
+
+    IF v_total_amount > (COALESCE(v_company.credit_limit, 0) - v_outstanding) THEN
+      RAISE EXCEPTION 'Insufficient agency credit limit for Net 30 order.';
+    END IF;
+  END IF;
+
+  PERFORM set_config('app.allow_customer_checkout_rpc', 'true', true);
+
+  INSERT INTO public.orders (
+    user_id,
+    company_id,
+    patient_id,
+    shipping_name,
+    shipping_address,
+    shipping_city,
+    shipping_state,
+    shipping_zip,
+    shipping_email,
+    shipping_phone,
+    order_notes,
+    status,
+    payment_method,
+    payment_status,
+    subtotal,
+    tax_amount,
+    shipping_amount,
+    total_amount,
+    idempotency_key
+  ) VALUES (
+    v_effective_user_id,
+    v_effective_company_id,
+    p_patient_id,
+    NULLIF(btrim(COALESCE(p_shipping_name, '')), ''),
+    NULLIF(btrim(COALESCE(p_shipping_address, '')), ''),
+    NULLIF(btrim(COALESCE(p_shipping_city, '')), ''),
+    NULLIF(btrim(COALESCE(p_shipping_state, '')), ''),
+    NULLIF(btrim(COALESCE(p_shipping_zip, '')), ''),
+    NULLIF(btrim(COALESCE(p_shipping_email, '')), ''),
+    NULLIF(btrim(COALESCE(p_shipping_phone, '')), ''),
+    v_clean_notes,
+    'pending'::public.order_status,
+    v_payment_method::public.payment_method,
+    'unpaid'::public.payment_status,
+    v_subtotal,
+    v_tax_amount,
+    v_shipping_amount,
+    v_total_amount,
+    p_idempotency_key
+  )
+  RETURNING * INTO v_created_order;
+
+  FOR v_elem IN SELECT value FROM jsonb_array_elements(v_item_payload)
+  LOOP
+    INSERT INTO public.order_items (
+      order_id,
+      product_variant_id,
+      quantity_variants,
+      total_base_units,
+      unit_price,
+      line_total,
+      status
+    ) VALUES (
+      v_created_order.id,
+      (v_elem->>'variant_id')::uuid,
+      (v_elem->>'quantity')::integer,
+      (v_elem->>'quantity')::integer * (v_elem->>'multiplier')::integer,
+      (v_elem->>'unit_price')::numeric,
+      (v_elem->>'line_total')::numeric,
+      'active'
+    );
+  END LOOP;
+
+  PERFORM set_config('app.allow_customer_checkout_rpc', 'false', true);
+
+  RETURN jsonb_build_object(
+    'id', v_created_order.id,
+    'status', v_created_order.status::text,
+    'subtotal', v_subtotal,
+    'tax_amount', v_tax_amount,
+    'shipping_amount', v_shipping_amount,
+    'total_amount', v_total_amount,
+    'idempotent_replay', false
+  );
+EXCEPTION
+  WHEN unique_violation THEN
+    PERFORM set_config('app.allow_customer_checkout_rpc', 'false', true);
+    SELECT * INTO v_existing_order
+    FROM public.orders
+    WHERE idempotency_key = p_idempotency_key;
+
+    IF FOUND AND (
+      v_is_staff
+      OR v_existing_order.user_id = v_uid
+      OR (v_caller_company_id IS NOT NULL AND v_existing_order.company_id = v_caller_company_id)
+    ) THEN
+      RETURN jsonb_build_object(
+        'id', v_existing_order.id,
+        'status', v_existing_order.status::text,
+        'subtotal', v_existing_order.subtotal,
+        'tax_amount', v_existing_order.tax_amount,
+        'shipping_amount', v_existing_order.shipping_amount,
+        'total_amount', v_existing_order.total_amount,
+        'idempotent_replay', true
+      );
+    END IF;
+    RAISE;
+  WHEN OTHERS THEN
+    PERFORM set_config('app.allow_customer_checkout_rpc', 'false', true);
+    RAISE;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.place_customer_order(uuid, uuid, uuid, uuid, text, text, text, text, text, text, text, text, text, boolean, text, jsonb) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.place_customer_order(uuid, uuid, uuid, uuid, text, text, text, text, text, text, text, text, text, boolean, text, jsonb) TO authenticated, service_role;
+
+-- ============================================================================
 -- 6. Fix insert trigger backorder double-deduction + harden Staff order RPCs
 -- ============================================================================
 CREATE OR REPLACE FUNCTION public.process_order_item_inventory()
@@ -340,6 +691,7 @@ BEGIN
   -- driver_complete_delivery) inherit already-deducted stock from the parent line.
   IF COALESCE(current_setting('app.skip_item_inventory_deduct', true), '') = 'true'
      AND LOWER(COALESCE(NEW.status, '')) IN ('backordered', 'rejected') THEN
+    PERFORM set_config('app.skip_item_inventory_deduct', 'false', true);
     RETURN NEW;
   END IF;
 
@@ -491,10 +843,16 @@ BEGIN
     RAISE EXCEPTION 'Cannot substitute a cancelled, rejected, restocked, or delivered item.';
   END IF;
 
-  SELECT COALESCE(multiplier, 1), price, product_id
+  SELECT COALESCE(pv.multiplier, 1),
+         CASE
+           WHEN COALESCE(pv.price, 0) > 0 THEN pv.price
+           ELSE COALESCE(p.retail_base_price, 0) * GREATEST(COALESCE(pv.multiplier, 1), 1)
+         END,
+         pv.product_id
   INTO v_new_mult, v_new_price, v_new_prod_id
-  FROM public.product_variants
-  WHERE id = p_new_variant_id;
+  FROM public.product_variants pv
+  JOIN public.products p ON p.id = pv.product_id
+  WHERE pv.id = p_new_variant_id;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Replacement variant not found.';
@@ -638,10 +996,16 @@ BEGIN
     RETURN;
   END IF;
 
-  SELECT price, product_id, COALESCE(multiplier, 1)
+  SELECT CASE
+           WHEN COALESCE(pv.price, 0) > 0 THEN pv.price
+           ELSE COALESCE(p.retail_base_price, 0) * GREATEST(COALESCE(pv.multiplier, 1), 1)
+         END,
+         pv.product_id,
+         COALESCE(pv.multiplier, 1)
   INTO v_unit_price, v_product_id, v_multiplier
-  FROM public.product_variants
-  WHERE id = p_variant_id;
+  FROM public.product_variants pv
+  JOIN public.products p ON p.id = pv.product_id
+  WHERE pv.id = p_variant_id;
 
   IF v_unit_price IS NULL THEN
     RAISE EXCEPTION 'Variant not found.';

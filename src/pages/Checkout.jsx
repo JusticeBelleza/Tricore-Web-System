@@ -12,6 +12,8 @@ import {
   updateCartItemQuantity,
   calculateCheckoutTotals,
   validateCartForSubmission,
+  generateIdempotencyKey,
+  buildCheckoutRequestSignature,
 } from '../lib/cartUtils';
 import {
   MAX_ORDER_NOTES_LENGTH,
@@ -99,6 +101,7 @@ export default function Checkout() {
   const [createdOrderId, setCreatedOrderId] = useState(null);
   const [auditWarning, setAuditWarning] = useState('');
   const submittingOrderRef = useRef(false);
+  const idempotencyStateRef = useRef({ signature: '', key: '' });
 
   const [patients, setPatients] = useState([]);
   const [patientSearch, setPatientSearch] = useState('');
@@ -352,54 +355,45 @@ export default function Checkout() {
       const sZip = isB2B ? (shipToAgency ? activeCompany?.zip : selectedPatient.zip) : retailInfo.zip;
       const sEmail = isB2B ? (shipToAgency ? activeCompany?.email : selectedPatient.email) : retailInfo.email;
       const sPhone = isB2B ? (shipToAgency ? activeCompany?.phone : (selectedPatient.phone || selectedPatient.contact_number)) : retailInfo.phone;
+      const orderMode = isProxy ? (proxySession?.orderType === 'b2b' ? 'b2b' : 'retail') : (isB2B ? 'b2b' : 'retail');
+      const itemsPayload = normalizedCart.map(item => ({
+        variant_id: item.variant_id,
+        quantity: item.quantity,
+      }));
+      const baseRpcArgs = {
+        p_target_user_id: targetUserId || null,
+        p_target_company_id: targetCompanyId || null,
+        p_patient_id: (isB2B && !shipToAgency && selectedPatient?.id) ? selectedPatient.id : null,
+        p_shipping_name: sName || null,
+        p_shipping_address: sAddress || null,
+        p_shipping_city: sCity || null,
+        p_shipping_state: sState || null,
+        p_shipping_zip: sZip || null,
+        p_shipping_email: sEmail || null,
+        p_shipping_phone: sPhone || null,
+        p_order_notes: notesCheck.value || null,
+        p_payment_method: paymentMethod,
+        p_is_proxy: Boolean(isProxy),
+        p_order_mode: orderMode,
+        p_items: itemsPayload,
+      };
 
-      // 1. Create the base order (🚀 WITH PROXY ID INJECTION)
-      const { data: order, error: orderError } = await supabase.from('orders').insert({
-        user_id: targetUserId,
-        company_id: targetCompanyId || null,
-        patient_id: (isB2B && !shipToAgency) ? selectedPatient.id : null,
-        shipping_name: sName,
-        shipping_address: sAddress,
-        shipping_city: sCity,
-        shipping_state: sState,
-        shipping_zip: sZip,
-        shipping_email: sEmail,
-        shipping_phone: sPhone,
-        ...(notesCheck.value ? { order_notes: notesCheck.value } : {}),
-        status: 'pending', // 🚀 FIX: Force ALL orders (even proxy) to 'pending' for approval
-        payment_method: paymentMethod,
-        payment_status: 'unpaid',
-        subtotal, tax_amount: taxAmount, shipping_amount: shippingFee, total_amount: totalAmount,
-      }).select().single();
-
-      if (orderError) throw orderError;
-
-      // 2. Fetch fresh multipliers straight from the database to ensure perfect accuracy
-      const variantIds = normalizedCart.map(item => item.variant_id);
-      const { data: variantsData, error: variantsError } = await supabase
-        .from('product_variants')
-        .select('id, multiplier')
-        .in('id', variantIds);
-        
-      if (variantsError) throw variantsError;
-
-      // 3. Map the order items using the true database multiplier and validated cart quantities
-      const orderItems = normalizedCart.map(item => {
-        const dbVariant = variantsData?.find(v => v.id === item.variant_id);
-        const actualMultiplier = dbVariant?.multiplier || 1;
-
-        return {
-          order_id: order.id, 
-          product_variant_id: item.variant_id, 
-          quantity_variants: item.quantity, 
-          total_base_units: item.quantity * actualMultiplier, 
-          unit_price: item.unit_price, 
-          line_total: item.line_total
+      const requestSignature = buildCheckoutRequestSignature(baseRpcArgs);
+      if (idempotencyStateRef.current.signature !== requestSignature || !idempotencyStateRef.current.key) {
+        idempotencyStateRef.current = {
+          signature: requestSignature,
+          key: generateIdempotencyKey(),
         };
+      }
+
+      // 1. Create the order + order_items atomically with server-authoritative pricing & multipliers
+      const { data: order, error: orderError } = await supabase.rpc('place_customer_order', {
+        p_idempotency_key: idempotencyStateRef.current.key,
+        ...baseRpcArgs,
       });
 
-      const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
-      if (itemsError) throw itemsError;
+      if (orderError) throw orderError;
+      if (!order?.id) throw new Error('Order creation did not return an order ID.');
 
       // Order and items have been committed; do not retry checkout automatically or allow duplicate submission.
       setCreatedOrderId(order.id);
@@ -447,6 +441,7 @@ export default function Checkout() {
 
   const finishCheckout = () => { 
     submittingOrderRef.current = false;
+    idempotencyStateRef.current = { signature: '', key: '' };
     localStorage.removeItem(cartKey); 
     if (isProxy) localStorage.removeItem('tricore_proxy_session');
     setCart([]); 

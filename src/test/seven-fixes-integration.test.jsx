@@ -500,31 +500,21 @@ describe('Seven-Fix Component Integration Verification', () => {
     };
     mockAuthState.user = { id: userId, email: 'jane@example.com' };
 
-    const insertedOrders = [];
-    const insertedOrderItems = [];
+    const checkoutCalls = [];
+    mockRpc.mockImplementation((fnName, params) => {
+      if (fnName === 'place_customer_order') {
+        checkoutCalls.push(params);
+        return Promise.resolve({
+          data: { id: `ord-notes-${checkoutCalls.length}`, status: 'pending', total_amount: 76 },
+          error: null,
+        });
+      }
+      return Promise.resolve({ data: [], error: null });
+    });
 
     mockFrom.mockImplementation((table) => {
       if (table === 'tax_rates') {
         return createChainQuery({ data: { EstimatedCombinedRate: 0.1 }, error: null });
-      }
-      if (table === 'orders') {
-        const chain = createChainQuery({ data: { id: 'ord-notes-1' }, error: null });
-        chain.insert = (payload) => {
-          insertedOrders.push(payload);
-          return createChainQuery({ data: { id: `ord-notes-${insertedOrders.length}` }, error: null });
-        };
-        return chain;
-      }
-      if (table === 'product_variants') {
-        return createChainQuery({ data: [{ id: 'var-glv-10', multiplier: 5 }], error: null });
-      }
-      if (table === 'order_items') {
-        const chain = createChainQuery({ data: null, error: null });
-        chain.insert = (rows) => {
-          insertedOrderItems.push(...rows);
-          return createChainQuery({ data: null, error: null });
-        };
-        return chain;
       }
       return createChainQuery({ data: [], error: null });
     });
@@ -556,41 +546,29 @@ describe('Seven-Fix Component Integration Verification', () => {
     fireEvent.click(placeOrderBtn);
 
     await waitFor(() => {
-      expect(insertedOrders).toHaveLength(1);
-      expect(insertedOrderItems).toHaveLength(1);
+      expect(checkoutCalls).toHaveLength(1);
     });
 
-    expect(insertedOrders[0]).toMatchObject({
-      user_id: userId,
-      company_id: null,
-      patient_id: null,
-      shipping_name: 'Jane Retail',
-      shipping_address: '50 Oak Ave',
-      shipping_city: 'Pittsburg',
-      shipping_state: 'CA',
-      shipping_zip: '94565',
-      shipping_phone: '555-0100',
-      order_notes: 'Call nurse at Gate #44 before arrival',
-      status: 'pending',
-      payment_method: 'net_30',
-      payment_status: 'unpaid',
-      subtotal: 60,
-      tax_amount: 6,
-      shipping_amount: 10,
-      total_amount: 76,
-    });
-    expect(insertedOrderItems[0]).toMatchObject({
-      order_id: 'ord-notes-1',
-      product_variant_id: 'var-glv-10',
-      quantity_variants: 3,
-      total_base_units: 15,
-      unit_price: 20,
-      line_total: 60,
+    expect(checkoutCalls[0]).toMatchObject({
+      p_target_user_id: userId,
+      p_target_company_id: null,
+      p_patient_id: null,
+      p_shipping_name: 'Jane Retail',
+      p_shipping_address: '50 Oak Ave',
+      p_shipping_city: 'Pittsburg',
+      p_shipping_state: 'CA',
+      p_shipping_zip: '94565',
+      p_shipping_phone: '555-0100',
+      p_order_notes: 'Call nurse at Gate #44 before arrival',
+      p_payment_method: 'net_30',
+      p_is_proxy: false,
+      p_order_mode: 'retail',
+      p_items: [{ variant_id: 'var-glv-10', quantity: 3 }],
     });
 
     unmount();
 
-    // 2. Submit with whitespace-only notes: omits order_notes while preserving full checkout payload
+    // 2. Submit with whitespace-only notes: sends p_order_notes: null while preserving full checkout payload
     renderWithProviders(<Checkout />);
     await screen.findByText('Surgical Gloves Box');
     await screen.findByText('$76.00', {}, { timeout: 2000 });
@@ -601,17 +579,15 @@ describe('Seven-Fix Component Integration Verification', () => {
     fireEvent.click(placeOrderSecond);
 
     await waitFor(() => {
-      expect(insertedOrders).toHaveLength(2);
+      expect(checkoutCalls).toHaveLength(2);
     });
 
-    expect(insertedOrders[1]).not.toHaveProperty('order_notes');
-    expect(insertedOrders[1]).toMatchObject({
-      user_id: userId,
-      status: 'pending',
-      subtotal: 60,
-      tax_amount: 6,
-      shipping_amount: 10,
-      total_amount: 76,
+    expect(checkoutCalls[1].p_order_notes).toBeNull();
+    expect(checkoutCalls[1]).toMatchObject({
+      p_target_user_id: userId,
+      p_is_proxy: false,
+      p_order_mode: 'retail',
+      p_items: [{ variant_id: 'var-glv-10', quantity: 3 }],
     });
   });
 
@@ -879,8 +855,19 @@ describe('Seven-Fix Component Integration Verification', () => {
       ])
     );
 
-    const insertedOrders = [];
+    const checkoutCalls = [];
     const insertedAuditLogs = [];
+
+    mockRpc.mockImplementation((fnName, params) => {
+      if (fnName === 'place_customer_order') {
+        checkoutCalls.push(params);
+        return Promise.resolve({
+          data: { id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', status: 'pending' },
+          error: null,
+        });
+      }
+      return Promise.resolve({ data: [], error: null });
+    });
 
     mockFrom.mockImplementation((table) => {
       if (table === 'agency_patients') {
@@ -898,16 +885,8 @@ describe('Seven-Fix Component Integration Verification', () => {
       if (table === 'tax_rates') {
         return createChainQuery({ data: { EstimatedCombinedRate: 0.1 }, error: null });
       }
-      if (table === 'product_variants') {
-        return createChainQuery({ data: [{ id: 'var-1', multiplier: 10 }], error: null });
-      }
       if (table === 'orders') {
-        const chain = createChainQuery({ data: [{ total_amount: 100 }], error: null });
-        chain.insert = (payload) => {
-          insertedOrders.push(payload);
-          return createChainQuery({ data: { id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', status: 'pending' }, error: null });
-        };
-        return chain;
+        return createChainQuery({ data: [{ total_amount: 100 }], error: null });
       }
       if (table === 'order_audit_logs') {
         const chain = createChainQuery({ data: null, error: null });
@@ -929,8 +908,16 @@ describe('Seven-Fix Component Integration Verification', () => {
     fireEvent.click(placeOrderBtn);
 
     await waitFor(() => {
-      expect(insertedOrders).toHaveLength(1);
+      expect(checkoutCalls).toHaveLength(1);
       expect(insertedAuditLogs).toHaveLength(1);
+    });
+
+    expect(checkoutCalls[0]).toMatchObject({
+      p_target_user_id: 'user-p1',
+      p_target_company_id: 'comp-1',
+      p_patient_id: 'pat-1',
+      p_is_proxy: true,
+      p_order_mode: 'b2b',
     });
 
     expect(insertedAuditLogs[0]).toMatchObject({
@@ -978,9 +965,19 @@ describe('Seven-Fix Component Integration Verification', () => {
       ])
     );
 
-    const insertedOrders = [];
-    const insertedOrderItems = [];
+    const checkoutCalls = [];
     let auditAttempts = 0;
+
+    mockRpc.mockImplementation((fnName, params) => {
+      if (fnName === 'place_customer_order') {
+        checkoutCalls.push(params);
+        return Promise.resolve({
+          data: { id: '11112222-3333-4444-5555-666677778888', status: 'pending' },
+          error: null,
+        });
+      }
+      return Promise.resolve({ data: [], error: null });
+    });
 
     mockFrom.mockImplementation((table) => {
       if (table === 'agency_patients') {
@@ -998,24 +995,8 @@ describe('Seven-Fix Component Integration Verification', () => {
       if (table === 'tax_rates') {
         return createChainQuery({ data: { EstimatedCombinedRate: 0.1 }, error: null });
       }
-      if (table === 'product_variants') {
-        return createChainQuery({ data: [{ id: 'var-1', multiplier: 10 }], error: null });
-      }
       if (table === 'orders') {
-        const chain = createChainQuery({ data: [{ total_amount: 100 }], error: null });
-        chain.insert = (payload) => {
-          insertedOrders.push(payload);
-          return createChainQuery({ data: { id: '11112222-3333-4444-5555-666677778888', status: 'pending' }, error: null });
-        };
-        return chain;
-      }
-      if (table === 'order_items') {
-        const chain = createChainQuery({ data: null, error: null });
-        chain.insert = (rows) => {
-          insertedOrderItems.push(rows);
-          return createChainQuery({ data: null, error: null });
-        };
-        return chain;
+        return createChainQuery({ data: [{ total_amount: 100 }], error: null });
       }
       if (table === 'order_audit_logs') {
         const chain = createChainQuery({ data: null, error: null });
@@ -1047,8 +1028,7 @@ describe('Seven-Fix Component Integration Verification', () => {
     expect(screen.getByText('Order Created')).toBeInTheDocument();
     expect(screen.queryByText(/Failed to place order\. Please try again\./i)).not.toBeInTheDocument();
 
-    expect(insertedOrders).toHaveLength(1);
-    expect(insertedOrderItems).toHaveLength(1);
+    expect(checkoutCalls).toHaveLength(1);
     expect(auditAttempts).toBe(1);
     expect(placeOrderBtn).toBeDisabled();
   });
@@ -1081,28 +1061,22 @@ describe('Seven-Fix Component Integration Verification', () => {
       ])
     );
 
-    let resolveOrderInsert;
-    const insertedOrders = [];
+    let resolveCheckoutRpc;
+    const checkoutCalls = [];
+
+    mockRpc.mockImplementation((fnName, params) => {
+      if (fnName === 'place_customer_order') {
+        checkoutCalls.push(params);
+        return new Promise((resolve) => {
+          resolveCheckoutRpc = resolve;
+        });
+      }
+      return Promise.resolve({ data: null, error: null });
+    });
 
     mockFrom.mockImplementation((table) => {
       if (table === 'tax_rates') {
         return createChainQuery({ data: { EstimatedCombinedRate: 0 }, error: null });
-      }
-      if (table === 'product_variants') {
-        return createChainQuery({ data: [{ id: 'var-1', multiplier: 1 }], error: null });
-      }
-      if (table === 'orders') {
-        const chain = createChainQuery({ data: [], error: null });
-        chain.insert = (payload) => {
-          insertedOrders.push(payload);
-          return createChainQuery(
-            () =>
-              new Promise((resolve) => {
-                resolveOrderInsert = resolve;
-              })
-          );
-        };
-        return chain;
       }
       return createChainQuery({ data: null, error: null });
     });
@@ -1113,15 +1087,15 @@ describe('Seven-Fix Component Integration Verification', () => {
     const placeOrderBtn = await screen.findByRole('button', { name: /place order/i });
     await waitFor(() => expect(placeOrderBtn).not.toBeDisabled());
 
-    // Simulate rapid double-click while order insert is still pending in-flight
+    // Simulate rapid double-click while order RPC is still pending in-flight
     fireEvent.click(placeOrderBtn);
     fireEvent.click(placeOrderBtn);
 
-    expect(insertedOrders).toHaveLength(1);
+    expect(checkoutCalls).toHaveLength(1);
     expect(placeOrderBtn).toBeDisabled();
 
-    resolveOrderInsert({ data: { id: '22223333-4444-5555-6666-777788889999', status: 'pending' }, error: null });
+    resolveCheckoutRpc({ data: { id: '22223333-4444-5555-6666-777788889999', status: 'pending' }, error: null });
     expect(await screen.findByText('Success!')).toBeInTheDocument();
-    expect(insertedOrders).toHaveLength(1);
+    expect(checkoutCalls).toHaveLength(1);
   });
 });

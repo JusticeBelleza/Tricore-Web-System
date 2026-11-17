@@ -4,6 +4,8 @@ import hardeningSql from '../../supabase/migrations/20261116090000_harden_invent
 import notesSearchSql from '../../supabase/migrations/20261116100000_add_order_notes_and_admin_search.sql?raw';
 import returnApprovalSql from '../../supabase/migrations/20261116110000_add_return_to_approval_rpc.sql?raw';
 import routeOrderSql from '../../supabase/migrations/20261116120000_add_driver_route_stop_ordering.sql?raw';
+import enableCompatSql from '../../supabase/rollbacks/enable_legacy_frontend_compat.sql?raw';
+import disableCompatSql from '../../supabase/rollbacks/disable_legacy_frontend_compat.sql?raw';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -123,6 +125,7 @@ describe('Option A Security Hardening — SQL Migration Invariants', () => {
     const hardenedActiveRpcs = [
       'public.deactivate_user_account(uuid)',
       'public.save_customer_profile_info(uuid, text, text, text, text, text, uuid)',
+      'public.place_customer_order(uuid, uuid, uuid, uuid, text, text, text, text, text, text, text, text, text, boolean, text, jsonb)',
       'public.process_warehouse_restock(uuid)',
       'public.substitute_order_item(uuid, uuid, integer)',
       'public.edit_order_item(uuid, integer)',
@@ -176,6 +179,15 @@ describe('Option A Security Hardening — SQL Migration Invariants', () => {
       hardeningSql.indexOf('-- Column-level / direct-write guard trigger')
     );
 
+    const insertOrdersBlock = ordersAndItemsPolicyBlock.slice(
+      ordersAndItemsPolicyBlock.indexOf('CREATE POLICY "Insert orders" ON public.orders'),
+      ordersAndItemsPolicyBlock.indexOf('DROP POLICY IF EXISTS "Update orders"')
+    );
+    expect(insertOrdersBlock).not.toContain("'driver'");
+    expect(insertOrdersBlock).not.toContain("'retail'");
+    expect(insertOrdersBlock).not.toContain("'b2b'");
+    expect(insertOrdersBlock).toContain("IN ('admin', 'warehouse')");
+
     const updateOrdersBlock = ordersAndItemsPolicyBlock.slice(
       ordersAndItemsPolicyBlock.indexOf('CREATE POLICY "Update orders" ON public.orders'),
       ordersAndItemsPolicyBlock.indexOf('DROP POLICY IF EXISTS "Admins can insert order items"')
@@ -190,8 +202,9 @@ describe('Option A Security Hardening — SQL Migration Invariants', () => {
       ordersAndItemsPolicyBlock.indexOf('DROP POLICY IF EXISTS "Update order items"')
     );
     expect(insertItemsBlock).not.toContain("'driver'");
-    expect(insertItemsBlock).toContain("o.status::text = 'pending'");
-    expect(insertItemsBlock).toContain("= 'active'");
+    expect(insertItemsBlock).not.toContain("'retail'");
+    expect(insertItemsBlock).not.toContain("'b2b'");
+    expect(insertItemsBlock).toContain("IN ('admin', 'warehouse')");
 
     const updateItemsBlock = ordersAndItemsPolicyBlock.slice(
       ordersAndItemsPolicyBlock.indexOf('CREATE POLICY "Update order items" ON public.order_items'),
@@ -200,6 +213,25 @@ describe('Option A Security Hardening — SQL Migration Invariants', () => {
     expect(updateItemsBlock).not.toContain("'driver'");
     expect(updateItemsBlock).not.toContain("'retail'");
     expect(updateItemsBlock).not.toContain("'b2b'");
+
+    // Atomic server-priced checkout RPC invariants
+    expect(hardeningSql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_idempotency_key');
+    const checkoutFn = extractFunctionBlock(hardeningSql, 'place_customer_order');
+    expect(checkoutFn).toContain('SECURITY DEFINER');
+    expect(checkoutFn).toContain('WHERE idempotency_key = p_idempotency_key');
+    expect(checkoutFn).toContain('FROM public.pricing_rules');
+    expect(checkoutFn).toContain('FROM public.tax_rates');
+    expect(checkoutFn).toContain('Insufficient agency credit limit for Net 30 order');
+    expect(checkoutFn).toContain('WHEN unique_violation THEN');
+
+    // Compatibility rollback scripts remain assignment-scoped and symmetric
+    expect(enableCompatSql).toContain('Legacy compat driver update assigned orders');
+    expect(enableCompatSql).toContain('Legacy compat driver update assigned order items');
+    expect(enableCompatSql).toContain('Legacy compat driver insert rejected split items');
+    expect(enableCompatSql).toContain('assigned_driver_id = up.id');
+    expect(enableCompatSql).toContain('enforce_compat_order_item_security');
+    expect(disableCompatSql).toContain('DROP POLICY IF EXISTS "Legacy compat driver update assigned orders"');
+    expect(disableCompatSql).toContain('DROP TRIGGER IF EXISTS enforce_compat_order_item_security');
 
     // Direct column/row tamper guard trigger on public.orders
     const orderTriggerFn = extractFunctionBlock(hardeningSql, 'protect_secure_order_columns');
@@ -264,21 +296,13 @@ describe('Option A Security Hardening — SQL Migration Invariants', () => {
     expect(restockFn).toContain("v_is_partial AND LOWER(COALESCE(status::text, '')) = 'rejected'");
     expect(restockFn).toContain("NOT IN ('cancelled', 'restocked', 'delivered')");
 
+    // Backorder & customer checkout invariants
     const cancelItemFn = extractFunctionBlock(hardeningSql, 'cancel_order_item');
     expect(cancelItemFn).toContain('SECURITY DEFINER');
     expect(cancelItemFn).toContain('FOR UPDATE OF oi');
     expect(cancelItemFn).toContain("IN ('cancelled', 'restocked')");
     expect(cancelItemFn).toContain("= 'delivered'");
     expect(cancelItemFn).toContain("= 'rejected'");
-
-    // Customer pending-only order insert check
-    const insertOrdersBlock = ordersAndItemsPolicyBlock.slice(
-      ordersAndItemsPolicyBlock.indexOf('CREATE POLICY "Insert orders" ON public.orders'),
-      ordersAndItemsPolicyBlock.indexOf('DROP POLICY IF EXISTS "Update orders"')
-    );
-    expect(insertOrdersBlock).toContain("status::text = 'pending'");
-    expect(insertOrdersBlock).toContain("payment_status::text = 'unpaid'");
-    expect(insertOrdersBlock).toContain('assigned_driver_id IS NULL');
   });
 
   it('enforces customer profile ownership and protects role, company_id, and status from self-escalation', () => {
@@ -404,7 +428,7 @@ describe('Option A Security Hardening — Application Workflow & Authorization I
     });
   });
 
-  it('preserves Checkout inventory integrity by computing total_base_units from server DB multipliers', async () => {
+  it('preserves Checkout server-side pricing/multiplier authority, atomicity, and retry idempotency via place_customer_order RPC', async () => {
     localStorage.setItem(
       'tricore_cart_user_retail-1',
       JSON.stringify([
@@ -419,30 +443,25 @@ describe('Option A Security Hardening — Application Workflow & Authorization I
       ])
     );
 
-    const insertedOrderItems = [];
+    const rawTableInserts = [];
     mockFrom.mockImplementation((table) => {
       if (table === 'tax_rates') {
         return createChainQuery({ data: { EstimatedCombinedRate: 0.1 }, error: null });
       }
-      if (table === 'orders') {
-        const chain = createChainQuery({ data: { id: 'ord-new-1' }, error: null });
-        chain.insert = () => createChainQuery({ data: { id: 'ord-new-1' }, error: null });
-        return chain;
-      }
-      if (table === 'product_variants') {
-        // DB multiplier is 10 per case -> 3 * 10 = 30 base units
-        return createChainQuery({ data: [{ id: 'var-case-1', multiplier: 10 }], error: null });
-      }
-      if (table === 'order_items') {
-        const chain = createChainQuery({ data: null, error: null });
-        chain.insert = (rows) => {
-          insertedOrderItems.push(...rows);
-          return createChainQuery({ data: null, error: null });
-        };
-        return chain;
-      }
-      return createChainQuery({ data: [], error: null });
+      const chain = createChainQuery({ data: [], error: null });
+      chain.insert = (payload) => {
+        rawTableInserts.push({ table, payload });
+        return createChainQuery({ data: null, error: null });
+      };
+      return chain;
     });
+
+    mockRpc
+      .mockResolvedValueOnce({ data: null, error: { message: 'Temporary network interruption' } })
+      .mockResolvedValueOnce({
+        data: { id: 'ord-new-1', status: 'pending', subtotal: 150, tax_amount: 15, shipping_amount: 10, total_amount: 175 },
+        error: null,
+      });
 
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
@@ -456,17 +475,32 @@ describe('Option A Security Hardening — Application Workflow & Authorization I
     await screen.findByText('Nitrile Gloves Case');
     const placeOrderBtn = await screen.findByRole('button', { name: /place order/i });
     await waitFor(() => expect(placeOrderBtn).not.toBeDisabled());
-    fireEvent.click(placeOrderBtn);
 
+    // First attempt fails -> no orphan order/items created, cart stays intact
+    fireEvent.click(placeOrderBtn);
+    await screen.findByText('Failed to place order. Please try again.');
+    expect(rawTableInserts).toEqual([]);
+    expect(mockRpc).toHaveBeenCalledTimes(1);
+    const firstKey = mockRpc.mock.calls[0][1].p_idempotency_key;
+    expect(firstKey).toMatch(/^[0-9a-f-]{36}$/i);
+
+    // Retry reuses exact same idempotency key and omits client prices/multipliers
+    fireEvent.click(placeOrderBtn);
     await waitFor(() => {
-      expect(insertedOrderItems).toHaveLength(1);
+      expect(mockRpc).toHaveBeenCalledTimes(2);
     });
-    expect(insertedOrderItems[0]).toMatchObject({
-      order_id: 'ord-new-1',
-      product_variant_id: 'var-case-1',
-      quantity_variants: 3,
-      total_base_units: 30,
+    expect(mockRpc.mock.calls[1][0]).toBe('place_customer_order');
+    expect(mockRpc.mock.calls[1][1]).toMatchObject({
+      p_idempotency_key: firstKey,
+      p_target_user_id: 'retail-1',
+      p_target_company_id: null,
+      p_items: [{ variant_id: 'var-case-1', quantity: 3 }],
     });
+    expect(mockRpc.mock.calls[1][1]).not.toHaveProperty('p_subtotal');
+    expect(mockRpc.mock.calls[1][1]).not.toHaveProperty('p_total_amount');
+    expect(mockRpc.mock.calls[1][1].p_items[0]).not.toHaveProperty('unit_price');
+    expect(mockRpc.mock.calls[1][1].p_items[0]).not.toHaveProperty('total_base_units');
+    expect(rawTableInserts).toEqual([]);
   });
 
   it('preserves Driver-permitted reject_full_order delivery cancellation workflow', async () => {
