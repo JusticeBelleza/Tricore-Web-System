@@ -33,9 +33,10 @@ describe('AuthContext', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://testproject.supabase.co');
     localStorage.clear();
     sessionStorage.clear();
-    activeStorageKey = getExpectedAuthStorageKey() || 'sb-testproject-auth-token';
+    activeStorageKey = getExpectedAuthStorageKey();
 
     supabase.auth.getSession.mockResolvedValue({ data: { session: null } });
     supabase.auth.refreshSession.mockResolvedValue({ data: { session: null }, error: null });
@@ -53,6 +54,7 @@ describe('AuthContext', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.useRealTimers();
   });
 
