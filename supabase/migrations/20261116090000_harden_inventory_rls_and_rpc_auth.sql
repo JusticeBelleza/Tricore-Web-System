@@ -1363,6 +1363,8 @@ BEGIN
     END IF;
   END IF;
 
+  PERFORM set_config('app.allow_driver_order_rpc', 'true', true);
+
   FOR v_item IN
     SELECT id, total_base_units, quantity_variants, product_variant_id
     FROM public.order_items
@@ -1386,8 +1388,6 @@ BEGIN
     WHERE id = v_item.id;
   END LOOP;
 
-  PERFORM set_config('app.allow_driver_order_rpc', 'true', true);
-
   UPDATE public.orders
   SET status = p_target_status::order_status,
       cancellation_reason = p_reason,
@@ -1396,6 +1396,10 @@ BEGIN
   WHERE id = p_order_id;
 
   PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
+EXCEPTION
+  WHEN OTHERS THEN
+    PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
+    RAISE;
 END;
 $$;
 

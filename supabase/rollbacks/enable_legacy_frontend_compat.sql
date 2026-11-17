@@ -422,10 +422,6 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF TG_OP = 'INSERT' THEN
-    PERFORM set_config('app.skip_item_inventory_deduct', 'false', true);
-  END IF;
-
   SELECT LOWER(COALESCE(role, '')), LOWER(COALESCE(status, 'inactive')), full_name
   INTO v_actor_role, v_actor_status, v_driver_name
   FROM public.user_profiles
@@ -437,6 +433,10 @@ BEGIN
 
   IF v_actor_role IN ('admin', 'warehouse') THEN
     RETURN NEW;
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    PERFORM set_config('app.skip_item_inventory_deduct', 'false', true);
   END IF;
 
   IF TG_OP = 'UPDATE' THEN
