@@ -36,7 +36,15 @@ WITH CHECK (COALESCE(public.get_user_role(), '') IN ('admin', 'warehouse'));
 --      assignment-checked transactional SECURITY DEFINER RPCs below.
 -- ============================================================================
 ALTER TABLE public.orders
-ADD COLUMN IF NOT EXISTS idempotency_key uuid;
+ADD COLUMN IF NOT EXISTS idempotency_key uuid,
+ADD COLUMN IF NOT EXISTS compat_checkout_sealed boolean NOT NULL DEFAULT false;
+
+ALTER TABLE public.order_items
+ADD COLUMN IF NOT EXISTS original_quantity_variants integer;
+
+UPDATE public.order_items
+SET original_quantity_variants = quantity_variants
+WHERE original_quantity_variants IS NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_idempotency_key
 ON public.orders (idempotency_key)
@@ -88,6 +96,7 @@ AS $$
 DECLARE
   v_uid uuid := auth.uid();
   v_actor_role text;
+  v_actor_status text;
 BEGIN
   IF v_uid IS NULL THEN
     RETURN NEW;
@@ -100,11 +109,76 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  SELECT LOWER(COALESCE(role, '')) INTO v_actor_role
+  IF COALESCE(current_setting('app.allow_compat_order_totals_sync', true), '') = 'true'
+     AND EXISTS (
+       SELECT 1
+       FROM pg_policies
+       WHERE schemaname = 'public'
+         AND tablename = 'orders'
+         AND policyname = 'Legacy compat customer insert pending orders'
+     ) THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT LOWER(COALESCE(role, '')), LOWER(COALESCE(status, 'inactive'))
+  INTO v_actor_role, v_actor_status
   FROM public.user_profiles
   WHERE id = v_uid;
 
-  IF COALESCE(v_actor_role, '') IN ('admin', 'warehouse') THEN
+  IF COALESCE(v_actor_role, '') IN ('admin', 'warehouse') AND COALESCE(v_actor_status, 'inactive') = 'active' THEN
+    RETURN NEW;
+  END IF;
+
+  -- Preserve continuity when legacy compat driver policy is active (pre-hardening cutover or rollback).
+  IF COALESCE(v_actor_role, '') = 'driver'
+     AND COALESCE(v_actor_status, 'inactive') = 'active'
+     AND EXISTS (
+       SELECT 1
+       FROM pg_policies
+       WHERE schemaname = 'public'
+         AND tablename = 'orders'
+         AND policyname = 'Legacy compat driver update assigned orders'
+     ) THEN
+    IF NEW.user_id IS DISTINCT FROM OLD.user_id
+       OR NEW.company_id IS DISTINCT FROM OLD.company_id
+       OR NEW.patient_id IS DISTINCT FROM OLD.patient_id
+       OR NEW.driver_name IS DISTINCT FROM OLD.driver_name
+       OR NEW.assigned_driver_id IS DISTINCT FROM OLD.assigned_driver_id
+       OR NEW.shipping_amount IS DISTINCT FROM OLD.shipping_amount
+       OR NEW.payment_method IS DISTINCT FROM OLD.payment_method
+       OR NEW.payment_status IS DISTINCT FROM OLD.payment_status
+       OR NEW.order_notes IS DISTINCT FROM OLD.order_notes
+       OR NEW.is_restocked IS DISTINCT FROM OLD.is_restocked
+       OR NEW.compat_checkout_sealed IS DISTINCT FROM OLD.compat_checkout_sealed
+       OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key THEN
+      RAISE EXCEPTION 'Drivers cannot modify protected order columns.';
+    END IF;
+
+    IF COALESCE(NEW.subtotal, 0) < 0
+       OR COALESCE(NEW.subtotal, 0) > COALESCE(OLD.subtotal, 0) + 0.01
+       OR COALESCE(NEW.tax_amount, 0) < 0
+       OR COALESCE(NEW.tax_amount, 0) > COALESCE(OLD.tax_amount, 0) + 0.01
+       OR COALESCE(NEW.total_amount, 0) < 0
+       OR COALESCE(NEW.total_amount, 0) > COALESCE(OLD.total_amount, 0) + 0.01 THEN
+      RAISE EXCEPTION 'Drivers cannot increase order financial totals.';
+    END IF;
+
+    IF NEW.subtotal > COALESCE(OLD.subtotal, 0) THEN NEW.subtotal := OLD.subtotal; END IF;
+    IF NEW.tax_amount > COALESCE(OLD.tax_amount, 0) THEN NEW.tax_amount := OLD.tax_amount; END IF;
+    IF NEW.total_amount > COALESCE(OLD.total_amount, 0) THEN NEW.total_amount := OLD.total_amount; END IF;
+
+    IF NEW.status::text NOT IN (
+      'ready_for_delivery',
+      'shipped',
+      'out_for_delivery',
+      'delivered',
+      'delivered_partial',
+      'attempted',
+      'cancelled'
+    ) THEN
+      RAISE EXCEPTION 'Drivers cannot transition order to status "%".', NEW.status::text;
+    END IF;
+
     RETURN NEW;
   END IF;
 
@@ -567,7 +641,8 @@ BEGIN
     tax_amount,
     shipping_amount,
     total_amount,
-    idempotency_key
+    idempotency_key,
+    compat_checkout_sealed
   ) VALUES (
     v_effective_user_id,
     v_effective_company_id,
@@ -587,7 +662,8 @@ BEGIN
     v_tax_amount,
     v_shipping_amount,
     v_total_amount,
-    p_idempotency_key
+    p_idempotency_key,
+    true
   )
   RETURNING * INTO v_created_order;
 
@@ -597,6 +673,7 @@ BEGIN
       order_id,
       product_variant_id,
       quantity_variants,
+      original_quantity_variants,
       total_base_units,
       unit_price,
       line_total,
@@ -604,6 +681,7 @@ BEGIN
     ) VALUES (
       v_created_order.id,
       (v_elem->>'variant_id')::uuid,
+      (v_elem->>'quantity')::integer,
       (v_elem->>'quantity')::integer,
       (v_elem->>'quantity')::integer * (v_elem->>'multiplier')::integer,
       (v_elem->>'unit_price')::numeric,
@@ -688,9 +766,14 @@ BEGIN
   NEW.total_base_units := NEW.quantity_variants * v_multiplier;
 
   -- Split inserts from trusted internal SECURITY DEFINER RPCs (split_order_item /
-  -- driver_complete_delivery) inherit already-deducted stock from the parent line.
+  -- driver_complete_delivery) or guarded compat splits inherit already-deducted stock.
   IF COALESCE(current_setting('app.skip_item_inventory_deduct', true), '') = 'true'
      AND LOWER(COALESCE(NEW.status, '')) IN ('backordered', 'rejected') THEN
+    IF LOWER(COALESCE(NEW.status, '')) = 'rejected' THEN
+      NEW.original_quantity_variants := 0;
+    ELSE
+      NEW.original_quantity_variants := COALESCE(NEW.original_quantity_variants, NEW.quantity_variants);
+    END IF;
     PERFORM set_config('app.skip_item_inventory_deduct', 'false', true);
     RETURN NEW;
   END IF;
@@ -699,6 +782,9 @@ BEGIN
   IF LOWER(COALESCE(NEW.status, 'active')) IN ('backordered', 'rejected', 'cancelled', 'restocked', 'delivered') THEN
     RAISE EXCEPTION 'Direct insert with status "%" is not allowed.', NEW.status;
   END IF;
+
+  -- Non-split inserts always anchor original_quantity_variants to the authorized insert qty.
+  NEW.original_quantity_variants := NEW.quantity_variants;
 
   UPDATE public.inventory
   SET base_units_on_hand = base_units_on_hand - NEW.total_base_units
@@ -869,6 +955,7 @@ BEGIN
   UPDATE public.order_items
   SET product_variant_id = p_new_variant_id,
       quantity_variants = p_new_qty,
+      original_quantity_variants = p_new_qty,
       total_base_units = p_new_qty * v_new_mult,
       unit_price = v_new_price,
       line_total = p_new_qty * v_new_price
@@ -922,6 +1009,7 @@ BEGIN
 
   UPDATE public.order_items
   SET quantity_variants = p_new_qty,
+      original_quantity_variants = p_new_qty,
       total_base_units = p_new_qty * v_multiplier,
       line_total = p_new_qty * v_unit_price
   WHERE id = p_item_id;
@@ -1012,9 +1100,9 @@ BEGIN
   END IF;
 
   INSERT INTO public.order_items (
-    order_id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status
+    order_id, product_variant_id, quantity_variants, original_quantity_variants, total_base_units, unit_price, line_total, status
   ) VALUES (
-    p_order_id, p_variant_id, p_qty, p_qty * v_multiplier, v_unit_price, p_qty * v_unit_price, 'active'
+    p_order_id, p_variant_id, p_qty, p_qty, p_qty * v_multiplier, v_unit_price, p_qty * v_unit_price, 'active'
   );
 
   SELECT subtotal, tax_amount, shipping_amount
@@ -1165,6 +1253,7 @@ BEGIN
 
   UPDATE public.order_items
   SET quantity_variants = p_pack_qty,
+      original_quantity_variants = p_pack_qty,
       total_base_units = p_pack_qty * v_base_unit_multiplier,
       line_total = ROUND(p_pack_qty * v_item.unit_price, 2)
   WHERE id = p_item_id;
@@ -1177,6 +1266,7 @@ BEGIN
     order_id,
     product_variant_id,
     quantity_variants,
+    original_quantity_variants,
     status,
     unit_price,
     total_base_units,
@@ -1184,6 +1274,7 @@ BEGIN
   ) VALUES (
     v_item.order_id,
     v_item.product_variant_id,
+    v_backorder_qty,
     v_backorder_qty,
     'BACKORDERED',
     v_item.unit_price,
@@ -1623,6 +1714,7 @@ BEGIN
         order_id,
         product_variant_id,
         quantity_variants,
+        original_quantity_variants,
         status,
         unit_price,
         total_base_units,
@@ -1631,6 +1723,7 @@ BEGIN
         p_order_id,
         v_item.product_variant_id,
         v_rej_qty,
+        0,
         'rejected',
         v_unit_price,
         v_rej_qty * v_multiplier,

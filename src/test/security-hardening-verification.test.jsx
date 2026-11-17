@@ -224,20 +224,35 @@ describe('Option A Security Hardening — SQL Migration Invariants', () => {
     expect(checkoutFn).toContain('Insufficient agency credit limit for Net 30 order');
     expect(checkoutFn).toContain('WHEN unique_violation THEN');
 
-    // Compatibility rollback scripts remain assignment-scoped and symmetric
+    // Compatibility rollback scripts remain assignment-scoped, total-sealed, split-conserving, and symmetric
+    expect(enableCompatSql).toContain('compat_checkout_sealed');
+    expect(enableCompatSql).toContain('original_quantity_variants');
+    expect(enableCompatSql).toContain('Legacy compat customer insert pending orders');
+    expect(enableCompatSql).toContain('Legacy compat customer insert pending order items');
     expect(enableCompatSql).toContain('Legacy compat driver update assigned orders');
     expect(enableCompatSql).toContain('Legacy compat driver update assigned order items');
     expect(enableCompatSql).toContain('Legacy compat driver insert rejected split items');
     expect(enableCompatSql).toContain('assigned_driver_id = up.id');
+    expect(enableCompatSql).toContain('enforce_compat_order_header_security');
     expect(enableCompatSql).toContain('enforce_compat_order_item_security');
+    expect(enableCompatSql).toContain('reconcile_compat_order_totals');
+    expect(enableCompatSql).toContain('REFERENCING NEW TABLE AS new_rows');
+    expect(enableCompatSql).toContain('COALESCE(o.compat_checkout_sealed, false) = false');
+    expect(enableCompatSql).toContain('COALESCE(SUM(COALESCE(original_quantity_variants, 0)), 0) - COALESCE(SUM(quantity_variants), 0)');
     expect(disableCompatSql).toContain('DROP POLICY IF EXISTS "Legacy compat driver update assigned orders"');
-    expect(disableCompatSql).toContain('DROP TRIGGER IF EXISTS enforce_compat_order_item_security');
+    expect(disableCompatSql).toContain('DROP POLICY IF EXISTS "Legacy compat customer insert pending orders"');
+    expect(disableCompatSql).toContain('DROP POLICY IF EXISTS "Legacy compat customer insert pending order items"');
+    expect(disableCompatSql).toContain('DROP TRIGGER IF EXISTS enforce_compat_order_item_security_trg');
+    expect(disableCompatSql).toContain('DROP TRIGGER IF EXISTS enforce_compat_order_header_security_trg');
+    expect(disableCompatSql).toContain('DROP TRIGGER IF EXISTS reconcile_compat_order_totals_trg');
 
-    // Direct column/row tamper guard trigger on public.orders
+    // Direct column/row tamper guard trigger on public.orders (also preserves pre-hardening compat continuity)
     const orderTriggerFn = extractFunctionBlock(hardeningSql, 'protect_secure_order_columns');
     expect(orderTriggerFn).toContain("COALESCE(v_actor_role, '') IN ('admin', 'warehouse')");
     expect(orderTriggerFn).toContain('app.allow_driver_order_rpc');
     expect(orderTriggerFn).toContain('app.allow_order_notes_write');
+    expect(orderTriggerFn).toContain('app.allow_compat_order_totals_sync');
+    expect(orderTriggerFn).toContain('Legacy compat driver update assigned orders');
     expect(hardeningSql).toContain('CREATE TRIGGER enforce_order_column_security');
 
     // Driver RPCs must run as SECURITY DEFINER and validate active status + assignment
