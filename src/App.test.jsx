@@ -5,7 +5,18 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { ProtectedRoute, RoleProtectedRoute } from './App';
 import * as AuthHook from './lib/useAuth';
 
-// 🚀 Intercept the Auth Hook to test protected routes & recovery states
+// 🚀 Intercept Supabase client and Auth Hook cleanly in CI/unit tests without requiring .env
+vi.mock('./lib/supabase', () => ({
+  supabase: {
+    auth: {
+      getSession: vi.fn().mockResolvedValue({ data: { session: null }, error: null }),
+      onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+    },
+    from: vi.fn(),
+    rpc: vi.fn(),
+  },
+}));
+
 vi.mock('./lib/useAuth', () => ({
   useAuth: vi.fn(),
 }));
