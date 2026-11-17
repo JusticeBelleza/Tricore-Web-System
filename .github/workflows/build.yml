@@ -23,5 +23,11 @@ jobs:
     - name: Install Dependencies
       run: npm ci
 
+    - name: Run ESLint
+      run: npm run lint
+
+    - name: Run Vitest Suite
+      run: npx vitest run
+
     - name: Build Application
       run: npm run build

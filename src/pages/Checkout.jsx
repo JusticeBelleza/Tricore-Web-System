@@ -96,6 +96,9 @@ export default function Checkout() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showSuccess, setShowSuccess] = useState(false);
+  const [createdOrderId, setCreatedOrderId] = useState(null);
+  const [auditWarning, setAuditWarning] = useState('');
+  const submittingOrderRef = useRef(false);
 
   const [patients, setPatients] = useState([]);
   const [patientSearch, setPatientSearch] = useState('');
@@ -309,7 +312,17 @@ export default function Checkout() {
   const isCreditExceeded = isB2B && paymentMethod === 'net_30' && totalAmount > financials.available;
 
   const handlePlaceOrder = async () => {
-    if (loading || normalizedCart.length === 0 || isCreditExceeded || taxLoading) return;
+    if (
+      submittingOrderRef.current ||
+      loading ||
+      showSuccess ||
+      createdOrderId ||
+      normalizedCart.length === 0 ||
+      isCreditExceeded ||
+      taxLoading
+    ) {
+      return;
+    }
 
     const cartCheck = validateCartForSubmission(normalizedCart);
     if (!cartCheck.valid) {
@@ -328,7 +341,8 @@ export default function Checkout() {
     if (isB2B && !shipToAgency && !selectedPatient) { setError('Please select a patient or select "Ship to Agency".'); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
     if (!isB2B && (isEditingRetail || !retailInfo.address || !retailInfo.phone)) { setError('Please confirm your shipping address and phone number.'); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
 
-    setLoading(true); setError('');
+    submittingOrderRef.current = true;
+    setLoading(true); setError(''); setAuditWarning('');
 
     try {
       const sName = isB2B ? (shipToAgency ? activeCompany?.name : selectedPatient.full_name) : retailInfo.full_name;
@@ -387,34 +401,57 @@ export default function Checkout() {
       const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
       if (itemsError) throw itemsError;
 
-      // 4. 🚀 AUDIT TRAIL LOGGING
+      // Order and items have been committed; do not retry checkout automatically or allow duplicate submission.
+      setCreatedOrderId(order.id);
+      let nextAuditWarning = '';
+
+      // 4. 🚀 AUDIT TRAIL LOGGING (explicitly warn on failure without cancelling or retrying order)
       if (isProxy) {
-        await supabase.from('order_audit_logs').insert([{
-          order_id: order.id,
-          action: 'ORDER_CREATED',
-          performed_by: profile.id, // The Admin's ID
-          details: `Order created via Proxy by ${profile.role} on behalf of ${proxySession.customerName}`
-        }]);
+        const orderCode = String(order.id || '').slice(0, 8).toUpperCase();
+        try {
+          const { error: auditError } = await supabase.from('order_audit_logs').insert([{
+            order_id: order.id,
+            action: 'ORDER_CREATED',
+            performed_by: profile?.id || null,
+            actor_role: profile?.role || null,
+            new_status: order.status || 'pending',
+            details: `Order created via Proxy by ${profile?.role} on behalf of ${proxySession.customerName}`
+          }]);
+          if (auditError) throw auditError;
+        } catch (auditErr) {
+          console.error('Order created but audit log failed:', auditErr);
+          nextAuditWarning = `Order #${orderCode} was created successfully, but its audit record failed to save (${auditErr?.message || 'unknown error'}). Do not resubmit checkout.`;
+        }
       }
 
-      // 5. Update user profile if requested
+      // 5. Update user profile if requested (non-fatal after order commit)
       if (!isB2B && saveToProfile && targetUserId) {
-        await supabase.from('user_profiles').update({
-          full_name: retailInfo.full_name, contact_number: retailInfo.phone, email: retailInfo.email,
-          address: retailInfo.address, city: retailInfo.city, state: retailInfo.state, zip: retailInfo.zip
-        }).eq('id', targetUserId);
+        try {
+          const { error: profileError } = await supabase.from('user_profiles').update({
+            full_name: retailInfo.full_name, contact_number: retailInfo.phone, email: retailInfo.email,
+            address: retailInfo.address, city: retailInfo.city, state: retailInfo.state, zip: retailInfo.zip
+          }).eq('id', targetUserId);
+          if (profileError) throw profileError;
+        } catch (profileErr) {
+          console.error('Order created but profile sync failed:', profileErr);
+        }
       }
 
+      setAuditWarning(nextAuditWarning);
       setShowSuccess(true);
     } catch (err) {
+      submittingOrderRef.current = false;
       console.error(err.message); setError('Failed to place order. Please try again.');
     } finally { setLoading(false); }
   };
 
   const finishCheckout = () => { 
+    submittingOrderRef.current = false;
     localStorage.removeItem(cartKey); 
     if (isProxy) localStorage.removeItem('tricore_proxy_session');
     setCart([]); 
+    setCreatedOrderId(null);
+    setAuditWarning('');
     setShowSuccess(false); 
     
     // Route Admins back to Admin orders, Warehouse to Warehouse Orders, Normal users to My Orders
@@ -1065,8 +1102,8 @@ export default function Checkout() {
 
             <button 
               onClick={handlePlaceOrder} 
-              disabled={loading || taxLoading || isCreditExceeded || (isB2B && !shipToAgency && !selectedPatient) || (!isB2B && (isEditingRetail || !retailInfo.address || !retailInfo.phone))}
-              className={`w-full mt-5 py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-xl transition-all duration-200 ${(loading || taxLoading || isCreditExceeded || (isB2B && !shipToAgency && !selectedPatient) || (!isB2B && (isEditingRetail || !retailInfo.address || !retailInfo.phone))) ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none' : 'bg-slate-900 text-white hover:bg-slate-800 hover:-translate-y-0.5 active:translate-y-0 active:scale-95'}`}
+              disabled={loading || showSuccess || Boolean(createdOrderId) || taxLoading || isCreditExceeded || (isB2B && !shipToAgency && !selectedPatient) || (!isB2B && (isEditingRetail || !retailInfo.address || !retailInfo.phone))}
+              className={`w-full mt-5 py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-xl transition-all duration-200 ${(loading || showSuccess || Boolean(createdOrderId) || taxLoading || isCreditExceeded || (isB2B && !shipToAgency && !selectedPatient) || (!isB2B && (isEditingRetail || !retailInfo.address || !retailInfo.phone))) ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none' : 'bg-slate-900 text-white hover:bg-slate-800 hover:-translate-y-0.5 active:translate-y-0 active:scale-95'}`}
             >
               {loading ? 'Processing...' : taxLoading ? 'Calculating Tax...' : (<><Receipt size={18} /> Place Order</>)}
             </button>
@@ -1109,10 +1146,23 @@ export default function Checkout() {
       {/* SUCCESS MODAL */}
       {showSuccess && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-300">
-          <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-sm p-10 text-center border border-slate-100 zoom-in-95 animate-in duration-300">
-            <div className="w-24 h-24 bg-green-50 text-green-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner"><CheckCircle2 size={48} strokeWidth={2.5} /></div>
-            <h4 className="text-3xl font-black text-slate-900 tracking-tight">Success!</h4>
-            <p className="text-slate-500 mt-3 font-medium leading-relaxed">Your order has been received and is being processed.</p>
+          <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-md p-10 text-center border border-slate-100 zoom-in-95 animate-in duration-300">
+            <div className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner ${auditWarning ? 'bg-amber-50 text-amber-500' : 'bg-green-50 text-green-500'}`}>
+              {auditWarning ? <AlertTriangle size={44} strokeWidth={2.25} /> : <CheckCircle2 size={48} strokeWidth={2.5} />}
+            </div>
+            <h4 className="text-3xl font-black text-slate-900 tracking-tight">
+              {auditWarning ? 'Order Created' : 'Success!'}
+            </h4>
+            <p className="text-slate-500 mt-3 font-medium leading-relaxed">
+              {createdOrderId
+                ? `Order #${String(createdOrderId).slice(0, 8).toUpperCase()} has been received and is being processed.`
+                : 'Your order has been received and is being processed.'}
+            </p>
+            {auditWarning && (
+              <div role="alert" className="mt-4 p-3.5 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs font-semibold text-left leading-relaxed">
+                {auditWarning}
+              </div>
+            )}
             <button onClick={finishCheckout} className="w-full mt-8 py-4 bg-slate-900 text-white font-bold rounded-2xl shadow-lg hover:bg-slate-800 active:scale-95 transition-all">
               {isStaff ? 'Return to Admin Orders' : 'View Order History'}
             </button>

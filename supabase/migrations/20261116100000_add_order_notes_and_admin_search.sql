@@ -40,8 +40,7 @@ ON public.order_audit_logs (order_id, created_at DESC);
 
 ALTER TABLE public.order_audit_logs ENABLE ROW LEVEL SECURITY;
 
-REVOKE ALL ON TABLE public.order_audit_logs FROM anon;
-REVOKE ALL ON TABLE public.order_audit_logs FROM PUBLIC;
+REVOKE ALL ON TABLE public.order_audit_logs FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT ON TABLE public.order_audit_logs TO authenticated;
 GRANT ALL ON TABLE public.order_audit_logs TO service_role;
 
@@ -70,7 +69,7 @@ SET search_path = public
 AS $$
 DECLARE
   v_user_id uuid := auth.uid();
-  v_role text := public.get_user_role();
+  v_role text := COALESCE(public.get_user_role(), '');
   v_company_id uuid := public.get_my_company_id();
   v_order public.orders%ROWTYPE;
   v_clean_notes text;
@@ -146,7 +145,7 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.update_order_notes(uuid, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.update_order_notes(uuid, text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.update_order_notes(uuid, text) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.update_order_notes(uuid, text) TO service_role;
 
@@ -164,7 +163,7 @@ SECURITY INVOKER
 SET search_path = public
 AS $$
 DECLARE
-  v_role text := public.get_user_role();
+  v_role text := COALESCE(public.get_user_role(), '');
   v_clean text := btrim(regexp_replace(COALESCE(p_search, ''), '^#+', ''));
   v_escaped text;
   v_pattern text;
@@ -224,6 +223,6 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.search_admin_orders(text, text, integer, integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.search_admin_orders(text, text, integer, integer) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.search_admin_orders(text, text, integer, integer) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.search_admin_orders(text, text, integer, integer) TO service_role;

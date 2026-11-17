@@ -601,8 +601,13 @@ describe('Live Operational Readiness Verification', () => {
             status: 'PENDING',
             product_variants: {
               sku: `SKU-${idx + 1}`,
-              name: 'Box of 100',
-              products: { name: `Sterile Nitrile Examination Gloves Lot #${idx + 1}` },
+              name: idx === 12 ? 'Case of 24 Sterile Individually Wrapped Clinical Packs (Latex-Free)' : 'Box of 100',
+              products: {
+                name:
+                  idx === 12
+                    ? `Extended Clinical Description Item #${idx + 1}: Sterile Nitrile Examination Gloves with Extended Beaded Cuff, Micro-Textured Fingertips, Chemotherapy-Rated Protection, Hospital Supply Ward Restock Lot #2026-A`
+                    : `Sterile Nitrile Examination Gloves Lot #${idx + 1}`,
+              },
             },
           })),
         };

@@ -43,7 +43,7 @@ BEGIN
   ) THEN
     IF COALESCE(current_setting('app.allow_route_order_write', true), '') <> 'true'
        AND COALESCE(current_setting('app.allow_return_to_approval', true), '') <> 'true' THEN
-      IF public.get_user_role() NOT IN ('admin', 'warehouse') THEN
+      IF COALESCE(public.get_user_role(), '') NOT IN ('admin', 'warehouse') THEN
         RAISE EXCEPTION 'Only authorized admin or warehouse staff can modify driver route order.';
       END IF;
     END IF;
@@ -73,7 +73,7 @@ SET search_path = public
 AS $$
 DECLARE
   v_user_id uuid := auth.uid();
-  v_role text := public.get_user_role();
+  v_role text := COALESCE(public.get_user_role(), '');
   v_driver_name text;
   v_run_date date := COALESCE(p_run_scope, CURRENT_DATE);
   v_total_input integer := COALESCE(array_length(p_ordered_order_ids, 1), 0);
@@ -222,6 +222,9 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.save_driver_stop_order(uuid, date, uuid[], jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.save_driver_stop_order(uuid, date, uuid[], jsonb) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.save_driver_stop_order(uuid, date, uuid[], jsonb) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.save_driver_stop_order(uuid, date, uuid[], jsonb) TO service_role;
+
+REVOKE ALL ON FUNCTION public.protect_order_route_columns() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.protect_order_route_columns() TO service_role;

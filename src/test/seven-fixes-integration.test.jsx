@@ -479,6 +479,135 @@ describe('Seven-Fix Component Integration Verification', () => {
     expect(screen.getAllByText('Call before delivery').length).toBeGreaterThanOrEqual(2);
   });
 
+  it('Checkout regression: includes trimmed delivery notes in orders payload when provided and omits order_notes when blank', async () => {
+    const userId = 'retail-notes-1';
+    mockAuthState.profile = {
+      id: userId,
+      role: 'retail',
+      full_name: 'Jane Retail',
+      address: '50 Oak Ave',
+      city: 'Pittsburg',
+      state: 'CA',
+      zip: '94565',
+      contact_number: '555-0100',
+    };
+    mockAuthState.user = { id: userId, email: 'jane@example.com' };
+
+    const insertedOrders = [];
+    const insertedOrderItems = [];
+
+    mockFrom.mockImplementation((table) => {
+      if (table === 'tax_rates') {
+        return createChainQuery({ data: { EstimatedCombinedRate: 0.1 }, error: null });
+      }
+      if (table === 'orders') {
+        const chain = createChainQuery({ data: { id: 'ord-notes-1' }, error: null });
+        chain.insert = (payload) => {
+          insertedOrders.push(payload);
+          return createChainQuery({ data: { id: `ord-notes-${insertedOrders.length}` }, error: null });
+        };
+        return chain;
+      }
+      if (table === 'product_variants') {
+        return createChainQuery({ data: [{ id: 'var-glv-10', multiplier: 5 }], error: null });
+      }
+      if (table === 'order_items') {
+        const chain = createChainQuery({ data: null, error: null });
+        chain.insert = (rows) => {
+          insertedOrderItems.push(...rows);
+          return createChainQuery({ data: null, error: null });
+        };
+        return chain;
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    // 1. Submit with validated delivery notes (leading/trailing whitespace trimmed)
+    localStorage.setItem(
+      `tricore_cart_user_${userId}`,
+      JSON.stringify([
+        {
+          product_id: 'prod-glv-1',
+          variant_id: 'var-glv-10',
+          name: 'Surgical Gloves Box',
+          unit_price: 20,
+          quantity: 3,
+          line_total: 60,
+        },
+      ])
+    );
+
+    const { unmount } = renderWithProviders(<Checkout />);
+    await screen.findByText('Surgical Gloves Box');
+    await screen.findByText('$76.00', {}, { timeout: 2000 });
+
+    const notesInput = screen.getByLabelText(/Order Notes/i);
+    fireEvent.change(notesInput, { target: { value: '  Call nurse at Gate #44 before arrival  ' } });
+
+    const placeOrderBtn = await screen.findByRole('button', { name: /place order/i });
+    await waitFor(() => expect(placeOrderBtn).not.toBeDisabled());
+    fireEvent.click(placeOrderBtn);
+
+    await waitFor(() => {
+      expect(insertedOrders).toHaveLength(1);
+      expect(insertedOrderItems).toHaveLength(1);
+    });
+
+    expect(insertedOrders[0]).toMatchObject({
+      user_id: userId,
+      company_id: null,
+      patient_id: null,
+      shipping_name: 'Jane Retail',
+      shipping_address: '50 Oak Ave',
+      shipping_city: 'Pittsburg',
+      shipping_state: 'CA',
+      shipping_zip: '94565',
+      shipping_phone: '555-0100',
+      order_notes: 'Call nurse at Gate #44 before arrival',
+      status: 'pending',
+      payment_method: 'net_30',
+      payment_status: 'unpaid',
+      subtotal: 60,
+      tax_amount: 6,
+      shipping_amount: 10,
+      total_amount: 76,
+    });
+    expect(insertedOrderItems[0]).toMatchObject({
+      order_id: 'ord-notes-1',
+      product_variant_id: 'var-glv-10',
+      quantity_variants: 3,
+      total_base_units: 15,
+      unit_price: 20,
+      line_total: 60,
+    });
+
+    unmount();
+
+    // 2. Submit with whitespace-only notes: omits order_notes while preserving full checkout payload
+    renderWithProviders(<Checkout />);
+    await screen.findByText('Surgical Gloves Box');
+    await screen.findByText('$76.00', {}, { timeout: 2000 });
+
+    fireEvent.change(screen.getByLabelText(/Order Notes/i), { target: { value: '   ' } });
+    const placeOrderSecond = await screen.findByRole('button', { name: /place order/i });
+    await waitFor(() => expect(placeOrderSecond).not.toBeDisabled());
+    fireEvent.click(placeOrderSecond);
+
+    await waitFor(() => {
+      expect(insertedOrders).toHaveLength(2);
+    });
+
+    expect(insertedOrders[1]).not.toHaveProperty('order_notes');
+    expect(insertedOrders[1]).toMatchObject({
+      user_id: userId,
+      status: 'pending',
+      subtotal: 60,
+      tax_amount: 6,
+      shipping_amount: 10,
+      total_amount: 76,
+    });
+  });
+
   it('Phase 3: Catalog isolates carts across accounts/proxy sessions, handles invalid JSON, and renders default variants cleanly', async () => {
     localStorage.setItem(
       'tricore_cart_user_user-a',
@@ -709,5 +838,283 @@ describe('Seven-Fix Component Integration Verification', () => {
     await screen.findByText('Jane Doe');
     expect(screen.getByText('Care Agency')).toBeInTheDocument();
     expect(companyFetchCount).toBe(1);
+  });
+
+  it('Proxy Checkout writes ORDER_CREATED audit record when Admin places a proxy order', async () => {
+    mockAuthState.profile = {
+      id: 'staff-admin-1',
+      role: 'admin',
+      full_name: 'Admin Tester',
+    };
+    mockAuthState.user = { id: 'staff-admin-1', email: 'admin@tricore.test' };
+
+    localStorage.setItem(
+      'tricore_proxy_session',
+      JSON.stringify({
+        targetCompanyId: 'comp-1',
+        targetUserId: 'user-p1',
+        targetPatientId: 'pat-1',
+        customerName: 'Care Agency',
+        orderType: 'b2b',
+      })
+    );
+    localStorage.setItem(
+      'tricore_cart_agency_comp-1',
+      JSON.stringify([
+        {
+          product_id: 'prod-1',
+          variant_id: 'var-1',
+          name: 'Surgical Masks',
+          unit_price: 25,
+          quantity: 2,
+          line_total: 50,
+        },
+      ])
+    );
+
+    const insertedOrders = [];
+    const insertedAuditLogs = [];
+
+    mockFrom.mockImplementation((table) => {
+      if (table === 'agency_patients') {
+        return createChainQuery({
+          data: [{ id: 'pat-1', full_name: 'Jane Doe', address: '123 Elm St', city: 'Pittsburg', state: 'CA', zip: '94565' }],
+          error: null,
+        });
+      }
+      if (table === 'companies') {
+        return createChainQuery({
+          data: { id: 'comp-1', name: 'Care Agency', shipping_fee: 15, credit_limit: 500 },
+          error: null,
+        });
+      }
+      if (table === 'tax_rates') {
+        return createChainQuery({ data: { EstimatedCombinedRate: 0.1 }, error: null });
+      }
+      if (table === 'product_variants') {
+        return createChainQuery({ data: [{ id: 'var-1', multiplier: 10 }], error: null });
+      }
+      if (table === 'orders') {
+        const chain = createChainQuery({ data: [{ total_amount: 100 }], error: null });
+        chain.insert = (payload) => {
+          insertedOrders.push(payload);
+          return createChainQuery({ data: { id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', status: 'pending' }, error: null });
+        };
+        return chain;
+      }
+      if (table === 'order_audit_logs') {
+        const chain = createChainQuery({ data: null, error: null });
+        chain.insert = (rows) => {
+          insertedAuditLogs.push(...rows);
+          return createChainQuery({ data: null, error: null });
+        };
+        return chain;
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    renderWithProviders(<Checkout />);
+    await screen.findByText('Jane Doe');
+    await screen.findByText('$70.00', {}, { timeout: 2000 });
+
+    const placeOrderBtn = await screen.findByRole('button', { name: /place order/i });
+    await waitFor(() => expect(placeOrderBtn).not.toBeDisabled());
+    fireEvent.click(placeOrderBtn);
+
+    await waitFor(() => {
+      expect(insertedOrders).toHaveLength(1);
+      expect(insertedAuditLogs).toHaveLength(1);
+    });
+
+    expect(insertedAuditLogs[0]).toMatchObject({
+      order_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      action: 'ORDER_CREATED',
+      performed_by: 'staff-admin-1',
+      actor_role: 'admin',
+      new_status: 'pending',
+      details: 'Order created via Proxy by admin on behalf of Care Agency',
+    });
+
+    expect(await screen.findByText('Success!')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('Proxy Checkout explicitly warns when audit logging fails after order commit without retrying or creating duplicate orders', async () => {
+    mockAuthState.profile = {
+      id: 'staff-admin-1',
+      role: 'admin',
+      full_name: 'Admin Tester',
+    };
+    mockAuthState.user = { id: 'staff-admin-1', email: 'admin@tricore.test' };
+
+    localStorage.setItem(
+      'tricore_proxy_session',
+      JSON.stringify({
+        targetCompanyId: 'comp-1',
+        targetUserId: 'user-p1',
+        targetPatientId: 'pat-1',
+        customerName: 'Care Agency',
+        orderType: 'b2b',
+      })
+    );
+    localStorage.setItem(
+      'tricore_cart_agency_comp-1',
+      JSON.stringify([
+        {
+          product_id: 'prod-1',
+          variant_id: 'var-1',
+          name: 'Surgical Masks',
+          unit_price: 25,
+          quantity: 2,
+          line_total: 50,
+        },
+      ])
+    );
+
+    const insertedOrders = [];
+    const insertedOrderItems = [];
+    let auditAttempts = 0;
+
+    mockFrom.mockImplementation((table) => {
+      if (table === 'agency_patients') {
+        return createChainQuery({
+          data: [{ id: 'pat-1', full_name: 'Jane Doe', address: '123 Elm St', city: 'Pittsburg', state: 'CA', zip: '94565' }],
+          error: null,
+        });
+      }
+      if (table === 'companies') {
+        return createChainQuery({
+          data: { id: 'comp-1', name: 'Care Agency', shipping_fee: 15, credit_limit: 500 },
+          error: null,
+        });
+      }
+      if (table === 'tax_rates') {
+        return createChainQuery({ data: { EstimatedCombinedRate: 0.1 }, error: null });
+      }
+      if (table === 'product_variants') {
+        return createChainQuery({ data: [{ id: 'var-1', multiplier: 10 }], error: null });
+      }
+      if (table === 'orders') {
+        const chain = createChainQuery({ data: [{ total_amount: 100 }], error: null });
+        chain.insert = (payload) => {
+          insertedOrders.push(payload);
+          return createChainQuery({ data: { id: '11112222-3333-4444-5555-666677778888', status: 'pending' }, error: null });
+        };
+        return chain;
+      }
+      if (table === 'order_items') {
+        const chain = createChainQuery({ data: null, error: null });
+        chain.insert = (rows) => {
+          insertedOrderItems.push(rows);
+          return createChainQuery({ data: null, error: null });
+        };
+        return chain;
+      }
+      if (table === 'order_audit_logs') {
+        const chain = createChainQuery({ data: null, error: null });
+        chain.insert = () => {
+          auditAttempts += 1;
+          return createChainQuery({
+            data: null,
+            error: { message: 'Could not find the table public.order_audit_logs in the schema cache' },
+          });
+        };
+        return chain;
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    renderWithProviders(<Checkout />);
+    await screen.findByText('Jane Doe');
+    await screen.findByText('$70.00', {}, { timeout: 2000 });
+
+    const placeOrderBtn = await screen.findByRole('button', { name: /place order/i });
+    await waitFor(() => expect(placeOrderBtn).not.toBeDisabled());
+    fireEvent.click(placeOrderBtn);
+    fireEvent.click(placeOrderBtn);
+
+    const warningBanner = await screen.findByRole('alert');
+    expect(warningBanner).toHaveTextContent(/#11112222 was created successfully, but its audit record failed to save/i);
+    expect(warningBanner).toHaveTextContent(/Do not resubmit checkout/i);
+
+    expect(screen.getByText('Order Created')).toBeInTheDocument();
+    expect(screen.queryByText(/Failed to place order\. Please try again\./i)).not.toBeInTheDocument();
+
+    expect(insertedOrders).toHaveLength(1);
+    expect(insertedOrderItems).toHaveLength(1);
+    expect(auditAttempts).toBe(1);
+    expect(placeOrderBtn).toBeDisabled();
+  });
+
+  it('Checkout prevents duplicate submissions during slow in-flight order creation', async () => {
+    const userId = 'retail-dup-guard-1';
+    mockAuthState.profile = {
+      id: userId,
+      role: 'retail',
+      full_name: 'Duplicate Guard Tester',
+      address: '80 Pine St',
+      city: 'Concord',
+      state: 'CA',
+      zip: '94520',
+      contact_number: '555-0199',
+    };
+    mockAuthState.user = { id: userId, email: 'dupguard@example.com' };
+
+    localStorage.setItem(
+      `tricore_cart_user_${userId}`,
+      JSON.stringify([
+        {
+          product_id: 'prod-1',
+          variant_id: 'var-1',
+          name: ' Gauze Roll ',
+          unit_price: 15,
+          quantity: 2,
+          line_total: 30,
+        },
+      ])
+    );
+
+    let resolveOrderInsert;
+    const insertedOrders = [];
+
+    mockFrom.mockImplementation((table) => {
+      if (table === 'tax_rates') {
+        return createChainQuery({ data: { EstimatedCombinedRate: 0 }, error: null });
+      }
+      if (table === 'product_variants') {
+        return createChainQuery({ data: [{ id: 'var-1', multiplier: 1 }], error: null });
+      }
+      if (table === 'orders') {
+        const chain = createChainQuery({ data: [], error: null });
+        chain.insert = (payload) => {
+          insertedOrders.push(payload);
+          return createChainQuery(
+            () =>
+              new Promise((resolve) => {
+                resolveOrderInsert = resolve;
+              })
+          );
+        };
+        return chain;
+      }
+      return createChainQuery({ data: null, error: null });
+    });
+
+    renderWithProviders(<Checkout />);
+    await screen.findByText(/Gauze Roll/);
+
+    const placeOrderBtn = await screen.findByRole('button', { name: /place order/i });
+    await waitFor(() => expect(placeOrderBtn).not.toBeDisabled());
+
+    // Simulate rapid double-click while order insert is still pending in-flight
+    fireEvent.click(placeOrderBtn);
+    fireEvent.click(placeOrderBtn);
+
+    expect(insertedOrders).toHaveLength(1);
+    expect(placeOrderBtn).toBeDisabled();
+
+    resolveOrderInsert({ data: { id: '22223333-4444-5555-6666-777788889999', status: 'pending' }, error: null });
+    expect(await screen.findByText('Success!')).toBeInTheDocument();
+    expect(insertedOrders).toHaveLength(1);
   });
 });

@@ -210,15 +210,22 @@ describe('Option A Security Hardening — SQL Migration Invariants', () => {
   it('preserves return-to-approval backorder safeguards, transition guards, and route-ordering authorization', () => {
     expect(notesSearchSql).toContain('SECURITY INVOKER');
     expect(notesSearchSql).toContain("v_role NOT IN ('admin', 'warehouse')");
+    expect(notesSearchSql).toContain('REVOKE ALL ON TABLE public.order_audit_logs FROM PUBLIC, anon, authenticated;');
+    expect(notesSearchSql).toContain('REVOKE ALL ON FUNCTION public.update_order_notes(uuid, text) FROM PUBLIC, anon;');
+    expect(notesSearchSql).toContain('REVOKE ALL ON FUNCTION public.search_admin_orders(text, text, integer, integer) FROM PUBLIC, anon;');
 
     expect(returnApprovalSql).toContain("'backordered'");
     expect(returnApprovalSql).toContain("'allocated'");
     expect(returnApprovalSql).toContain("'ready_to_pack'");
     expect(returnApprovalSql).toContain('trigger_enforce_order_approval_transition');
-    expect(returnApprovalSql).toContain("app.allow_return_to_approval");
+    expect(returnApprovalSql).toContain('app.allow_return_to_approval');
+    expect(returnApprovalSql).toContain('REVOKE ALL ON FUNCTION public.return_order_to_approval(uuid, text) FROM PUBLIC, anon;');
+    expect(returnApprovalSql).toContain('REVOKE ALL ON FUNCTION public.enforce_order_approval_transition_guard() FROM PUBLIC, anon, authenticated;');
 
     expect(routeOrderSql).toContain('trigger_protect_order_route_columns');
-    expect(routeOrderSql).toContain("public.get_user_role() NOT IN ('admin', 'warehouse')");
+    expect(routeOrderSql).toContain("COALESCE(public.get_user_role(), '') NOT IN ('admin', 'warehouse')");
+    expect(routeOrderSql).toContain('REVOKE ALL ON FUNCTION public.save_driver_stop_order(uuid, date, uuid[], jsonb) FROM PUBLIC, anon;');
+    expect(routeOrderSql).toContain('REVOKE ALL ON FUNCTION public.protect_order_route_columns() FROM PUBLIC, anon, authenticated;');
     expect(routeOrderSql).toContain('ORDER BY o.id');
     expect(routeOrderSql).toContain('FOR UPDATE');
   });

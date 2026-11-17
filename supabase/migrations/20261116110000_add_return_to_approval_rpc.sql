@@ -13,7 +13,7 @@ SET search_path = public
 AS $$
 DECLARE
   v_user_id uuid := auth.uid();
-  v_role text := public.get_user_role();
+  v_role text := COALESCE(public.get_user_role(), '');
   v_clean_reason text := btrim(COALESCE(p_reason, ''));
   v_order public.orders%ROWTYPE;
   v_prev_status text;
@@ -134,7 +134,7 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.return_order_to_approval(uuid, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.return_order_to_approval(uuid, text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.return_order_to_approval(uuid, text) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.return_order_to_approval(uuid, text) TO service_role;
 
@@ -168,3 +168,6 @@ CREATE TRIGGER trigger_enforce_order_approval_transition
 BEFORE UPDATE OF status ON public.orders
 FOR EACH ROW
 EXECUTE FUNCTION public.enforce_order_approval_transition_guard();
+
+REVOKE ALL ON FUNCTION public.enforce_order_approval_transition_guard() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.enforce_order_approval_transition_guard() TO service_role;
