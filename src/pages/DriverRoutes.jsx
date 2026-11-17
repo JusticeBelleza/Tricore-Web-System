@@ -537,52 +537,35 @@ export default function DriverRoutes() {
   };
 
   const updateOrderStatus = async (orderId, newStatus) => {
+    if (newStatus !== 'out_for_delivery') return;
+
     const orderToUpdate = orders.find(o => o.id === orderId);
     const isBackorder = ['delivered_partial', 'delivered'].includes(orderToUpdate?.status);
 
-    if (isBackorder && newStatus === 'out_for_delivery') {
-      setOrders(currentOrders => currentOrders.map(order => {
-        if (order.id === orderId) {
-          return {
-            ...order,
-            order_items: order.order_items.map(item => 
-              item.status?.toUpperCase() === 'SHIPPED' ? { ...item, status: 'OUT_FOR_DELIVERY' } : item
-            )
-          };
-        }
-        return order;
-      }));
-
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-
-      try {
-        const itemsToUpdate = orderToUpdate.order_items.filter(i => i.status?.toUpperCase() === 'SHIPPED').map(i => i.id);
-        if (itemsToUpdate.length > 0) {
-          await supabase.from('order_items').update({ status: 'OUT_FOR_DELIVERY' }).in('id', itemsToUpdate);
-        }
-      } catch {
-        toast.error("Failed to sync route start to database."); 
+    setOrders(currentOrders => currentOrders.map(order => {
+      if (order.id !== orderId) return order;
+      if (isBackorder) {
+        return {
+          ...order,
+          order_items: order.order_items.map(item =>
+            item.status?.toUpperCase() === 'SHIPPED' ? { ...item, status: 'OUT_FOR_DELIVERY' } : item
+          )
+        };
       }
-    } else {
-      setOrders(currentOrders => 
-        currentOrders.map(order => 
-          order.id === orderId ? { ...order, status: newStatus } : order
-        )
-      );
+      return { ...order, status: newStatus };
+    }));
 
-      if (newStatus === 'out_for_delivery') {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 
-      try {
-        const { error } = await supabase
-          .from('orders')
-          .update({ status: newStatus, updated_at: new Date().toISOString() })
-          .eq('id', orderId);
-        if (error) throw error;
-      } catch {
-        toast.error("Failed to sync status to database."); 
-      }
+    try {
+      const { error } = await supabase.rpc('driver_start_delivery', {
+        p_order_id: orderId
+      });
+      if (error) throw error;
+    } catch (error) {
+      console.error('Start route error:', error.message);
+      toast.error(isBackorder ? "Failed to sync route start to database." : "Failed to sync status to database.");
+      fetchMyRoutes();
     }
   };
 
@@ -601,23 +584,23 @@ export default function DriverRoutes() {
     setShowEmptyPodConfirm(false);
 
     const activeItems = getActiveItems(activeOrder);
-    const isBackorderRun = ['delivered_partial', 'delivered'].includes(activeOrder.status);
-    
+
     let totalDeliveredQty = 0;
-    let totalOriginalQty = 0;
-    
-    activeItems.forEach(item => {
-      totalOriginalQty += item.quantity_variants;
-      totalDeliveredQty += (deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : item.quantity_variants);
+    const deliveredItemsPayload = activeItems.map(item => {
+      const delQty = deliveredQuantities[item.id] !== undefined ? Number(deliveredQuantities[item.id]) : item.quantity_variants;
+      totalDeliveredQty += delQty;
+      return {
+        item_id: item.id,
+        delivered_qty: delQty
+      };
     });
 
     const isTotalRejection = totalDeliveredQty === 0;
-    const isPartialRejection = totalDeliveredQty > 0 && totalDeliveredQty < totalOriginalQty;
 
     setIsSubmitting(true);
     try {
-      let photoUrlStr = null; 
-      let signatureUrlStr = null; 
+      let photoUrlStr = null;
+      let signatureUrlStr = null;
       const uniquePrefix = `${Date.now()}-${activeOrder.id}`;
       
       if (podPhotos.length > 0) {
@@ -643,101 +626,31 @@ export default function DriverRoutes() {
         signatureUrlStr = supabase.storage.from('delivery-proofs').getPublicUrl(sigPath).data.publicUrl;
       }
 
-      let rejectedSubtotalValue = 0;
+      const { data: completionResult, error: updateErr } = await supabase.rpc('driver_complete_delivery', {
+        p_order_id: activeOrder.id,
+        p_delivered_items: deliveredItemsPayload,
+        p_received_by: proofEval.normalizedRecipient,
+        p_signature_url: signatureUrlStr,
+        p_photo_url: photoUrlStr
+      });
 
-      for (const item of activeItems) {
-        const delQty = deliveredQuantities[item.id] !== undefined ? deliveredQuantities[item.id] : item.quantity_variants;
-        const origQty = item.quantity_variants;
-        const unitPrice = Number(item.unit_price) || (Number(item.line_total) / origQty);
-        const rejQty = origQty - delQty;
-
-        if (rejQty === origQty) {
-          rejectedSubtotalValue += (origQty * unitPrice);
-          const { error: err } = await supabase.from('order_items').update({ status: 'rejected' }).eq('id', item.id);
-          if (err) throw err;
-        } else if (rejQty > 0) {
-          rejectedSubtotalValue += (rejQty * unitPrice);
-
-          const proportionalBaseUnitsDel = Math.round((item.total_base_units / origQty) * delQty);
-          const { error: err1 } = await supabase.from('order_items').update({
-            quantity_variants: delQty,
-            line_total: delQty * unitPrice,
-            total_base_units: proportionalBaseUnitsDel,
-            status: 'DELIVERED'
-          }).eq('id', item.id);
-          if (err1) throw err1;
-
-          const proportionalBaseUnitsRej = item.total_base_units - proportionalBaseUnitsDel;
-          const { error: err2 } = await supabase.from('order_items').insert([{
-            order_id: activeOrder.id,
-            product_variant_id: item.product_variant_id,
-            quantity_variants: rejQty,
-            unit_price: unitPrice,
-            line_total: rejQty * unitPrice,
-            status: 'rejected',
-            total_base_units: proportionalBaseUnitsRej
-          }]);
-          if (err2) throw err2;
-        } else {
-          const { error: err3 } = await supabase.from('order_items').update({ status: 'DELIVERED' }).eq('id', item.id);
-          if (err3) throw err3;
-        }
-      }
-
-      let finalOrderStatus = 'delivered';
-      let cancellationReason = null;
-      
-      const origSub = Number(activeOrder.subtotal) || 0;
-      const taxRate = origSub > 0 ? (Number(activeOrder.tax_amount || 0) / origSub) : 0;
-      
-      let finalSubtotal = origSub - rejectedSubtotalValue;
-      let finalTaxAmount = finalSubtotal * taxRate;
-      let finalTotalAmount = finalSubtotal + Number(activeOrder.shipping_amount || 0) + finalTaxAmount;
-
-      if (isTotalRejection && !isBackorderRun) {
-        finalOrderStatus = 'attempted';
-        cancellationReason = 'Customer rejected all items at the door.';
-        finalTotalAmount = activeOrder.total_amount; 
-        finalSubtotal = activeOrder.subtotal;
-        finalTaxAmount = activeOrder.tax_amount;
-      } else if (isTotalRejection && isBackorderRun) {
-        finalOrderStatus = 'delivered_partial';
-        cancellationReason = 'Customer rejected the backordered items at the door.';
-      } else if (isPartialRejection) {
-        finalOrderStatus = 'delivered_partial';
-        cancellationReason = 'Customer rejected some items at the door.';
-      } else {
-        const stillHasBackorders = activeOrder.order_items.some(i => i.status?.toLowerCase() === 'backordered' || i.status?.toUpperCase() === 'ALLOCATED' || i.status?.toUpperCase() === 'READY_TO_PACK');
-        finalOrderStatus = stillHasBackorders ? 'delivered_partial' : 'delivered';
-      }
-
-      const { error: updateErr } = await supabase.from('orders').update({ 
-        status: finalOrderStatus, 
-        subtotal: finalSubtotal,
-        tax_amount: finalTaxAmount,
-        total_amount: finalTotalAmount, 
-        photo_url: photoUrlStr, 
-        signature_url: signatureUrlStr, 
-        received_by: proofEval.normalizedRecipient,
-        cancellation_reason: cancellationReason,
-        updated_at: new Date().toISOString() 
-      }).eq('id', activeOrder.id);
-      
       if (updateErr) throw updateErr;
 
-      setOrders(orders.filter(o => o.id !== activeOrder.id)); 
-      if (!isTotalRejection) setCompletedThisWeek(prev => prev + 1); 
+      const resolvedTotalRejection = completionResult?.is_total_rejection ?? isTotalRejection;
+
+      setOrders(orders.filter(o => o.id !== activeOrder.id));
+      if (!resolvedTotalRejection) setCompletedThisWeek(prev => prev + 1);
       
-      window.dispatchEvent(new Event('orderStatusChanged')); 
-      closeModal(); 
+      window.dispatchEvent(new Event('orderStatusChanged'));
+      closeModal();
       
-      toast.success(isTotalRejection ? 'Order marked as attempted (Items rejected).' : 'Delivery completed successfully!');
+      toast.success(resolvedTotalRejection ? 'Order marked as attempted (Items rejected).' : 'Delivery completed successfully!');
       
-    } catch (error) { 
-      console.error('Delivery Error:', error.message); 
-      toast.error('Failed to upload delivery proof. Check your connection.'); 
-    } finally { 
-      setIsSubmitting(false); 
+    } catch (error) {
+      console.error('Delivery Error:', error.message);
+      toast.error('Failed to upload delivery proof. Check your connection.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -748,11 +661,11 @@ export default function DriverRoutes() {
       const isBackorderRun = ['delivered_partial', 'delivered'].includes(cancellingOrder.status);
 
       if (isBackorderRun) {
-        const activeItems = getActiveItems(cancellingOrder);
-        for (const item of activeItems) {
-           await supabase.from('order_items').update({ status: 'rejected' }).eq('id', item.id);
-        }
-        await supabase.from('orders').update({ cancellation_reason: cancelReason.trim(), updated_at: new Date().toISOString() }).eq('id', cancellingOrder.id);
+        const { error } = await supabase.rpc('driver_mark_attempted', {
+          p_order_id: cancellingOrder.id,
+          p_reason: cancelReason.trim()
+        });
+        if (error) throw error;
       } else {
         const { error } = await supabase.rpc('reject_full_order', {
           p_order_id: cancellingOrder.id,
@@ -762,15 +675,15 @@ export default function DriverRoutes() {
         if (error) throw error;
       }
       
-      setOrders(orders.filter(o => o.id !== cancellingOrder.id)); 
-      window.dispatchEvent(new Event('orderStatusChanged')); 
-      closeCancelModal(); 
-      toast.success('Route cancelled. Items flagged for return.'); 
-    } catch (error) { 
-      console.error('Cancellation Error:', error.message); 
-      toast.error('Failed to cancel the delivery. Please try again.'); 
-    } finally { 
-      setIsCancelling(false); 
+      setOrders(orders.filter(o => o.id !== cancellingOrder.id));
+      window.dispatchEvent(new Event('orderStatusChanged'));
+      closeCancelModal();
+      toast.success('Route cancelled. Items flagged for return.');
+    } catch (error) {
+      console.error('Cancellation Error:', error.message);
+      toast.error('Failed to cancel the delivery. Please try again.');
+    } finally {
+      setIsCancelling(false);
     }
   };
 
@@ -778,28 +691,21 @@ export default function DriverRoutes() {
     if (!attemptReason.trim()) { toast.error('Please provide a reason for the failed delivery attempt.'); return; }
     setIsAttempting(true);
     try {
-      const isBackorderRun = ['delivered_partial', 'delivered'].includes(attemptingOrder.status);
-
-      if (isBackorderRun) {
-        const activeItems = getActiveItems(attemptingOrder);
-        for (const item of activeItems) {
-           await supabase.from('order_items').update({ status: 'rejected' }).eq('id', item.id);
-        }
-        await supabase.from('orders').update({ cancellation_reason: attemptReason.trim(), updated_at: new Date().toISOString() }).eq('id', attemptingOrder.id);
-      } else {
-        const { error } = await supabase.from('orders').update({ status: 'attempted', cancellation_reason: attemptReason.trim(), updated_at: new Date().toISOString() }).eq('id', attemptingOrder.id);
-        if (error) throw error;
-      }
+      const { error } = await supabase.rpc('driver_mark_attempted', {
+        p_order_id: attemptingOrder.id,
+        p_reason: attemptReason.trim()
+      });
+      if (error) throw error;
       
-      setOrders(orders.filter(o => o.id !== attemptingOrder.id)); 
-      window.dispatchEvent(new Event('orderStatusChanged')); 
-      closeAttemptModal(); 
-      toast.success('Order marked as attempted. Return to warehouse.'); 
-    } catch (error) { 
-      console.error('Attempt Error:', error.message); 
-      toast.error('Failed to mark delivery as attempted.'); 
-    } finally { 
-      setIsAttempting(false); 
+      setOrders(orders.filter(o => o.id !== attemptingOrder.id));
+      window.dispatchEvent(new Event('orderStatusChanged'));
+      closeAttemptModal();
+      toast.success('Order marked as attempted. Return to warehouse.');
+    } catch (error) {
+      console.error('Attempt Error:', error.message);
+      toast.error('Failed to mark delivery as attempted.');
+    } finally {
+      setIsAttempting(false);
     }
   };
 
@@ -1172,6 +1078,8 @@ export default function DriverRoutes() {
                           <div className="flex flex-col items-end gap-1.5 shrink-0">
                             <div className="flex items-center gap-1 bg-white rounded-lg p-1 border border-slate-200 shadow-sm">
                               <button 
+                                type="button"
+                                aria-label={`Decrease delivered quantity for ${item.product_variants?.products?.name || 'Item'}`}
                                 onClick={() => setDeliveredQuantities(prev => ({...prev, [item.id]: currentDelivered - 1}))}
                                 disabled={currentDelivered <= 0}
                                 className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors"
@@ -1182,6 +1090,8 @@ export default function DriverRoutes() {
                                 {currentDelivered}
                               </span>
                               <button 
+                                type="button"
+                                aria-label={`Increase delivered quantity for ${item.product_variants?.products?.name || 'Item'}`}
                                 onClick={() => setDeliveredQuantities(prev => ({...prev, [item.id]: currentDelivered + 1}))}
                                 disabled={currentDelivered >= maxQty}
                                 className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors"

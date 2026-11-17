@@ -106,11 +106,15 @@ BEGIN
     RAISE EXCEPTION 'Order notes cannot exceed 1000 characters.';
   END IF;
 
+  PERFORM set_config('app.allow_order_notes_write', 'true', true);
+
   UPDATE public.orders
   SET
     order_notes = v_clean_notes,
     updated_at = NOW()
   WHERE id = p_order_id;
+
+  PERFORM set_config('app.allow_order_notes_write', 'false', true);
 
   IF v_role IN ('admin', 'warehouse') THEN
     INSERT INTO public.order_audit_logs (

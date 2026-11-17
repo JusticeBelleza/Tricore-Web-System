@@ -130,6 +130,9 @@ describe('Option A Security Hardening — SQL Migration Invariants', () => {
       'public.cancel_order_item(uuid, text, integer)',
       'public.split_order_item(uuid, integer)',
       'public.reject_full_order(uuid, text, text)',
+      'public.driver_start_delivery(uuid)',
+      'public.driver_complete_delivery(uuid, jsonb, text, text, text)',
+      'public.driver_mark_attempted(uuid, text)',
     ];
 
     for (const sig of hardenedActiveRpcs) {
@@ -150,6 +153,8 @@ describe('Option A Security Hardening — SQL Migration Invariants', () => {
       'public.reject_order_and_restock(uuid, uuid, integer, integer)',
       'public.get_profitability_report(timestamp with time zone, timestamp with time zone, text)',
       'public.process_order_item_inventory()',
+      'public.protect_secure_order_columns()',
+      'public.protect_secure_profile_columns()',
     ];
 
     for (const sig of revokedLegacyRpcs) {
@@ -160,22 +165,64 @@ describe('Option A Security Hardening — SQL Migration Invariants', () => {
     }
   });
 
-  it('eliminates NULL three-valued logic bypasses and restricts inventory/orders UPDATE RLS', () => {
+  it('eliminates NULL three-valued logic bypasses and locks down inventory, orders, and order_items RLS', () => {
     expect(hardeningSql).toContain('DROP POLICY IF EXISTS "Everyone can update inventory" ON public.inventory;');
     expect(hardeningSql).toContain('CREATE POLICY "Staff update inventory" ON public.inventory');
     expect(hardeningSql).toContain("COALESCE(public.get_user_role(), '') IN ('admin', 'warehouse')");
 
-    // Customers must not be able to update orders directly
-    const updateOrdersBlock = hardeningSql.slice(
-      hardeningSql.indexOf('CREATE POLICY "Update orders" ON public.orders'),
-      hardeningSql.indexOf('-- 4. Harden user_profiles')
+    // Customers and drivers must not hold raw direct table UPDATE/INSERT permissions on orders/order_items
+    const ordersAndItemsPolicyBlock = hardeningSql.slice(
+      hardeningSql.indexOf('CREATE POLICY "Insert orders" ON public.orders'),
+      hardeningSql.indexOf('-- Column-level / direct-write guard trigger')
     );
+
+    const updateOrdersBlock = ordersAndItemsPolicyBlock.slice(
+      ordersAndItemsPolicyBlock.indexOf('CREATE POLICY "Update orders" ON public.orders'),
+      ordersAndItemsPolicyBlock.indexOf('DROP POLICY IF EXISTS "Admins can insert order items"')
+    );
+    expect(updateOrdersBlock).not.toContain("'driver'");
     expect(updateOrdersBlock).not.toContain("'retail'");
     expect(updateOrdersBlock).not.toContain("'b2b'");
     expect(updateOrdersBlock).not.toContain("'agency_admin'");
-    expect(updateOrdersBlock).toContain('public.orders.assigned_driver_id = up.id');
 
-    // Account and fulfillment RPCs must explicitly reject v_uid IS NULL and use COALESCE(role, '')
+    const insertItemsBlock = ordersAndItemsPolicyBlock.slice(
+      ordersAndItemsPolicyBlock.indexOf('CREATE POLICY "Insert order items" ON public.order_items'),
+      ordersAndItemsPolicyBlock.indexOf('DROP POLICY IF EXISTS "Update order items"')
+    );
+    expect(insertItemsBlock).not.toContain("'driver'");
+    expect(insertItemsBlock).toContain("o.status::text = 'pending'");
+    expect(insertItemsBlock).toContain("= 'active'");
+
+    const updateItemsBlock = ordersAndItemsPolicyBlock.slice(
+      ordersAndItemsPolicyBlock.indexOf('CREATE POLICY "Update order items" ON public.order_items'),
+      ordersAndItemsPolicyBlock.indexOf('DROP POLICY IF EXISTS "Delete order items"')
+    );
+    expect(updateItemsBlock).not.toContain("'driver'");
+    expect(updateItemsBlock).not.toContain("'retail'");
+    expect(updateItemsBlock).not.toContain("'b2b'");
+
+    // Direct column/row tamper guard trigger on public.orders
+    const orderTriggerFn = extractFunctionBlock(hardeningSql, 'protect_secure_order_columns');
+    expect(orderTriggerFn).toContain("COALESCE(v_actor_role, '') IN ('admin', 'warehouse')");
+    expect(orderTriggerFn).toContain('app.allow_driver_order_rpc');
+    expect(orderTriggerFn).toContain('app.allow_order_notes_write');
+    expect(hardeningSql).toContain('CREATE TRIGGER enforce_order_column_security');
+
+    // Driver RPCs must run as SECURITY DEFINER and validate active status + assignment
+    for (const driverFn of [
+      'reject_full_order',
+      'driver_start_delivery',
+      'driver_complete_delivery',
+      'driver_mark_attempted',
+    ]) {
+      const block = extractFunctionBlock(hardeningSql, driverFn);
+      expect(block).toContain('SECURITY DEFINER');
+      expect(block).toContain('assigned_driver_id = v_uid');
+      expect(block).toContain("COALESCE(v_driver_status, 'inactive') <> 'active'");
+      expect(block).toContain('FOR UPDATE');
+    }
+
+    // Account, fulfillment, and driver RPCs must reject v_uid IS NULL and use COALESCE(role, '')
     for (const fn of [
       'deactivate_user_account',
       'save_customer_profile_info',
@@ -186,11 +233,52 @@ describe('Option A Security Hardening — SQL Migration Invariants', () => {
       'cancel_order_item',
       'split_order_item',
       'reject_full_order',
+      'driver_start_delivery',
+      'driver_complete_delivery',
+      'driver_mark_attempted',
     ]) {
       const block = extractFunctionBlock(hardeningSql, fn);
       expect(block).toContain('v_uid IS NULL');
       expect(block).toContain("COALESCE(public.get_user_role(), '')");
     }
+
+    // Backorder split inventory deduction fix: skip deduction ONLY via trusted internal GUC
+    const invTriggerFn = extractFunctionBlock(hardeningSql, 'process_order_item_inventory');
+    expect(invTriggerFn).toContain("current_setting('app.skip_item_inventory_deduct', true)");
+    expect(invTriggerFn).toContain("'backordered', 'rejected'");
+    expect(invTriggerFn).toContain('Direct insert with status');
+
+    const splitFn = extractFunctionBlock(hardeningSql, 'split_order_item');
+    expect(splitFn).toContain('SECURITY DEFINER');
+    expect(splitFn).toContain("set_config('app.skip_item_inventory_deduct', 'true', true)");
+    expect(splitFn).toContain("set_config('app.skip_item_inventory_deduct', 'false', true)");
+
+    const completeDeliveryFn = extractFunctionBlock(hardeningSql, 'driver_complete_delivery');
+    expect(completeDeliveryFn).toContain("set_config('app.skip_item_inventory_deduct', 'true', true)");
+    expect(completeDeliveryFn).toContain("set_config('app.skip_item_inventory_deduct', 'false', true)");
+
+    // Restock & cancellation idempotency / terminal-status protections
+    const restockFn = extractFunctionBlock(hardeningSql, 'process_warehouse_restock');
+    expect(restockFn).toContain('FOR UPDATE');
+    expect(restockFn).toContain("v_order.status::text NOT IN ('attempted', 'delivered_partial')");
+    expect(restockFn).toContain("v_is_partial AND LOWER(COALESCE(status::text, '')) = 'rejected'");
+    expect(restockFn).toContain("NOT IN ('cancelled', 'restocked', 'delivered')");
+
+    const cancelItemFn = extractFunctionBlock(hardeningSql, 'cancel_order_item');
+    expect(cancelItemFn).toContain('SECURITY DEFINER');
+    expect(cancelItemFn).toContain('FOR UPDATE OF oi');
+    expect(cancelItemFn).toContain("IN ('cancelled', 'restocked')");
+    expect(cancelItemFn).toContain("= 'delivered'");
+    expect(cancelItemFn).toContain("= 'rejected'");
+
+    // Customer pending-only order insert check
+    const insertOrdersBlock = ordersAndItemsPolicyBlock.slice(
+      ordersAndItemsPolicyBlock.indexOf('CREATE POLICY "Insert orders" ON public.orders'),
+      ordersAndItemsPolicyBlock.indexOf('DROP POLICY IF EXISTS "Update orders"')
+    );
+    expect(insertOrdersBlock).toContain("status::text = 'pending'");
+    expect(insertOrdersBlock).toContain("payment_status::text = 'unpaid'");
+    expect(insertOrdersBlock).toContain('assigned_driver_id IS NULL');
   });
 
   it('enforces customer profile ownership and protects role, company_id, and status from self-escalation', () => {
@@ -445,6 +533,200 @@ describe('Option A Security Hardening — Application Workflow & Authorization I
         p_target_status: 'cancelled',
       });
     });
+  });
+
+  it('routes DriverRoutes start route, full/partial POD completion, and failed attempts through assignment-checked RPCs without raw table writes', async () => {
+    mockAuthState.user = { id: 'drv-7', email: 'driver@tricore.test' };
+    mockAuthState.profile = {
+      id: 'drv-7',
+      role: 'driver',
+      full_name: 'Carlos Driver',
+      license_expiry: '2099-01-01',
+    };
+
+    const rawOrderMutations = [];
+    const rawItemMutations = [];
+    const assignedOrder = {
+      id: 'dddddddd-0000-0000-0000-000000000008',
+      status: 'shipped',
+      created_at: '2026-11-16T09:00:00Z',
+      assigned_driver_id: 'drv-7',
+      driver_name: 'Carlos Driver',
+      shipping_name: 'Clinic Route Test',
+      shipping_address: '44 Market St',
+      shipping_city: 'Antioch',
+      shipping_state: 'CA',
+      shipping_zip: '94509',
+      subtotal: 100,
+      tax_amount: 10,
+      shipping_amount: 15,
+      total_amount: 125,
+      payment_method: 'net_30',
+      order_items: [
+        {
+          id: 'oi-8a',
+          product_variant_id: 'pv-8a',
+          quantity_variants: 4,
+          total_base_units: 20,
+          unit_price: 25,
+          line_total: 100,
+          status: 'READY_TO_PACK',
+          product_variants: { product_id: 'p8', name: 'Case', multiplier: 5, products: { name: 'Gloves' } },
+        },
+      ],
+    };
+
+    mockFrom.mockImplementation((table) => {
+      const chain = createChainQuery({
+        data: table === 'orders' ? [assignedOrder] : [],
+        error: null,
+      });
+      chain.update = (payload) => {
+        if (table === 'orders') rawOrderMutations.push(payload);
+        if (table === 'order_items') rawItemMutations.push(payload);
+        return chain;
+      };
+      chain.insert = (payload) => {
+        if (table === 'order_items') rawItemMutations.push(payload);
+        return chain;
+      };
+      return chain;
+    });
+    mockRpc.mockResolvedValue({ data: { success: true, is_total_rejection: false }, error: null });
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <DriverRoutes />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    await screen.findByText('Clinic Route Test');
+
+    // 1. Start Route -> driver_start_delivery RPC
+    fireEvent.click(screen.getByRole('button', { name: /start route/i }));
+    await waitFor(() => {
+      expect(mockRpc).toHaveBeenCalledWith('driver_start_delivery', {
+        p_order_id: assignedOrder.id,
+      });
+    });
+
+    // 2. Partial delivery completion -> driver_complete_delivery RPC (no client price tampering fields sent)
+    fireEvent.click(await screen.findByRole('button', { name: /complete pod/i }));
+    fireEvent.click(await screen.findByLabelText(/decrease delivered quantity for gloves/i));
+    const receivedByInput = await screen.findByPlaceholderText(/optional — enter recipient name/i);
+    fireEvent.change(receivedByInput, { target: { value: 'Front Desk Nurse' } });
+    fireEvent.click(screen.getByRole('button', { name: /submit delivery/i }));
+
+    await waitFor(() => {
+      expect(mockRpc).toHaveBeenCalledWith('driver_complete_delivery', {
+        p_order_id: assignedOrder.id,
+        p_delivered_items: [{ item_id: 'oi-8a', delivered_qty: 3 }],
+        p_received_by: 'Front Desk Nurse',
+        p_signature_url: null,
+        p_photo_url: null,
+      });
+    });
+
+    expect(rawOrderMutations).toEqual([]);
+    expect(rawItemMutations).toEqual([]);
+  });
+
+  it('routes DriverRoutes failed attempt and backorder cancellation through driver_mark_attempted RPC without raw writes', async () => {
+    mockAuthState.user = { id: 'drv-7', email: 'driver@tricore.test' };
+    mockAuthState.profile = {
+      id: 'drv-7',
+      role: 'driver',
+      full_name: 'Carlos Driver',
+      license_expiry: '2099-01-01',
+    };
+
+    const rawOrderMutations = [];
+    const rawItemMutations = [];
+    const backorderRunOrder = {
+      id: 'dddddddd-0000-0000-0000-000000000009',
+      status: 'delivered_partial',
+      created_at: '2026-11-16T09:00:00Z',
+      assigned_driver_id: 'drv-7',
+      driver_name: 'Carlos Driver',
+      shipping_name: 'Backorder Clinic',
+      shipping_address: '99 Pine St',
+      shipping_city: 'Antioch',
+      shipping_state: 'CA',
+      shipping_zip: '94509',
+      subtotal: 100,
+      tax_amount: 10,
+      shipping_amount: 15,
+      total_amount: 125,
+      payment_method: 'cod',
+      order_items: [
+        {
+          id: 'oi-9a',
+          product_variant_id: 'pv-9a',
+          quantity_variants: 2,
+          total_base_units: 10,
+          unit_price: 25,
+          line_total: 50,
+          status: 'SHIPPED',
+          product_variants: { product_id: 'p9', name: 'Case', multiplier: 5, products: { name: 'Masks' } },
+        },
+        {
+          id: 'oi-9b',
+          product_variant_id: 'pv-9b',
+          quantity_variants: 2,
+          total_base_units: 10,
+          unit_price: 25,
+          line_total: 50,
+          status: 'DELIVERED',
+          product_variants: { product_id: 'p9b', name: 'Box', multiplier: 5, products: { name: 'Wipes' } },
+        },
+      ],
+    };
+
+    mockFrom.mockImplementation((table) => {
+      const chain = createChainQuery({
+        data: table === 'orders' ? [backorderRunOrder] : [],
+        error: null,
+      });
+      chain.update = (payload) => {
+        if (table === 'orders') rawOrderMutations.push(payload);
+        if (table === 'order_items') rawItemMutations.push(payload);
+        return chain;
+      };
+      chain.insert = (payload) => {
+        if (table === 'order_items') rawItemMutations.push(payload);
+        return chain;
+      };
+      return chain;
+    });
+    mockRpc.mockResolvedValue({ data: { success: true, is_backorder_run: true }, error: null });
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <DriverRoutes />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    await screen.findByText('Backorder Clinic');
+    fireEvent.click(screen.getByRole('button', { name: /attempt/i }));
+    const attemptReasonInput = await screen.findByPlaceholderText(/customer not home/i);
+    fireEvent.change(attemptReasonInput, { target: { value: 'Gate locked on arrival' } });
+    fireEvent.click(screen.getByRole('button', { name: /^confirm$/i }));
+
+    await waitFor(() => {
+      expect(mockRpc).toHaveBeenCalledWith('driver_mark_attempted', {
+        p_order_id: backorderRunOrder.id,
+        p_reason: 'Gate locked on arrival',
+      });
+    });
+
+    expect(rawOrderMutations).toEqual([]);
+    expect(rawItemMutations).toEqual([]);
   });
 
   it('keeps Backorder, Allocated, Ready-to-Pack, Shipped, and Restocked orders blocked from Return to Approval', () => {

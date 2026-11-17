@@ -1,12 +1,15 @@
--- Migration: Harden inventory/order RLS, table write privileges, and legacy RPC authorization.
--- Forward-only, additive-safe security fix verified against live production schema on lnuiyrrqrgjcmqflgbbz.
+-- Migration: Harden inventory/order/order_items RLS, table write privileges,
+-- driver delivery RPC workflows, and backorder/restock inventory accounting.
+-- Forward-only, additive-safe security & correctness fix verified against lnuiyrrqrgjcmqflgbbz.
 -- Preserves all authorized Customer, B2B, Admin, Warehouse, and Driver workflows while closing
--- anonymous RPC execution, customer direct inventory/order tampering, and NULL role-check bypasses.
+-- anonymous RPC execution, customer/driver direct inventory/order/item tampering, NULL role-check
+-- bypasses, and split/backorder inventory double-deduction or double-restock bugs.
 
 -- ============================================================================
--- 1. Defense-in-depth: remove direct anonymous SQL write privileges on tables
+-- 1. Defense-in-depth: remove direct anonymous SQL write/trigger privileges on tables
 -- ============================================================================
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM anon, PUBLIC;
+REVOKE REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM anon, PUBLIC;
 
 -- ============================================================================
 -- 2. Restrict inventory UPDATE RLS strictly to Admin and Warehouse staff
@@ -22,58 +25,143 @@ USING (COALESCE(public.get_user_role(), '') IN ('admin', 'warehouse'))
 WITH CHECK (COALESCE(public.get_user_role(), '') IN ('admin', 'warehouse'));
 
 -- ============================================================================
--- 3. Restrict direct table UPDATE on public.orders to staff and assigned drivers
---    (Customers create pending orders via INSERT RLS and view via SELECT RLS;
---     customers must never directly mutate status, payment_status, or totals.)
+-- 3. Restrict direct table INSERT/UPDATE on public.orders & public.order_items
+--    - Customers can insert pending/unpaid orders for themselves/their agency
+--      and insert initial 'active' order_items ONLY onto their own 'pending' order.
+--    - Direct UPDATE on public.orders and UPDATE/DELETE on public.order_items
+--      are restricted strictly to Admin and Warehouse staff; direct non-staff
+--      mutations on orders are additionally blocked by protect_secure_order_columns().
+--    - Drivers perform all valid delivery transitions and POD quantity splits via
+--      assignment-checked transactional SECURITY DEFINER RPCs below.
 -- ============================================================================
+DROP POLICY IF EXISTS "Admins can insert orders" ON public.orders;
+DROP POLICY IF EXISTS "Insert orders" ON public.orders;
+
+CREATE POLICY "Insert orders" ON public.orders
+FOR INSERT TO authenticated
+WITH CHECK (
+  LOWER(COALESCE(public.get_user_role(), '')) IN ('admin', 'warehouse')
+  OR (
+    public.orders.status::text = 'pending'
+    AND public.orders.payment_status::text = 'unpaid'
+    AND public.orders.assigned_driver_id IS NULL
+    AND COALESCE(public.orders.is_restocked, false) = false
+    AND COALESCE(public.orders.subtotal, 0) >= 0
+    AND COALESCE(public.orders.tax_amount, 0) >= 0
+    AND COALESCE(public.orders.shipping_amount, 0) >= 0
+    AND COALESCE(public.orders.total_amount, 0) >= 0
+    AND (
+      (
+        LOWER(COALESCE(public.get_user_role(), '')) IN ('retail', 'user')
+        AND public.orders.user_id = (SELECT auth.uid())
+      )
+      OR (
+        LOWER(COALESCE(public.get_user_role(), '')) IN ('b2b', 'agency_admin')
+        AND public.orders.user_id = (SELECT auth.uid())
+        AND public.orders.company_id IS NOT NULL
+        AND public.orders.company_id = public.get_my_company_id()
+      )
+    )
+  )
+);
+
 DROP POLICY IF EXISTS "Update orders" ON public.orders;
 
 CREATE POLICY "Update orders" ON public.orders
 FOR UPDATE TO authenticated
-USING (
-  COALESCE(public.get_user_role(), '') IN ('admin', 'warehouse')
-  OR (
-    COALESCE(public.get_user_role(), '') = 'driver'
-    AND EXISTS (
-      SELECT 1
-      FROM public.user_profiles up
-      WHERE up.id = (SELECT auth.uid())
-        AND up.role = 'driver'
-        AND COALESCE(up.status, 'active') = 'active'
-        AND (
-          public.orders.assigned_driver_id = up.id
-          OR (
-            public.orders.assigned_driver_id IS NULL
-            AND NULLIF(btrim(up.full_name), '') IS NOT NULL
-            AND public.orders.driver_name IS NOT NULL
-            AND public.orders.driver_name ILIKE btrim(up.full_name) || '%'
-          )
-        )
-    )
-  )
-)
+USING (LOWER(COALESCE(public.get_user_role(), '')) IN ('admin', 'warehouse'))
+WITH CHECK (LOWER(COALESCE(public.get_user_role(), '')) IN ('admin', 'warehouse'));
+
+DROP POLICY IF EXISTS "Admins can insert order items" ON public.order_items;
+DROP POLICY IF EXISTS "Insert order items" ON public.order_items;
+
+CREATE POLICY "Insert order items" ON public.order_items
+FOR INSERT TO authenticated
 WITH CHECK (
-  COALESCE(public.get_user_role(), '') IN ('admin', 'warehouse')
+  LOWER(COALESCE(public.get_user_role(), '')) IN ('admin', 'warehouse')
   OR (
-    COALESCE(public.get_user_role(), '') = 'driver'
+    LOWER(COALESCE(public.get_user_role(), '')) IN ('retail', 'user', 'b2b', 'agency_admin')
+    AND COALESCE(public.order_items.quantity_variants, 0) > 0
+    AND LOWER(COALESCE(public.order_items.status, 'active')) = 'active'
+    AND COALESCE(public.order_items.unit_price, -1) >= 0
+    AND COALESCE(public.order_items.line_total, -1) >= 0
     AND EXISTS (
       SELECT 1
-      FROM public.user_profiles up
-      WHERE up.id = (SELECT auth.uid())
-        AND up.role = 'driver'
-        AND COALESCE(up.status, 'active') = 'active'
+      FROM public.orders o
+      WHERE o.id = public.order_items.order_id
+        AND o.status::text = 'pending'
         AND (
-          public.orders.assigned_driver_id = up.id
+          (
+            LOWER(COALESCE(public.get_user_role(), '')) IN ('retail', 'user')
+            AND o.user_id = (SELECT auth.uid())
+          )
           OR (
-            public.orders.assigned_driver_id IS NULL
-            AND NULLIF(btrim(up.full_name), '') IS NOT NULL
-            AND public.orders.driver_name IS NOT NULL
-            AND public.orders.driver_name ILIKE btrim(up.full_name) || '%'
+            LOWER(COALESCE(public.get_user_role(), '')) IN ('b2b', 'agency_admin')
+            AND o.company_id IS NOT NULL
+            AND o.company_id = public.get_my_company_id()
           )
         )
     )
   )
 );
+
+DROP POLICY IF EXISTS "Update order items" ON public.order_items;
+
+CREATE POLICY "Update order items" ON public.order_items
+FOR UPDATE TO authenticated
+USING (LOWER(COALESCE(public.get_user_role(), '')) IN ('admin', 'warehouse'))
+WITH CHECK (LOWER(COALESCE(public.get_user_role(), '')) IN ('admin', 'warehouse'));
+
+DROP POLICY IF EXISTS "Delete order items" ON public.order_items;
+
+CREATE POLICY "Delete order items" ON public.order_items
+FOR DELETE TO authenticated
+USING (LOWER(COALESCE(public.get_user_role(), '')) IN ('admin', 'warehouse'));
+
+-- Column-level / direct-write guard trigger on public.orders:
+-- blocks drivers and customers from directly altering payment, monetary, identity,
+-- assignment, or delivery fields outside trusted SECURITY DEFINER RPCs.
+CREATE OR REPLACE FUNCTION public.protect_secure_order_columns()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public'
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_actor_role text;
+BEGIN
+  IF v_uid IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF COALESCE(current_setting('app.allow_driver_order_rpc', true), '') = 'true'
+     OR COALESCE(current_setting('app.allow_order_notes_write', true), '') = 'true'
+     OR COALESCE(current_setting('app.allow_return_to_approval', true), '') = 'true'
+     OR COALESCE(current_setting('app.allow_route_order_write', true), '') = 'true' THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT LOWER(COALESCE(role, '')) INTO v_actor_role
+  FROM public.user_profiles
+  WHERE id = v_uid;
+
+  IF COALESCE(v_actor_role, '') IN ('admin', 'warehouse') THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'Direct updates on orders are restricted; use authorized delivery or order RPCs.';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS enforce_order_column_security ON public.orders;
+CREATE TRIGGER enforce_order_column_security
+BEFORE UPDATE ON public.orders
+FOR EACH ROW
+EXECUTE FUNCTION public.protect_secure_order_columns();
+
+REVOKE ALL ON FUNCTION public.protect_secure_order_columns() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.protect_secure_order_columns() TO service_role;
 
 -- ============================================================================
 -- 4. Harden user_profiles column-protection trigger against non-staff elevation
@@ -110,6 +198,9 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+REVOKE ALL ON FUNCTION public.protect_secure_profile_columns() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.protect_secure_profile_columns() TO service_role;
 
 -- ============================================================================
 -- 5. Fix NULL three-valued logic bypasses & revoke anon/PUBLIC on account RPCs
@@ -214,8 +305,66 @@ REVOKE ALL ON FUNCTION public.save_customer_profile_info(uuid, text, text, text,
 GRANT EXECUTE ON FUNCTION public.save_customer_profile_info(uuid, text, text, text, text, text, uuid) TO authenticated, service_role;
 
 -- ============================================================================
--- 6. Protect privileged Staff fulfillment / order-editing RPCs (Admin & Warehouse)
+-- 6. Fix insert trigger backorder double-deduction + harden Staff order RPCs
 -- ============================================================================
+CREATE OR REPLACE FUNCTION public.process_order_item_inventory()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public'
+AS $$
+DECLARE
+  v_product_id UUID;
+  v_multiplier INT;
+BEGIN
+  IF NEW.quantity_variants IS NULL OR NEW.quantity_variants <= 0 THEN
+    RAISE EXCEPTION 'Order item quantity must be greater than 0.';
+  END IF;
+
+  IF NEW.unit_price IS NULL OR NEW.unit_price < 0 OR NEW.line_total IS NULL OR NEW.line_total < 0 THEN
+    RAISE EXCEPTION 'Order item pricing cannot be negative or null.';
+  END IF;
+
+  SELECT product_id, COALESCE(multiplier, 1)
+  INTO v_product_id, v_multiplier
+  FROM public.product_variants
+  WHERE id = NEW.product_variant_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Product variant not found.';
+  END IF;
+
+  NEW.total_base_units := NEW.quantity_variants * v_multiplier;
+
+  -- Split inserts from trusted internal SECURITY DEFINER RPCs (split_order_item /
+  -- driver_complete_delivery) inherit already-deducted stock from the parent line.
+  IF COALESCE(current_setting('app.skip_item_inventory_deduct', true), '') = 'true'
+     AND LOWER(COALESCE(NEW.status, '')) IN ('backordered', 'rejected') THEN
+    RETURN NEW;
+  END IF;
+
+  -- Reject untrusted direct inserts trying to bypass stock deduction via status spoofing.
+  IF LOWER(COALESCE(NEW.status, 'active')) IN ('backordered', 'rejected', 'cancelled', 'restocked', 'delivered') THEN
+    RAISE EXCEPTION 'Direct insert with status "%" is not allowed.', NEW.status;
+  END IF;
+
+  UPDATE public.inventory
+  SET base_units_on_hand = base_units_on_hand - NEW.total_base_units
+  WHERE product_id = v_product_id;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_deduct_inventory_on_insert ON public.order_items;
+CREATE TRIGGER trigger_deduct_inventory_on_insert
+BEFORE INSERT ON public.order_items
+FOR EACH ROW
+EXECUTE FUNCTION public.process_order_item_inventory();
+
+REVOKE ALL ON FUNCTION public.process_order_item_inventory() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.process_order_item_inventory() TO service_role;
+
 CREATE OR REPLACE FUNCTION public.process_warehouse_restock(p_order_id uuid)
 RETURNS void
 LANGUAGE plpgsql
@@ -225,42 +374,68 @@ AS $$
 DECLARE
   v_uid uuid := auth.uid();
   v_role text := COALESCE(public.get_user_role(), '');
+  v_order public.orders%ROWTYPE;
   v_item RECORD;
   v_product_id UUID;
+  v_multiplier INT;
+  v_restock_units INT;
   v_is_partial BOOLEAN;
 BEGIN
   IF v_uid IS NULL OR v_role NOT IN ('admin', 'warehouse') THEN
     RAISE EXCEPTION 'Not authorized to process warehouse restock.';
   END IF;
 
-  SELECT status::text = 'delivered_partial' INTO v_is_partial
-  FROM orders WHERE id = p_order_id;
+  SELECT * INTO v_order
+  FROM public.orders
+  WHERE id = p_order_id
+  FOR UPDATE;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Order not found.';
   END IF;
 
+  IF v_order.status::text = 'restocked' THEN
+    RETURN;
+  END IF;
+
+  IF v_order.status::text NOT IN ('attempted', 'delivered_partial') THEN
+    RAISE EXCEPTION 'Only attempted or partially delivered orders can be restocked.';
+  END IF;
+
+  v_is_partial := (v_order.status::text = 'delivered_partial');
+
+  IF NOT v_is_partial AND COALESCE(v_order.is_restocked, false) THEN
+    RETURN;
+  END IF;
+
   FOR v_item IN
-    SELECT id, total_base_units, product_variant_id
-    FROM order_items
+    SELECT id, total_base_units, quantity_variants, product_variant_id, status
+    FROM public.order_items
     WHERE order_id = p_order_id
       AND (
-        (v_is_partial AND status::text = 'rejected') OR
-        (NOT v_is_partial AND status::text NOT IN ('cancelled', 'restocked'))
+        (v_is_partial AND LOWER(COALESCE(status::text, '')) = 'rejected') OR
+        (NOT v_is_partial AND LOWER(COALESCE(status::text, '')) NOT IN ('cancelled', 'restocked', 'delivered'))
       )
+    ORDER BY id
+    FOR UPDATE
   LOOP
-    SELECT product_id INTO v_product_id FROM product_variants WHERE id = v_item.product_variant_id;
+    SELECT product_id, COALESCE(multiplier, 1)
+    INTO v_product_id, v_multiplier
+    FROM public.product_variants
+    WHERE id = v_item.product_variant_id;
 
-    UPDATE inventory
-    SET base_units_on_hand = base_units_on_hand + COALESCE(v_item.total_base_units, 0)
+    v_restock_units := COALESCE(v_item.total_base_units, COALESCE(v_item.quantity_variants, 0) * COALESCE(v_multiplier, 1));
+
+    UPDATE public.inventory
+    SET base_units_on_hand = base_units_on_hand + COALESCE(v_restock_units, 0)
     WHERE product_id = v_product_id;
 
-    UPDATE order_items
-    SET status = 'restocked'::order_status
+    UPDATE public.order_items
+    SET status = 'restocked'
     WHERE id = v_item.id;
   END LOOP;
 
-  UPDATE orders
+  UPDATE public.orders
   SET is_restocked = true,
       status = (CASE WHEN v_is_partial THEN 'delivered_partial' ELSE 'restocked' END)::order_status,
       updated_at = NOW()
@@ -284,7 +459,9 @@ AS $$
 DECLARE
   v_uid uuid := auth.uid();
   v_role text := COALESCE(public.get_user_role(), '');
+  v_item_status text;
   v_old_qty integer;
+  v_old_base_units integer;
   v_old_mult integer;
   v_old_prod_id uuid;
   v_new_mult integer;
@@ -299,34 +476,39 @@ BEGIN
     RAISE EXCEPTION 'Quantity must be greater than 0.';
   END IF;
 
-  SELECT oi.quantity_variants, COALESCE(pv.multiplier, 1), pv.product_id
-  INTO v_old_qty, v_old_mult, v_old_prod_id
-  FROM order_items oi
-  JOIN product_variants pv ON pv.id = oi.product_variant_id
-  WHERE oi.id = p_item_id;
+  SELECT oi.status, oi.quantity_variants, oi.total_base_units, COALESCE(pv.multiplier, 1), pv.product_id
+  INTO v_item_status, v_old_qty, v_old_base_units, v_old_mult, v_old_prod_id
+  FROM public.order_items oi
+  JOIN public.product_variants pv ON pv.id = oi.product_variant_id
+  WHERE oi.id = p_item_id
+  FOR UPDATE OF oi;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Order item not found.';
   END IF;
 
+  IF LOWER(COALESCE(v_item_status, 'active')) IN ('cancelled', 'rejected', 'restocked', 'delivered') THEN
+    RAISE EXCEPTION 'Cannot substitute a cancelled, rejected, restocked, or delivered item.';
+  END IF;
+
   SELECT COALESCE(multiplier, 1), price, product_id
   INTO v_new_mult, v_new_price, v_new_prod_id
-  FROM product_variants
+  FROM public.product_variants
   WHERE id = p_new_variant_id;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Replacement variant not found.';
   END IF;
 
-  UPDATE inventory
-  SET base_units_on_hand = base_units_on_hand + (v_old_qty * v_old_mult)
+  UPDATE public.inventory
+  SET base_units_on_hand = base_units_on_hand + COALESCE(v_old_base_units, v_old_qty * v_old_mult)
   WHERE product_id = v_old_prod_id;
 
-  UPDATE inventory
+  UPDATE public.inventory
   SET base_units_on_hand = base_units_on_hand - (p_new_qty * v_new_mult)
   WHERE product_id = v_new_prod_id;
 
-  UPDATE order_items
+  UPDATE public.order_items
   SET product_variant_id = p_new_variant_id,
       quantity_variants = p_new_qty,
       total_base_units = p_new_qty * v_new_mult,
@@ -348,6 +530,7 @@ AS $$
 DECLARE
   v_uid uuid := auth.uid();
   v_role text := COALESCE(public.get_user_role(), '');
+  v_item_status text;
   v_old_qty integer;
   v_multiplier integer;
   v_diff_base integer;
@@ -362,25 +545,30 @@ BEGIN
     RAISE EXCEPTION 'Quantity must be greater than 0.';
   END IF;
 
-  SELECT oi.quantity_variants, oi.unit_price, COALESCE(pv.multiplier, 1), pv.product_id
-  INTO v_old_qty, v_unit_price, v_multiplier, v_product_id
-  FROM order_items oi
-  JOIN product_variants pv ON pv.id = oi.product_variant_id
-  WHERE oi.id = p_item_id;
+  SELECT oi.status, oi.quantity_variants, oi.unit_price, COALESCE(pv.multiplier, 1), pv.product_id
+  INTO v_item_status, v_old_qty, v_unit_price, v_multiplier, v_product_id
+  FROM public.order_items oi
+  JOIN public.product_variants pv ON pv.id = oi.product_variant_id
+  WHERE oi.id = p_item_id
+  FOR UPDATE OF oi;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Order item not found.';
   END IF;
 
+  IF LOWER(COALESCE(v_item_status, 'active')) IN ('cancelled', 'rejected', 'restocked', 'delivered') THEN
+    RAISE EXCEPTION 'Cannot edit a cancelled, rejected, restocked, or delivered order item.';
+  END IF;
+
   v_diff_base := (p_new_qty - v_old_qty) * v_multiplier;
 
-  UPDATE order_items
+  UPDATE public.order_items
   SET quantity_variants = p_new_qty,
       total_base_units = p_new_qty * v_multiplier,
       line_total = p_new_qty * v_unit_price
   WHERE id = p_item_id;
 
-  UPDATE inventory
+  UPDATE public.inventory
   SET base_units_on_hand = base_units_on_hand - v_diff_base
   WHERE product_id = v_product_id;
 END;
@@ -396,14 +584,17 @@ CREATE OR REPLACE FUNCTION public.add_order_item(
 )
 RETURNS void
 LANGUAGE plpgsql
+SECURITY DEFINER
 SET search_path TO 'public'
 AS $$
 DECLARE
   v_uid uuid := auth.uid();
   v_role text := COALESCE(public.get_user_role(), '');
+  v_order_status text;
   v_existing_item_id UUID;
   v_unit_price NUMERIC;
   v_product_id UUID;
+  v_multiplier INTEGER;
   v_old_subtotal NUMERIC;
   v_old_tax NUMERIC;
   v_shipping NUMERIC;
@@ -420,32 +611,70 @@ BEGIN
     RAISE EXCEPTION 'Quantity must be greater than 0.';
   END IF;
 
+  SELECT status::text INTO v_order_status
+  FROM public.orders
+  WHERE id = p_order_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Order not found.';
+  END IF;
+
+  IF v_order_status IN ('cancelled', 'restocked') THEN
+    RAISE EXCEPTION 'Cannot add items to a cancelled or restocked order.';
+  END IF;
+
   SELECT id, quantity_variants INTO v_existing_item_id, v_current_qty
-  FROM order_items
-  WHERE order_id = p_order_id AND product_variant_id = p_variant_id AND status NOT IN ('cancelled', 'rejected')
-  LIMIT 1;
+  FROM public.order_items
+  WHERE order_id = p_order_id
+    AND product_variant_id = p_variant_id
+    AND LOWER(COALESCE(status, 'active')) IN ('active', 'allocated')
+  ORDER BY id
+  LIMIT 1
+  FOR UPDATE;
 
   IF v_existing_item_id IS NOT NULL THEN
     PERFORM public.edit_order_item(v_existing_item_id, v_current_qty + p_qty);
     RETURN;
   END IF;
 
-  SELECT price, product_id INTO v_unit_price, v_product_id FROM product_variants WHERE id = p_variant_id;
-  IF v_unit_price IS NULL THEN RAISE EXCEPTION 'Variant not found.'; END IF;
+  SELECT price, product_id, COALESCE(multiplier, 1)
+  INTO v_unit_price, v_product_id, v_multiplier
+  FROM public.product_variants
+  WHERE id = p_variant_id;
 
-  INSERT INTO order_items (order_id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status)
-  VALUES (p_order_id, p_variant_id, p_qty, p_qty, v_unit_price, p_qty * v_unit_price, 'active');
+  IF v_unit_price IS NULL THEN
+    RAISE EXCEPTION 'Variant not found.';
+  END IF;
 
-  SELECT subtotal, tax_amount, shipping_amount INTO v_old_subtotal, v_old_tax, v_shipping FROM orders WHERE id = p_order_id;
-  SELECT COALESCE(SUM(line_total), 0) INTO v_new_subtotal FROM order_items WHERE order_id = p_order_id AND status NOT IN ('cancelled', 'rejected');
+  INSERT INTO public.order_items (
+    order_id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status
+  ) VALUES (
+    p_order_id, p_variant_id, p_qty, p_qty * v_multiplier, v_unit_price, p_qty * v_unit_price, 'active'
+  );
 
-  IF v_old_subtotal > 0 THEN v_tax_rate := v_old_tax / v_old_subtotal; ELSE v_tax_rate := 0; END IF;
-  v_new_tax := v_new_subtotal * v_tax_rate;
+  SELECT subtotal, tax_amount, shipping_amount
+  INTO v_old_subtotal, v_old_tax, v_shipping
+  FROM public.orders
+  WHERE id = p_order_id;
 
-  UPDATE orders
+  SELECT COALESCE(SUM(line_total), 0)
+  INTO v_new_subtotal
+  FROM public.order_items
+  WHERE order_id = p_order_id
+    AND LOWER(COALESCE(status, 'active')) NOT IN ('cancelled', 'rejected', 'restocked');
+
+  IF COALESCE(v_old_subtotal, 0) > 0 THEN
+    v_tax_rate := COALESCE(v_old_tax, 0) / v_old_subtotal;
+  ELSE
+    v_tax_rate := 0;
+  END IF;
+  v_new_tax := ROUND(v_new_subtotal * v_tax_rate, 2);
+
+  UPDATE public.orders
   SET subtotal = v_new_subtotal,
       tax_amount = v_new_tax,
-      total_amount = v_new_subtotal + v_shipping + v_new_tax,
+      total_amount = v_new_subtotal + COALESCE(v_shipping, 0) + v_new_tax,
       updated_at = NOW()
   WHERE id = p_order_id;
 END;
@@ -461,6 +690,7 @@ CREATE OR REPLACE FUNCTION public.cancel_order_item(
 )
 RETURNS void
 LANGUAGE plpgsql
+SECURITY DEFINER
 SET search_path TO 'public'
 AS $$
 DECLARE
@@ -468,29 +698,43 @@ DECLARE
   v_role text := COALESCE(public.get_user_role(), '');
   v_product_id UUID;
   v_saved_base_units INT;
+  v_qty_variants INT;
+  v_multiplier INT;
+  v_status TEXT;
 BEGIN
   IF v_uid IS NULL OR v_role NOT IN ('admin', 'warehouse') THEN
     RAISE EXCEPTION 'Not authorized to cancel order items.';
   END IF;
 
-  SELECT total_base_units INTO v_saved_base_units
-  FROM order_items
-  WHERE id = p_item_id;
+  SELECT oi.status, oi.total_base_units, oi.quantity_variants, COALESCE(pv.multiplier, 1), pv.product_id
+  INTO v_status, v_saved_base_units, v_qty_variants, v_multiplier, v_product_id
+  FROM public.order_items oi
+  JOIN public.product_variants pv ON pv.id = oi.product_variant_id
+  WHERE oi.id = p_item_id
+  FOR UPDATE OF oi;
 
-  IF EXISTS (SELECT 1 FROM order_items WHERE id = p_item_id AND status = 'cancelled') THEN
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Order item not found.';
+  END IF;
+
+  IF LOWER(COALESCE(v_status, '')) IN ('cancelled', 'restocked') THEN
     RETURN;
   END IF;
 
-  UPDATE order_items
+  IF LOWER(COALESCE(v_status, '')) = 'delivered' THEN
+    RAISE EXCEPTION 'Cannot cancel an already delivered order item.';
+  END IF;
+
+  IF LOWER(COALESCE(v_status, '')) = 'rejected' THEN
+    RAISE EXCEPTION 'Rejected items must be restocked through warehouse returns.';
+  END IF;
+
+  UPDATE public.order_items
   SET status = 'cancelled', cancellation_reason = p_reason
   WHERE id = p_item_id;
 
-  SELECT product_id INTO v_product_id
-  FROM product_variants
-  WHERE id = (SELECT product_variant_id FROM order_items WHERE id = p_item_id);
-
-  UPDATE inventory
-  SET base_units_on_hand = base_units_on_hand + COALESCE(v_saved_base_units, 0)
+  UPDATE public.inventory
+  SET base_units_on_hand = base_units_on_hand + COALESCE(v_saved_base_units, COALESCE(v_qty_variants, 0) * v_multiplier)
   WHERE product_id = v_product_id;
 END;
 $$;
@@ -501,6 +745,7 @@ GRANT EXECUTE ON FUNCTION public.cancel_order_item(uuid, text, integer) TO authe
 CREATE OR REPLACE FUNCTION public.split_order_item(p_item_id uuid, p_pack_qty integer)
 RETURNS void
 LANGUAGE plpgsql
+SECURITY DEFINER
 SET search_path TO 'public'
 AS $$
 DECLARE
@@ -508,39 +753,63 @@ DECLARE
   v_role text := COALESCE(public.get_user_role(), '');
   v_original_qty INT;
   v_backorder_qty INT;
-  v_item RECORD;
+  v_item public.order_items%ROWTYPE;
+  v_order_status text;
   v_base_unit_multiplier INT;
 BEGIN
   IF v_uid IS NULL OR v_role NOT IN ('admin', 'warehouse') THEN
     RAISE EXCEPTION 'Not authorized to split order items.';
   END IF;
 
-  SELECT * INTO v_item FROM order_items WHERE id = p_item_id;
+  SELECT * INTO v_item
+  FROM public.order_items
+  WHERE id = p_item_id
+  FOR UPDATE;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Item not found';
   END IF;
 
+  SELECT status::text INTO v_order_status
+  FROM public.orders
+  WHERE id = v_item.order_id
+  FOR UPDATE;
+
+  IF v_order_status IN ('cancelled', 'restocked') THEN
+    RAISE EXCEPTION 'Cannot split items on a cancelled or restocked order.';
+  END IF;
+
+  IF LOWER(COALESCE(v_item.status, 'active')) IN (
+    'backordered', 'cancelled', 'rejected', 'restocked', 'delivered', 'shipped', 'out_for_delivery'
+  ) THEN
+    RAISE EXCEPTION 'Cannot split order item in status "%".', v_item.status;
+  END IF;
+
   v_original_qty := v_item.quantity_variants;
   v_backorder_qty := v_original_qty - p_pack_qty;
 
-  IF p_pack_qty <= 0 OR v_backorder_qty <= 0 THEN
+  IF p_pack_qty IS NULL OR p_pack_qty <= 0 OR v_backorder_qty <= 0 THEN
     RAISE EXCEPTION 'Invalid split quantities. Pack qty must be greater than 0 and less than original qty.';
   END IF;
 
-  IF v_original_qty > 0 THEN
-    v_base_unit_multiplier := v_item.total_base_units / v_original_qty;
-  ELSE
-    v_base_unit_multiplier := 1;
-  END IF;
+  SELECT COALESCE(multiplier, 1)
+  INTO v_base_unit_multiplier
+  FROM public.product_variants
+  WHERE id = v_item.product_variant_id;
 
-  UPDATE order_items
+  v_base_unit_multiplier := COALESCE(v_base_unit_multiplier, 1);
+
+  UPDATE public.order_items
   SET quantity_variants = p_pack_qty,
       total_base_units = p_pack_qty * v_base_unit_multiplier,
-      line_total = p_pack_qty * v_item.unit_price
+      line_total = ROUND(p_pack_qty * v_item.unit_price, 2)
   WHERE id = p_item_id;
 
-  INSERT INTO order_items (
+  -- Skip deduction in BEFORE INSERT trigger: all v_original_qty * multiplier base units
+  -- were already deducted once when the original order line was inserted.
+  PERFORM set_config('app.skip_item_inventory_deduct', 'true', true);
+
+  INSERT INTO public.order_items (
     order_id,
     product_variant_id,
     quantity_variants,
@@ -555,8 +824,10 @@ BEGIN
     'BACKORDERED',
     v_item.unit_price,
     v_backorder_qty * v_base_unit_multiplier,
-    v_backorder_qty * v_item.unit_price
+    ROUND(v_backorder_qty * v_item.unit_price, 2)
   );
+
+  PERFORM set_config('app.skip_item_inventory_deduct', 'false', true);
 END;
 $$;
 
@@ -564,9 +835,10 @@ REVOKE ALL ON FUNCTION public.split_order_item(uuid, integer) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.split_order_item(uuid, integer) TO authenticated, service_role;
 
 -- ============================================================================
--- 7. Harden reject_full_order for DriverRoutes & Staff (SECURITY DEFINER + assignment check)
---    Allows Drivers to continue door-rejection inventory restock cleanly after inventory
---    UPDATE RLS was narrowed to Admin & Warehouse.
+-- 7. Harden reject_full_order & add assignment-checked Driver Delivery RPCs
+--    (All Driver state changes run in locked SECURITY DEFINER transactions
+--     so Drivers never hold raw table UPDATE/INSERT permissions on order_items
+--     or unrestricted column access on orders.)
 -- ============================================================================
 CREATE OR REPLACE FUNCTION public.reject_full_order(
   p_order_id uuid,
@@ -586,6 +858,7 @@ DECLARE
   v_driver_status text;
   v_item RECORD;
   v_product_id UUID;
+  v_multiplier INT;
 BEGIN
   IF v_uid IS NULL OR v_role NOT IN ('admin', 'warehouse', 'driver') THEN
     RAISE EXCEPTION 'Not authorized to reject orders.';
@@ -614,7 +887,7 @@ BEGIN
     FROM public.user_profiles
     WHERE id = v_uid;
 
-    IF v_driver_status <> 'active' THEN
+    IF COALESCE(v_driver_status, 'inactive') <> 'active' THEN
       RAISE EXCEPTION 'Inactive driver accounts cannot reject deliveries.';
     END IF;
 
@@ -636,32 +909,558 @@ BEGIN
   END IF;
 
   FOR v_item IN
-    SELECT id, total_base_units, product_variant_id
-    FROM order_items
-    WHERE order_id = p_order_id AND status::text NOT IN ('cancelled', 'rejected', 'restocked')
+    SELECT id, total_base_units, quantity_variants, product_variant_id
+    FROM public.order_items
+    WHERE order_id = p_order_id
+      AND LOWER(COALESCE(status::text, 'active')) NOT IN ('cancelled', 'rejected', 'restocked', 'delivered')
+    ORDER BY id
+    FOR UPDATE
   LOOP
-    SELECT product_id INTO v_product_id FROM product_variants WHERE id = v_item.product_variant_id;
+    SELECT product_id, COALESCE(multiplier, 1)
+    INTO v_product_id, v_multiplier
+    FROM public.product_variants
+    WHERE id = v_item.product_variant_id;
 
-    UPDATE inventory
-    SET base_units_on_hand = base_units_on_hand + COALESCE(v_item.total_base_units, 0)
+    UPDATE public.inventory
+    SET base_units_on_hand = base_units_on_hand + COALESCE(v_item.total_base_units, COALESCE(v_item.quantity_variants, 0) * COALESCE(v_multiplier, 1))
     WHERE product_id = v_product_id;
 
-    UPDATE order_items
-    SET status = p_target_status::order_status,
+    UPDATE public.order_items
+    SET status = p_target_status,
         cancellation_reason = p_reason
     WHERE id = v_item.id;
   END LOOP;
 
-  UPDATE orders
+  PERFORM set_config('app.allow_driver_order_rpc', 'true', true);
+
+  UPDATE public.orders
   SET status = p_target_status::order_status,
       cancellation_reason = p_reason,
+      is_restocked = (p_target_status = 'restocked'),
       updated_at = NOW()
   WHERE id = p_order_id;
+
+  PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
 END;
 $$;
 
 REVOKE ALL ON FUNCTION public.reject_full_order(uuid, text, text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.reject_full_order(uuid, text, text) TO authenticated, service_role;
+
+CREATE OR REPLACE FUNCTION public.driver_start_delivery(p_order_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public'
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_role text := LOWER(COALESCE(public.get_user_role(), ''));
+  v_order public.orders%ROWTYPE;
+  v_driver_name text;
+  v_driver_status text;
+  v_is_backorder boolean;
+  v_shipped_count integer := 0;
+  v_out_count integer := 0;
+BEGIN
+  IF v_uid IS NULL OR v_role NOT IN ('admin', 'warehouse', 'driver') THEN
+    RAISE EXCEPTION 'Not authorized to start deliveries.';
+  END IF;
+
+  SELECT * INTO v_order
+  FROM public.orders
+  WHERE id = p_order_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Order not found.';
+  END IF;
+
+  IF v_role = 'driver' THEN
+    SELECT full_name, COALESCE(status, 'active')
+    INTO v_driver_name, v_driver_status
+    FROM public.user_profiles
+    WHERE id = v_uid;
+
+    IF COALESCE(v_driver_status, 'inactive') <> 'active' THEN
+      RAISE EXCEPTION 'Inactive driver accounts cannot start deliveries.';
+    END IF;
+
+    IF NOT (
+      v_order.assigned_driver_id = v_uid
+      OR (
+        v_order.assigned_driver_id IS NULL
+        AND NULLIF(btrim(v_driver_name), '') IS NOT NULL
+        AND v_order.driver_name IS NOT NULL
+        AND v_order.driver_name ILIKE btrim(v_driver_name) || '%'
+      )
+    ) THEN
+      RAISE EXCEPTION 'Not authorized to start delivery for an order not assigned to you.';
+    END IF;
+  END IF;
+
+  v_is_backorder := v_order.status::text IN ('delivered_partial', 'delivered');
+
+  PERFORM set_config('app.allow_driver_order_rpc', 'true', true);
+
+  IF v_is_backorder THEN
+    PERFORM id FROM public.order_items WHERE order_id = p_order_id FOR UPDATE;
+
+    SELECT
+      COUNT(*) FILTER (WHERE UPPER(COALESCE(status, '')) = 'SHIPPED'),
+      COUNT(*) FILTER (WHERE UPPER(COALESCE(status, '')) = 'OUT_FOR_DELIVERY')
+    INTO v_shipped_count, v_out_count
+    FROM public.order_items
+    WHERE order_id = p_order_id;
+
+    IF v_shipped_count = 0 AND v_out_count = 0 THEN
+      PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
+      RAISE EXCEPTION 'Order has no shipped backorder items to start delivery.';
+    END IF;
+
+    UPDATE public.order_items
+    SET status = 'OUT_FOR_DELIVERY'
+    WHERE order_id = p_order_id
+      AND UPPER(COALESCE(status, '')) = 'SHIPPED';
+
+    UPDATE public.orders
+    SET updated_at = NOW()
+    WHERE id = p_order_id;
+
+    PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
+    RETURN jsonb_build_object(
+      'success', true,
+      'order_id', p_order_id,
+      'status', v_order.status::text,
+      'is_backorder_run', true
+    );
+  END IF;
+
+  IF v_order.status::text = 'out_for_delivery' THEN
+    PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
+    RETURN jsonb_build_object(
+      'success', true,
+      'order_id', p_order_id,
+      'status', 'out_for_delivery',
+      'is_backorder_run', false,
+      'already_started', true
+    );
+  END IF;
+
+  IF v_order.status::text NOT IN ('ready_for_delivery', 'shipped') THEN
+    PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
+    RAISE EXCEPTION 'Order in status "%" cannot be started for delivery.', v_order.status::text;
+  END IF;
+
+  UPDATE public.orders
+  SET status = 'out_for_delivery'::order_status,
+      updated_at = NOW()
+  WHERE id = p_order_id;
+
+  PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
+  RETURN jsonb_build_object(
+    'success', true,
+    'order_id', p_order_id,
+    'status', 'out_for_delivery',
+    'is_backorder_run', false
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.driver_start_delivery(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.driver_start_delivery(uuid) TO authenticated, service_role;
+
+CREATE OR REPLACE FUNCTION public.driver_complete_delivery(
+  p_order_id uuid,
+  p_delivered_items jsonb,
+  p_received_by text DEFAULT NULL,
+  p_signature_url text DEFAULT NULL,
+  p_photo_url text DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public'
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_role text := LOWER(COALESCE(public.get_user_role(), ''));
+  v_order public.orders%ROWTYPE;
+  v_driver_name text;
+  v_driver_status text;
+  v_is_backorder boolean;
+  v_active_ids uuid[];
+  v_elem jsonb;
+  v_elem_item_id uuid;
+  v_qty_text text;
+  v_del_qty integer;
+  v_seen_ids uuid[] := ARRAY[]::uuid[];
+  v_qty_map jsonb := '{}'::jsonb;
+  v_item record;
+  v_multiplier integer;
+  v_unit_price numeric;
+  v_rej_qty integer;
+  v_total_delivered_qty integer := 0;
+  v_total_original_qty integer := 0;
+  v_rejected_subtotal numeric := 0;
+  v_orig_sub numeric;
+  v_tax_rate numeric;
+  v_final_subtotal numeric;
+  v_final_tax numeric;
+  v_final_total numeric;
+  v_final_status text;
+  v_cancellation_reason text;
+  v_still_has_backorders boolean := false;
+  v_is_total_rejection boolean;
+  v_is_partial_rejection boolean;
+  v_had_rejections boolean := false;
+BEGIN
+  IF v_uid IS NULL OR v_role NOT IN ('admin', 'warehouse', 'driver') THEN
+    RAISE EXCEPTION 'Not authorized to complete deliveries.';
+  END IF;
+
+  IF p_delivered_items IS NULL OR jsonb_typeof(p_delivered_items) <> 'array' THEN
+    RAISE EXCEPTION 'Delivered items list must be a JSON array.';
+  END IF;
+
+  SELECT * INTO v_order
+  FROM public.orders
+  WHERE id = p_order_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Order not found.';
+  END IF;
+
+  IF v_role = 'driver' THEN
+    SELECT full_name, COALESCE(status, 'active')
+    INTO v_driver_name, v_driver_status
+    FROM public.user_profiles
+    WHERE id = v_uid;
+
+    IF COALESCE(v_driver_status, 'inactive') <> 'active' THEN
+      RAISE EXCEPTION 'Inactive driver accounts cannot complete deliveries.';
+    END IF;
+
+    IF NOT (
+      v_order.assigned_driver_id = v_uid
+      OR (
+        v_order.assigned_driver_id IS NULL
+        AND NULLIF(btrim(v_driver_name), '') IS NOT NULL
+        AND v_order.driver_name IS NOT NULL
+        AND v_order.driver_name ILIKE btrim(v_driver_name) || '%'
+      )
+    ) THEN
+      RAISE EXCEPTION 'Not authorized to complete delivery for an order not assigned to you.';
+    END IF;
+  END IF;
+
+  IF v_order.status::text NOT IN ('ready_for_delivery', 'shipped', 'out_for_delivery', 'delivered_partial', 'delivered') THEN
+    RAISE EXCEPTION 'Order in status "%" cannot be completed for delivery.', v_order.status::text;
+  END IF;
+
+  v_is_backorder := v_order.status::text IN ('delivered_partial', 'delivered');
+
+  -- Lock all rows on this order deterministically before evaluating active items
+  PERFORM id FROM public.order_items WHERE order_id = p_order_id ORDER BY id FOR UPDATE;
+
+  IF v_is_backorder THEN
+    SELECT COALESCE(array_agg(id ORDER BY id), ARRAY[]::uuid[])
+    INTO v_active_ids
+    FROM public.order_items
+    WHERE order_id = p_order_id
+      AND UPPER(COALESCE(status, '')) IN ('SHIPPED', 'OUT_FOR_DELIVERY');
+  ELSE
+    SELECT COALESCE(array_agg(id ORDER BY id), ARRAY[]::uuid[])
+    INTO v_active_ids
+    FROM public.order_items
+    WHERE order_id = p_order_id
+      AND LOWER(COALESCE(status, 'active')) NOT IN ('backordered', 'cancelled', 'rejected', 'restocked', 'delivered');
+  END IF;
+
+  IF COALESCE(array_length(v_active_ids, 1), 0) = 0 THEN
+    RAISE EXCEPTION 'This delivery has already been completed or has no active items.';
+  END IF;
+
+  FOR v_elem IN SELECT value FROM jsonb_array_elements(p_delivered_items)
+  LOOP
+    IF jsonb_typeof(v_elem) <> 'object'
+       OR COALESCE(v_elem->>'item_id', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+      RAISE EXCEPTION 'Invalid delivered item payload entry.';
+    END IF;
+
+    v_elem_item_id := (v_elem->>'item_id')::uuid;
+    IF NOT (v_elem_item_id = ANY (v_active_ids)) THEN
+      RAISE EXCEPTION 'Item % is not an active delivery item for order %.', v_elem_item_id, p_order_id;
+    END IF;
+
+    IF v_elem_item_id = ANY (v_seen_ids) THEN
+      RAISE EXCEPTION 'Duplicate item_id % in delivery payload.', v_elem_item_id;
+    END IF;
+
+    v_qty_text := v_elem->>'delivered_qty';
+    IF v_qty_text IS NULL OR v_qty_text !~ '^\d+$' THEN
+      RAISE EXCEPTION 'Invalid delivered quantity for item %.', v_elem_item_id;
+    END IF;
+
+    v_seen_ids := array_append(v_seen_ids, v_elem_item_id);
+    v_qty_map := jsonb_set(v_qty_map, ARRAY[v_elem_item_id::text], to_jsonb(v_qty_text::integer));
+  END LOOP;
+
+  IF array_length(v_seen_ids, 1) IS DISTINCT FROM array_length(v_active_ids, 1) THEN
+    RAISE EXCEPTION 'All active delivery items must be included in delivery completion.';
+  END IF;
+
+  PERFORM set_config('app.allow_driver_order_rpc', 'true', true);
+
+  FOR v_item IN
+    SELECT oi.*, COALESCE(pv.multiplier, 1) AS variant_multiplier
+    FROM public.order_items oi
+    JOIN public.product_variants pv ON pv.id = oi.product_variant_id
+    WHERE oi.id = ANY (v_active_ids)
+    ORDER BY oi.id
+  LOOP
+    v_del_qty := (v_qty_map->>v_item.id::text)::integer;
+    IF v_del_qty < 0 OR v_del_qty > v_item.quantity_variants THEN
+      PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
+      RAISE EXCEPTION 'Delivered quantity % out of range [0..%] for item %.', v_del_qty, v_item.quantity_variants, v_item.id;
+    END IF;
+
+    v_multiplier := COALESCE(v_item.variant_multiplier, 1);
+    v_unit_price := COALESCE(
+      v_item.unit_price,
+      CASE WHEN v_item.quantity_variants > 0 THEN v_item.line_total / v_item.quantity_variants ELSE 0 END
+    );
+    v_rej_qty := v_item.quantity_variants - v_del_qty;
+
+    v_total_original_qty := v_total_original_qty + v_item.quantity_variants;
+    v_total_delivered_qty := v_total_delivered_qty + v_del_qty;
+
+    IF v_rej_qty = v_item.quantity_variants THEN
+      v_rejected_subtotal := v_rejected_subtotal + (v_item.quantity_variants * v_unit_price);
+      v_had_rejections := true;
+      UPDATE public.order_items
+      SET status = 'rejected'
+      WHERE id = v_item.id;
+    ELSIF v_rej_qty > 0 THEN
+      v_rejected_subtotal := v_rejected_subtotal + (v_rej_qty * v_unit_price);
+      v_had_rejections := true;
+
+      UPDATE public.order_items
+      SET quantity_variants = v_del_qty,
+          line_total = ROUND(v_del_qty * v_unit_price, 2),
+          total_base_units = v_del_qty * v_multiplier,
+          status = 'DELIVERED'
+      WHERE id = v_item.id;
+
+      PERFORM set_config('app.skip_item_inventory_deduct', 'true', true);
+
+      INSERT INTO public.order_items (
+        order_id,
+        product_variant_id,
+        quantity_variants,
+        status,
+        unit_price,
+        total_base_units,
+        line_total
+      ) VALUES (
+        p_order_id,
+        v_item.product_variant_id,
+        v_rej_qty,
+        'rejected',
+        v_unit_price,
+        v_rej_qty * v_multiplier,
+        ROUND(v_rej_qty * v_unit_price, 2)
+      );
+
+      PERFORM set_config('app.skip_item_inventory_deduct', 'false', true);
+    ELSE
+      UPDATE public.order_items
+      SET status = 'DELIVERED'
+      WHERE id = v_item.id;
+    END IF;
+  END LOOP;
+
+  v_is_total_rejection := (v_total_delivered_qty = 0);
+  v_is_partial_rejection := (v_total_delivered_qty > 0 AND v_total_delivered_qty < v_total_original_qty);
+
+  v_orig_sub := COALESCE(v_order.subtotal, 0);
+  v_tax_rate := CASE WHEN v_orig_sub > 0 THEN COALESCE(v_order.tax_amount, 0) / v_orig_sub ELSE 0 END;
+
+  IF v_is_total_rejection AND NOT v_is_backorder THEN
+    v_final_status := 'attempted';
+    v_cancellation_reason := 'Customer rejected all items at the door.';
+    v_final_subtotal := v_order.subtotal;
+    v_final_tax := v_order.tax_amount;
+    v_final_total := v_order.total_amount;
+  ELSIF v_is_total_rejection AND v_is_backorder THEN
+    v_final_status := 'delivered_partial';
+    v_cancellation_reason := 'Customer rejected the backordered items at the door.';
+    v_final_subtotal := GREATEST(0, ROUND(v_orig_sub - v_rejected_subtotal, 2));
+    v_final_tax := ROUND(v_final_subtotal * v_tax_rate, 2);
+    v_final_total := v_final_subtotal + COALESCE(v_order.shipping_amount, 0) + v_final_tax;
+  ELSIF v_is_partial_rejection THEN
+    v_final_status := 'delivered_partial';
+    v_cancellation_reason := 'Customer rejected some items at the door.';
+    v_final_subtotal := GREATEST(0, ROUND(v_orig_sub - v_rejected_subtotal, 2));
+    v_final_tax := ROUND(v_final_subtotal * v_tax_rate, 2);
+    v_final_total := v_final_subtotal + COALESCE(v_order.shipping_amount, 0) + v_final_tax;
+  ELSE
+    SELECT EXISTS (
+      SELECT 1
+      FROM public.order_items
+      WHERE order_id = p_order_id
+        AND LOWER(COALESCE(status, '')) IN ('backordered', 'allocated', 'ready_to_pack', 'shipped', 'out_for_delivery')
+    ) INTO v_still_has_backorders;
+
+    v_final_status := CASE WHEN v_still_has_backorders THEN 'delivered_partial' ELSE 'delivered' END;
+    v_cancellation_reason := v_order.cancellation_reason;
+    v_final_subtotal := v_order.subtotal;
+    v_final_tax := v_order.tax_amount;
+    v_final_total := v_order.total_amount;
+  END IF;
+
+  UPDATE public.orders
+  SET status = v_final_status::order_status,
+      subtotal = v_final_subtotal,
+      tax_amount = v_final_tax,
+      total_amount = v_final_total,
+      photo_url = COALESCE(NULLIF(btrim(COALESCE(p_photo_url, '')), ''), photo_url),
+      signature_url = COALESCE(NULLIF(btrim(COALESCE(p_signature_url, '')), ''), signature_url),
+      received_by = COALESCE(NULLIF(btrim(COALESCE(p_received_by, '')), ''), received_by),
+      cancellation_reason = v_cancellation_reason,
+      is_restocked = CASE WHEN v_had_rejections THEN false ELSE is_restocked END,
+      delivered_at = CASE
+        WHEN v_final_status IN ('delivered', 'delivered_partial') THEN COALESCE(delivered_at, NOW()::timestamp)
+        ELSE delivered_at
+      END,
+      updated_at = NOW()
+  WHERE id = p_order_id;
+
+  PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'order_id', p_order_id,
+    'status', v_final_status,
+    'is_total_rejection', v_is_total_rejection,
+    'subtotal', v_final_subtotal,
+    'tax_amount', v_final_tax,
+    'total_amount', v_final_total
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.driver_complete_delivery(uuid, jsonb, text, text, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.driver_complete_delivery(uuid, jsonb, text, text, text) TO authenticated, service_role;
+
+CREATE OR REPLACE FUNCTION public.driver_mark_attempted(
+  p_order_id uuid,
+  p_reason text
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public'
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_role text := LOWER(COALESCE(public.get_user_role(), ''));
+  v_order public.orders%ROWTYPE;
+  v_driver_name text;
+  v_driver_status text;
+  v_clean_reason text := NULLIF(btrim(COALESCE(p_reason, '')), '');
+  v_is_backorder boolean;
+  v_updated_count integer := 0;
+  v_next_status text;
+BEGIN
+  IF v_uid IS NULL OR v_role NOT IN ('admin', 'warehouse', 'driver') THEN
+    RAISE EXCEPTION 'Not authorized to update delivery attempts.';
+  END IF;
+
+  IF v_clean_reason IS NULL THEN
+    RAISE EXCEPTION 'Please provide a reason for the failed delivery attempt.';
+  END IF;
+
+  SELECT * INTO v_order
+  FROM public.orders
+  WHERE id = p_order_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Order not found.';
+  END IF;
+
+  IF v_role = 'driver' THEN
+    SELECT full_name, COALESCE(status, 'active')
+    INTO v_driver_name, v_driver_status
+    FROM public.user_profiles
+    WHERE id = v_uid;
+
+    IF COALESCE(v_driver_status, 'inactive') <> 'active' THEN
+      RAISE EXCEPTION 'Inactive driver accounts cannot update deliveries.';
+    END IF;
+
+    IF NOT (
+      v_order.assigned_driver_id = v_uid
+      OR (
+        v_order.assigned_driver_id IS NULL
+        AND NULLIF(btrim(v_driver_name), '') IS NOT NULL
+        AND v_order.driver_name IS NOT NULL
+        AND v_order.driver_name ILIKE btrim(v_driver_name) || '%'
+      )
+    ) THEN
+      RAISE EXCEPTION 'Not authorized to update an order not assigned to you.';
+    END IF;
+  END IF;
+
+  IF v_order.status::text NOT IN ('ready_for_delivery', 'shipped', 'out_for_delivery', 'delivered_partial', 'delivered') THEN
+    RAISE EXCEPTION 'Order in status "%" cannot be marked as attempted.', v_order.status::text;
+  END IF;
+
+  v_is_backorder := v_order.status::text IN ('delivered_partial', 'delivered');
+  PERFORM set_config('app.allow_driver_order_rpc', 'true', true);
+
+  IF v_is_backorder THEN
+    PERFORM id FROM public.order_items WHERE order_id = p_order_id ORDER BY id FOR UPDATE;
+
+    UPDATE public.order_items
+    SET status = 'rejected',
+        cancellation_reason = v_clean_reason
+    WHERE order_id = p_order_id
+      AND UPPER(COALESCE(status, '')) IN ('SHIPPED', 'OUT_FOR_DELIVERY');
+
+    GET DIAGNOSTICS v_updated_count = ROW_COUNT;
+    IF v_updated_count = 0 THEN
+      PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
+      RAISE EXCEPTION 'No active backorder items found on this delivery run.';
+    END IF;
+
+    v_next_status := 'delivered_partial';
+  ELSE
+    v_next_status := 'attempted';
+  END IF;
+
+  UPDATE public.orders
+  SET status = v_next_status::order_status,
+      is_restocked = false,
+      cancellation_reason = v_clean_reason,
+      updated_at = NOW()
+  WHERE id = p_order_id;
+
+  PERFORM set_config('app.allow_driver_order_rpc', 'false', true);
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'order_id', p_order_id,
+    'status', v_next_status,
+    'is_backorder_run', v_is_backorder
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.driver_mark_attempted(uuid, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.driver_mark_attempted(uuid, text) TO authenticated, service_role;
 
 -- ============================================================================
 -- 8. Revoke uncalled/superseded legacy routines from PUBLIC, anon, and authenticated
@@ -698,8 +1497,3 @@ GRANT EXECUTE ON FUNCTION public.reject_order_and_restock(uuid, uuid, integer, i
 
 REVOKE ALL ON FUNCTION public.get_profitability_report(timestamp with time zone, timestamp with time zone, text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.get_profitability_report(timestamp with time zone, timestamp with time zone, text) TO service_role;
-
--- Trigger function fires automatically via trigger_deduct_inventory_on_insert on public.order_items;
--- strip direct PUBLIC/anon/authenticated execute privileges just like handle_new_user().
-REVOKE ALL ON FUNCTION public.process_order_item_inventory() FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.process_order_item_inventory() TO service_role;

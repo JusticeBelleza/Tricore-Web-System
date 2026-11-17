@@ -336,7 +336,8 @@ describe('Seven-Fix Component Integration Verification', () => {
       license_expiry: '2099-01-01',
     };
 
-    const orderUpdates = [];
+    const rawOrderUpdates = [];
+    const rawItemWrites = [];
     const activeStop = {
       id: 'eeeeeeee-0000-0000-0000-000000000005',
       status: 'out_for_delivery',
@@ -371,16 +372,20 @@ describe('Seven-Fix Component Integration Verification', () => {
       ],
     };
 
+    mockRpc.mockResolvedValue({ data: { success: true, is_total_rejection: false }, error: null });
     mockFrom.mockImplementation((table) => {
       if (table === 'order_items') {
         const chain = createChainQuery({ data: [], error: null });
-        chain.update = () => createChainQuery({ data: [], error: null });
+        chain.update = (payload) => {
+          rawItemWrites.push(payload);
+          return createChainQuery({ data: [], error: null });
+        };
         return chain;
       }
       if (table === 'orders') {
         const chain = createChainQuery({ data: [activeStop], error: null });
         chain.update = (payload) => {
-          orderUpdates.push(payload);
+          rawOrderUpdates.push(payload);
           return createChainQuery({ data: [activeStop], error: null });
         };
         return chain;
@@ -407,14 +412,16 @@ describe('Seven-Fix Component Integration Verification', () => {
     fireEvent.click(screen.getByRole('button', { name: /confirm & complete/i }));
 
     await waitFor(() => {
-      expect(orderUpdates).toHaveLength(1);
+      expect(mockRpc).toHaveBeenCalledWith('driver_complete_delivery', {
+        p_order_id: activeStop.id,
+        p_delivered_items: [{ item_id: 'oi-1', delivered_qty: 1 }],
+        p_received_by: null,
+        p_signature_url: null,
+        p_photo_url: null,
+      });
     });
-    expect(orderUpdates[0]).toMatchObject({
-      status: 'delivered',
-      received_by: null,
-      signature_url: null,
-      photo_url: null,
-    });
+    expect(rawOrderUpdates).toEqual([]);
+    expect(rawItemWrites).toEqual([]);
   });
 
   it('Fix 7 & 5: Checkout edits item quantities across pages, removes items safely, and tracks Order Notes', async () => {
