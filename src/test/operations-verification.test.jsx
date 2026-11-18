@@ -1,5 +1,45 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import jsPDF from 'jspdf';
 import { parsePhotoUrls } from '../lib/utils';
+import {
+  clampCartQuantity,
+  updateCartItemQuantity,
+  calculateCheckoutTotals,
+  validateCartForSubmission,
+  readCartFromStorage,
+  writeCartToStorage,
+} from '../lib/cartUtils';
+import {
+  normalizeRecipientName,
+  evaluatePodProof,
+  extractOrderPodSummary,
+} from '../lib/podUtils';
+import {
+  buildPackingSlipTableConfig,
+  drawPackingSlipOrderNotes,
+  generatePackingSlipPdf,
+} from '../lib/packingSlipPdf';
+import {
+  MAX_GOOGLE_DIRECTIONS_WAYPOINTS,
+  formatOrderDeliveryAddress,
+  buildSingleStopNavigationUrl,
+  sortDriverStops,
+  hasSavedManualRouteOrder,
+  prepareDirectionsOptimizationInput,
+  mapWaypointOrderToOrderIds,
+  reorderOrdersByMappedSequence,
+  moveStopInList,
+} from '../lib/routingUtils';
+import {
+  MAX_ORDER_NOTES_LENGTH,
+  evaluateReturnToApprovalEligibility,
+  normalizeOrderNotes,
+  normalizeOrderSearchQuery,
+} from '../lib/orderApprovalUtils';
+import OrderPodCard from '../components/OrderPodCard';
+import ReturnToApprovalModal from '../components/ReturnToApprovalModal';
 
 describe('Live Operational Readiness Verification', () => {
   beforeEach(() => {
@@ -149,7 +189,7 @@ describe('Live Operational Readiness Verification', () => {
         zip: '90001'
       };
 
-      const cart = [
+      const _cart = [
         { variant_id: 'var-101', quantity: 2, unit_price: 25.00, line_total: 50.00 }
       ];
 
@@ -334,8 +374,8 @@ describe('Live Operational Readiness Verification', () => {
 
     it('handles REQUEST_DENIED gracefully without crashing or showing window alerts', () => {
       let alertCalled = false;
-      const originalAlert = global.alert;
-      global.alert = () => { alertCalled = true; };
+      const originalAlert = globalThis.alert;
+      globalThis.alert = () => { alertCalled = true; };
 
       const mockDirectionsService = {
         route: vi.fn((req, callback) => {
@@ -363,7 +403,384 @@ describe('Live Operational Readiness Verification', () => {
       expect(alertCalled).toBe(false); // No disruptive alert popup!
       expect(errorToastShown).toBe(false); // Silent when auto-triggered
 
-      global.alert = originalAlert;
+      globalThis.alert = originalAlert;
+    });
+  });
+
+  describe('6. Seven-Fix Production Hardening Verification', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    describe('Fix 7: Cart Quantity Controls & Deterministic Totals', () => {
+      const sampleCart = [
+        { product_id: 'p1', variant_id: 'v1', name: 'Gloves (Box)', unit_price: 12.5, quantity: 2, line_total: 25 },
+        { product_id: 'p2', variant_id: 'v2', name: 'Masks (Pack)', unit_price: 8.25, quantity: 1, line_total: 8.25 },
+      ];
+
+      it('increments, decrements with minimum clamp >= 1, and recalculates retail totals cleanly', () => {
+        const incremented = updateCartItemQuantity(sampleCart, 0, 3);
+        expect(incremented[0].quantity).toBe(3);
+        expect(incremented[0].line_total).toBe(37.5);
+
+        const retailTotals = calculateCheckoutTotals(incremented, {
+          isB2B: false,
+          taxRate: 0.0875,
+          taxExempt: false,
+        });
+        expect(retailTotals.subtotal).toBe(45.75);
+        expect(retailTotals.shippingFee).toBe(10);
+        expect(retailTotals.taxAmount).toBe(4);
+        expect(retailTotals.totalAmount).toBe(59.75);
+
+        const clampedMin = updateCartItemQuantity(incremented, 1, 0);
+        expect(clampedMin[1].quantity).toBe(1);
+        expect(clampedMin[1].line_total).toBe(8.25);
+
+        expect(clampCartQuantity('-4', 5)).toBe(5);
+        expect(clampCartQuantity('abc', 1)).toBe(1);
+      });
+
+      it('handles item removal, B2B tax exemption, custom shipping fee, and empty cart validation', () => {
+        const afterRemoval = sampleCart.filter((_, idx) => idx !== 0);
+        const b2bTotals = calculateCheckoutTotals(afterRemoval, {
+          isB2B: true,
+          customShippingFee: 25,
+          taxRate: 0.09,
+          taxExempt: true,
+        });
+
+        expect(b2bTotals.subtotal).toBe(8.25);
+        expect(b2bTotals.shippingFee).toBe(25);
+        expect(b2bTotals.taxAmount).toBe(0);
+        expect(b2bTotals.totalAmount).toBe(33.25);
+
+        expect(validateCartForSubmission(afterRemoval)).toEqual({ valid: true, error: null });
+        expect(validateCartForSubmission([]).valid).toBe(false);
+        expect(
+          validateCartForSubmission([{ ...sampleCart[0], quantity: 0 }]).valid
+        ).toBe(false);
+      });
+
+      it('safely persists and isolates carts by storage key while tolerating invalid JSON', () => {
+        localStorage.clear();
+        expect(readCartFromStorage(null)).toEqual([]);
+        expect(readCartFromStorage('tricore_cart_missing')).toEqual([]);
+
+        localStorage.setItem('tricore_cart_corrupt', '{not valid json');
+        expect(readCartFromStorage('tricore_cart_corrupt')).toEqual([]);
+
+        localStorage.setItem('tricore_cart_object', JSON.stringify({ wrong: true }));
+        expect(readCartFromStorage('tricore_cart_object')).toEqual([]);
+
+        writeCartToStorage('tricore_cart_user_a', [sampleCart[0]]);
+        writeCartToStorage('tricore_cart_agency_b', [sampleCart[1]]);
+
+        expect(readCartFromStorage('tricore_cart_user_a')).toEqual([sampleCart[0]]);
+        expect(readCartFromStorage('tricore_cart_agency_b')).toEqual([sampleCart[1]]);
+      });
+    });
+
+    describe('Fix 4: Optional POD Fields & Safe OrderPodCard Rendering', () => {
+      it('treats blank recipient name and missing signature as optional and prompts only when all 3 proofs are empty', () => {
+        expect(normalizeRecipientName('   ')).toBeNull();
+        expect(normalizeRecipientName('  Nurse Joy  ')).toBe('Nurse Joy');
+        expect(normalizeRecipientName('A'.repeat(200))).toHaveLength(120);
+
+        const emptyProof = evaluatePodProof({ receivedBy: '   ', hasSignature: false, photoCount: 0 });
+        expect(emptyProof.normalizedRecipient).toBeNull();
+        expect(emptyProof.hasAnyProof).toBe(false);
+        expect(emptyProof.requiresEmptyProofConfirmation).toBe(true);
+
+        const photoOnly = evaluatePodProof({ receivedBy: '', hasSignature: false, photoCount: 1 });
+        expect(photoOnly.hasAnyProof).toBe(true);
+        expect(photoOnly.requiresEmptyProofConfirmation).toBe(false);
+
+        const nameOnly = evaluatePodProof({ receivedBy: 'Front Desk', hasSignature: false, photoCount: 0 });
+        expect(nameOnly.normalizedRecipient).toBe('Front Desk');
+        expect(nameOnly.requiresEmptyProofConfirmation).toBe(false);
+
+        const sigOnly = evaluatePodProof({ receivedBy: '', hasSignature: true, photoCount: 0 });
+        expect(sigOnly.hasAnyProof).toBe(true);
+        expect(sigOnly.requiresEmptyProofConfirmation).toBe(false);
+      });
+
+      it('renders OrderPodCard with neutral Not provided labels and zero broken img tags when proofs are absent', () => {
+        const { rerender, container } = render(
+          <OrderPodCard
+            order={{
+              id: 'ord-pod-empty',
+              status: 'delivered',
+              received_by: null,
+              signature_url: null,
+              photo_url: null,
+            }}
+          />
+        );
+        expect(screen.getByText('Not provided')).toBeInTheDocument();
+        expect(container.querySelectorAll('img')).toHaveLength(0);
+
+        rerender(
+          <OrderPodCard
+            order={{
+              id: 'ord-pod-photo',
+              status: 'delivered_partial',
+              received_by: null,
+              signature_url: null,
+              photo_url: 'https://example.com/pod1.jpg',
+            }}
+          />
+        );
+        expect(screen.getByAltText('Delivery Proof 1')).toHaveAttribute('src', 'https://example.com/pod1.jpg');
+        expect(screen.getByText('Recipient name & signature: Not provided')).toBeInTheDocument();
+        expect(container.querySelectorAll('img')).toHaveLength(1);
+
+        rerender(
+          <OrderPodCard
+            order={{
+              id: 'ord-pod-full',
+              status: 'delivered',
+              received_by: 'Alex Rivera',
+              signature_url: 'https://example.com/sig.png',
+              photo_url: JSON.stringify(['https://example.com/p1.jpg', 'https://example.com/p2.jpg']),
+            }}
+          />
+        );
+        expect(screen.getByText('Alex Rivera')).toBeInTheDocument();
+        expect(screen.getByAltText('Customer Signature')).toBeInTheDocument();
+        expect(container.querySelectorAll('img')).toHaveLength(3);
+
+        const summary = extractOrderPodSummary({ received_by: '', signature_url: null, photo_url: '' });
+        expect(summary.hasAnyPod).toBe(false);
+      });
+    });
+
+    describe('Fix 3 & Fix 5: Packing Slip Row Integrity, Wrapped Order Notes & Pagination', () => {
+      it('enforces rowPageBreak: avoid in packing slip autoTable configuration', () => {
+        const config = buildPackingSlipTableConfig({
+          maxAddressY: 65,
+          tableRows: [[2, 2, 0, 'SKU-1', 'Test Product']],
+        });
+        expect(config.rowPageBreak).toBe('avoid');
+        expect(config.styles.overflow).toBe('linebreak');
+        expect(config.margin.bottom).toBe(40);
+      });
+
+      it('omits blank order notes and paginates long wrapped notes safely across page breaks', () => {
+        const doc = new jsPDF();
+        const unchangedY = drawPackingSlipOrderNotes(doc, '   \n  ', 100);
+        expect(unchangedY).toBe(100);
+        expect(doc.internal.getNumberOfPages()).toBe(1);
+
+        const longNote = Array.from({ length: 12 }, (_, idx) => `Instruction line ${idx + 1}: leave sterile supplies with charge nurse at reception desk.`).join(' ');
+        const endY = drawPackingSlipOrderNotes(doc, longNote, 240);
+        expect(doc.internal.getNumberOfPages()).toBeGreaterThan(1);
+        expect(endY).toBeGreaterThan(40);
+      });
+
+      it('generates multi-page packing slip PDF cleanly when there are 30 items and long order notes', async () => {
+        const order = {
+          id: '12345678-aaaa-bbbb-cccc-123456789012',
+          status: 'processing',
+          company_id: 'comp-1',
+          companies: {
+            name: 'Bay Area Home Health',
+            address: '500 Medical Plaza',
+            city: 'Concord',
+            state: 'CA',
+            zip: '94520',
+          },
+          shipping_name: 'John Patient',
+          shipping_address: '101 Oak Street',
+          shipping_city: 'Pittsburg',
+          shipping_state: 'CA',
+          shipping_zip: '94565',
+          order_notes: 'Ring bell at side nursing entrance.\nDeliver before 3:00 PM if possible.\nCall charge nurse on arrival.',
+          order_items: Array.from({ length: 30 }, (_, idx) => ({
+            quantity_variants: 2,
+            status: 'PENDING',
+            product_variants: {
+              sku: `SKU-${idx + 1}`,
+              name: idx === 12 ? 'Case of 24 Sterile Individually Wrapped Clinical Packs (Latex-Free)' : 'Box of 100',
+              products: {
+                name:
+                  idx === 12
+                    ? `Extended Clinical Description Item #${idx + 1}: Sterile Nitrile Examination Gloves with Extended Beaded Cuff, Micro-Textured Fingertips, Chemotherapy-Rated Protection, Hospital Supply Ward Restock Lot #2026-A`
+                    : `Sterile Nitrile Examination Gloves Lot #${idx + 1}`,
+              },
+            },
+          })),
+        };
+
+        const result = await generatePackingSlipPdf(order, { download: false });
+        expect(result.filename).toBe('Packing_Slip_12345678.pdf');
+        expect(result.pageCount).toBeGreaterThanOrEqual(2);
+      });
+    });
+
+    describe('Fix 1, Fix 5 & Fix 6: Return to Approval, Order Notes & Admin Search', () => {
+      it('enforces pre-dispatch eligibility and blocks split/backordered/dispatched orders', () => {
+        expect(
+          evaluateReturnToApprovalEligibility({
+            id: 'ord-1',
+            status: 'processing',
+            order_items: [{ id: 'i1', status: 'PENDING' }],
+          }).eligible
+        ).toBe(true);
+
+        expect(
+          evaluateReturnToApprovalEligibility({
+            id: 'ord-2',
+            status: 'ready_for_delivery',
+            order_items: [{ id: 'i1', status: 'PENDING' }],
+          }).eligible
+        ).toBe(true);
+
+        expect(
+          evaluateReturnToApprovalEligibility({
+            id: 'ord-3',
+            status: 'shipped',
+            shipped_at: '2026-11-16T10:00:00Z',
+          }).eligible
+        ).toBe(false);
+
+        expect(
+          evaluateReturnToApprovalEligibility({
+            id: 'ord-reattempt',
+            status: 'ready_for_delivery',
+            shipped_at: '2026-11-15T10:00:00Z',
+            order_items: [{ id: 'i1', status: 'PENDING' }],
+          }).eligible
+        ).toBe(false);
+
+        expect(
+          evaluateReturnToApprovalEligibility({
+            id: 'ord-backorder',
+            status: 'processing',
+            order_items: [{ id: 'i1', status: 'BACKORDERED' }],
+          }).eligible
+        ).toBe(false);
+      });
+
+      it('normalizes order_notes bounds and search_admin_orders query strings', () => {
+        expect(normalizeOrderNotes('   ')).toEqual({ valid: true, value: null, error: null });
+        expect(normalizeOrderNotes('  Gate code 4421  ')).toEqual({
+          valid: true,
+          value: 'Gate code 4421',
+          error: null,
+        });
+        expect(normalizeOrderNotes('x'.repeat(MAX_ORDER_NOTES_LENGTH)).valid).toBe(true);
+        expect(normalizeOrderNotes('x'.repeat(MAX_ORDER_NOTES_LENGTH + 1)).valid).toBe(false);
+
+        expect(normalizeOrderSearchQuery('  #ABC123  ')).toBe('ABC123');
+        expect(normalizeOrderSearchQuery('  Metro Health  ')).toBe('Metro Health');
+      });
+
+      it('renders ReturnToApprovalModal requiring trimmed reason and invoking callbacks cleanly', () => {
+        const onClose = vi.fn();
+        const onConfirm = vi.fn();
+
+        render(
+          <ReturnToApprovalModal
+            open={true}
+            order={{ id: 'abcdef12-0000-0000-0000-000000000001', driver_name: 'Sam Driver' }}
+            onClose={onClose}
+            onConfirm={onConfirm}
+          />
+        );
+
+        const confirmBtn = screen.getByRole('button', { name: /confirm return/i });
+        expect(confirmBtn).toBeDisabled();
+
+        const textarea = screen.getByLabelText(/reason for returning/i);
+        fireEvent.change(textarea, { target: { value: '   ' } });
+        expect(confirmBtn).toBeDisabled();
+
+        fireEvent.change(textarea, { target: { value: '  Update glove size before dispatch  ' } });
+        expect(confirmBtn).not.toBeDisabled();
+        fireEvent.click(confirmBtn);
+        expect(onConfirm).toHaveBeenCalledWith('Update glove size before dispatch');
+      });
+    });
+
+    describe('Fix 2: Driver Routing Stability, Manual Sequence & Stop Scaling (1..30+ stops)', () => {
+      const makeStop = (n, overrides = {}) => ({
+        id: `ord-${String(n).padStart(3, '0')}`,
+        shipping_name: `Stop ${n}`,
+        shipping_address: `${100 + n} Main St`,
+        shipping_city: 'Pittsburg',
+        shipping_state: 'CA',
+        shipping_zip: '94565',
+        created_at: `2026-11-16T08:${String(n % 60).padStart(2, '0')}:00Z`,
+        ...overrides,
+      });
+
+      it('builds single-destination Navigate URLs without waypoints and rejects incomplete addresses', () => {
+        const validUrl = buildSingleStopNavigationUrl(makeStop(1));
+        expect(validUrl).toContain('https://www.google.com/maps/dir/?api=1&destination=');
+        expect(validUrl).not.toContain('waypoints=');
+
+        expect(buildSingleStopNavigationUrl({ shipping_address: '123 St' })).toBeNull();
+        expect(formatOrderDeliveryAddress({ shipping_address: '', shipping_city: '' }).isValid).toBe(false);
+      });
+
+      it('sorts saved manual Warehouse stops ahead of unordered chronological stops', () => {
+        const unorderedOld = makeStop(1, { created_at: '2026-11-16T07:00:00Z' });
+        const manualSecond = makeStop(2, { route_run_date: '2026-11-16', route_position: 2 });
+        const manualFirst = makeStop(3, { route_run_date: '2026-11-16', route_position: 1 });
+        const unorderedNew = makeStop(4, { created_at: '2026-11-16T09:00:00Z' });
+
+        const sorted = sortDriverStops([unorderedOld, manualSecond, unorderedNew, manualFirst]);
+        expect(sorted.map((s) => s.id)).toEqual(['ord-003', 'ord-002', 'ord-001', 'ord-004']);
+        expect(hasSavedManualRouteOrder(sorted)).toBe(true);
+        expect(hasSavedManualRouteOrder([unorderedOld, unorderedNew])).toBe(false);
+      });
+
+      it('handles 1, 9, 10, 12, 25 stops cleanly and refuses silent truncation at 30+ stops', () => {
+        [1, 9, 10, 12, MAX_GOOGLE_DIRECTIONS_WAYPOINTS].forEach((count) => {
+          const batch = Array.from({ length: count }, (_, idx) => makeStop(idx + 1));
+          const prep = prepareDirectionsOptimizationInput(batch, MAX_GOOGLE_DIRECTIONS_WAYPOINTS);
+          expect(prep.supported).toBe(true);
+          expect(prep.waypoints).toHaveLength(count);
+        });
+
+        const largeBatch = Array.from({ length: 30 }, (_, idx) => makeStop(idx + 1));
+        const oversizedPrep = prepareDirectionsOptimizationInput(largeBatch, MAX_GOOGLE_DIRECTIONS_WAYPOINTS);
+        expect(oversizedPrep.supported).toBe(false);
+        expect(oversizedPrep.oversized).toBe(true);
+
+        const missingAddrBatch = [makeStop(1), { id: 'ord-missing', shipping_address: '' }, makeStop(3)];
+        const missingPrep = prepareDirectionsOptimizationInput(missingAddrBatch, MAX_GOOGLE_DIRECTIONS_WAYPOINTS);
+        expect(missingPrep.supported).toBe(false);
+        expect(missingPrep.hasMissingAddresses).toBe(true);
+        expect(missingPrep.missingOrderIds).toEqual(['ord-missing']);
+      });
+
+      it('maps waypoint_order back to exact order IDs even when two stops share an address and supports Up/Down moves', () => {
+        const stopA = makeStop(1, { id: 'ord-dup-a', shipping_address: '700 Clinic Ave' });
+        const stopB = makeStop(2, { id: 'ord-unique', shipping_address: '800 Harbor Way' });
+        const stopC = makeStop(3, { id: 'ord-dup-c', shipping_address: '700 Clinic Ave' });
+        const orders = [stopA, stopB, stopC];
+
+        const prep = prepareDirectionsOptimizationInput(orders);
+        expect(prep.supported).toBe(true);
+
+        // Google puts index 2 (ord-dup-c) first, index 0 (ord-dup-a) second, index 1 (ord-unique) third
+        const mapped = mapWaypointOrderToOrderIds(prep.stopDescriptors, [2, 0, 1], [
+          { distance: { text: '1 mi' }, duration: { text: '3 mins' } },
+          { distance: { text: '2 mi' }, duration: { text: '5 mins' } },
+          { distance: { text: '4 mi' }, duration: { text: '9 mins' } },
+        ]);
+        expect(mapped.map((m) => m.orderId)).toEqual(['ord-dup-c', 'ord-dup-a', 'ord-unique']);
+
+        const reordered = reorderOrdersByMappedSequence(orders, mapped);
+        expect(reordered.map((o) => o.id)).toEqual(['ord-dup-c', 'ord-dup-a', 'ord-unique']);
+        expect(reordered[0].routeLegIndex).toBe(0);
+
+        const movedUp = moveStopInList(reordered, 2, 'up');
+        expect(movedUp.map((o) => o.id)).toEqual(['ord-dup-c', 'ord-unique', 'ord-dup-a']);
+        expect(moveStopInList(movedUp, 0, 'up').map((o) => o.id)).toEqual(['ord-dup-c', 'ord-unique', 'ord-dup-a']);
+      });
     });
   });
 });

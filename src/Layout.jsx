@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { useAuth } from './lib/AuthContext';
+import { useAuth } from './lib/useAuth';
 import { supabase } from './lib/supabase';
 import { useMetricsStore } from './store/useMetricsStore';
 import { AlertCircle, CheckCircle2, XCircle, X, Share, PlusSquare } from "lucide-react"; 
@@ -24,16 +24,16 @@ export default function Layout() {
   
   // Customer Notification & iOS Prompts
   const [customerAlert, setCustomerAlert] = useState({ show: false, type: 'info', message: '', description: '' });
-  const [showIosPrompt, setShowIosPrompt] = useState(false);
-
-  useEffect(() => {
-    const isIos = () => /iphone|ipad|ipod/.test(window.navigator.userAgent.toLowerCase());
-    const isInStandaloneMode = () => ('standalone' in window.navigator) && (window.navigator.standalone);
-
-    if (isIos() && !isInStandaloneMode() && !localStorage.getItem('dismissedPwaPrompt')) {
-      setShowIosPrompt(true);
+  const [showIosPrompt, setShowIosPrompt] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const isIos = /iphone|ipad|ipod/.test(window.navigator.userAgent.toLowerCase());
+      const isInStandaloneMode = ('standalone' in window.navigator) && Boolean(window.navigator.standalone);
+      return isIos && !isInStandaloneMode && !window.localStorage.getItem('dismissedPwaPrompt');
+    } catch {
+      return false;
     }
-  }, []);
+  });
 
   const dismissIosPrompt = () => {
     setShowIosPrompt(false);

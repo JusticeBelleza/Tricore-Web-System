@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext';
+import { useAuth } from '../lib/useAuth';
 import { createClient } from '@supabase/supabase-js'; 
 import Papa from 'papaparse'; 
 import { Turnstile } from '@marsidev/react-turnstile';

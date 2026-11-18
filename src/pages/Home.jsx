@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../lib/AuthContext';
+import { useAuth } from '../lib/useAuth';
 import { supabase } from '../lib/supabase';
-import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
+import { readCartFromStorage, writeCartToStorage } from '../lib/cartUtils';
 import { 
   Truck, ShieldCheck, Clock, ArrowRight, Package, Lock, 
   ShoppingCart, Search, ChevronLeft, ChevronRight, 
@@ -96,19 +97,11 @@ const MobileCarousel = ({ items, renderItem, desktopGridClass, autoPlayInterval 
 // PRODUCT FAMILY CARD COMPONENT
 // =========================================
 function ProductFamilyCard({ familyName, familyProducts, globalVariants, getVariantPrice, onClick, session }) {
-  const [selectedProductId, setSelectedProductId] = useState(familyProducts[0].id);
+  const [selectedProductId] = useState(familyProducts[0].id);
   const activeProduct = familyProducts.find(p => p.id === selectedProductId) || familyProducts[0];
   const activeVariants = globalVariants.filter(v => v.product_id === activeProduct.id);
 
-  const [selectedVariantId, setSelectedVariantId] = useState(activeVariants[0]?.id || '');
-
-  useEffect(() => {
-    const newVariants = globalVariants.filter(v => v.product_id === selectedProductId);
-    if (newVariants.length > 0) setSelectedVariantId(newVariants[0].id);
-    else setSelectedVariantId('');
-  }, [selectedProductId, globalVariants]);
-
-  const activeVariant = activeVariants.find(v => v.id === selectedVariantId) || activeVariants[0];
+  const activeVariant = activeVariants[0];
   const { finalPrice: displayPrice } = getVariantPrice(activeProduct, activeVariant);
 
   let stockAmount = 0;
@@ -205,9 +198,29 @@ export default function Home() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
   
-  const [cart, setCart] = useState([]);
-  const [cartLoaded, setCartLoaded] = useState(false);
   const cartKey = profile?.company_id ? `tricore_cart_agency_${profile.company_id}` : `tricore_cart_user_${profile?.id}`;
+  const activeCartKey = profile?.id ? cartKey : null;
+  const [cartState, setCartState] = useState(() => ({
+    key: activeCartKey,
+    items: activeCartKey ? readCartFromStorage(activeCartKey) : [],
+  }));
+
+  const cart = useMemo(() => {
+    if (!activeCartKey) return [];
+    if (cartState.key === activeCartKey) return cartState.items;
+    return readCartFromStorage(activeCartKey);
+  }, [activeCartKey, cartState]);
+
+  const setCart = useCallback((updater) => {
+    if (!activeCartKey) return;
+    setCartState((prev) => {
+      const baseItems = prev.key === activeCartKey ? prev.items : readCartFromStorage(activeCartKey);
+      const nextItems = typeof updater === 'function' ? updater(baseItems) : updater;
+      const safeItems = Array.isArray(nextItems) ? nextItems : [];
+      writeCartToStorage(activeCartKey, safeItems);
+      return { key: activeCartKey, items: safeItems };
+    });
+  }, [activeCartKey]);
   
   const [viewingFamily, setViewingFamily] = useState(null); 
   const [isClosing, setIsClosing] = useState(false); 
@@ -238,20 +251,6 @@ export default function Home() {
   const nextAboutSlide = () => setCurrentAboutSlide((prev) => (prev === placeholders.length - 1 ? 0 : prev + 1));
   const prevAboutSlide = () => setCurrentAboutSlide((prev) => (prev === 0 ? placeholders.length - 1 : prev - 1));
 
-  useEffect(() => {
-    if (profile?.id) {
-      const savedCart = localStorage.getItem(cartKey);
-      if (savedCart) setCart(JSON.parse(savedCart));
-      else setCart([]); 
-      setCartLoaded(true);
-    }
-  }, [profile?.id, cartKey]);
-
-  useEffect(() => {
-    if (cartLoaded && profile?.id) {
-      localStorage.setItem(cartKey, JSON.stringify(cart));
-    }
-  }, [cart, cartLoaded, profile?.id, cartKey]);
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -282,7 +281,11 @@ export default function Home() {
     return () => clearTimeout(handler);
   }, [searchQuery]);
 
-  useEffect(() => { setPage(0); }, [activeCategory]);
+  const handleCategoryChange = (category) => {
+    setActiveCategory(category);
+    setPage(0);
+    setIsDropdownOpen(false);
+  };
 
   const { data: categories = ['All'] } = useQuery({
     queryKey: ['categories'],
@@ -365,7 +368,7 @@ export default function Home() {
     staleTime: 1000 * 60 * 5,
   });
 
-  const products = catalogData?.products || [];
+  const products = useMemo(() => catalogData?.products || [], [catalogData?.products]);
   const variants = catalogData?.variants || [];
 
   const getVariantPrice = (product, variant) => {
@@ -816,7 +819,7 @@ export default function Home() {
                 <div className={`absolute z-50 w-full mt-2 bg-white border border-slate-100 rounded-xl shadow-2xl overflow-hidden transition-all duration-200 origin-top ${isDropdownOpen ? 'opacity-100 translate-y-0 scale-100 visible pointer-events-auto' : 'opacity-0 -translate-y-2 scale-95 invisible pointer-events-none'}`}>
                   <ul className="max-h-64 overflow-y-auto divide-y divide-slate-50 py-1">
                     {categories.map((category, idx) => (
-                      <li key={idx}><button type="button" onClick={() => { setActiveCategory(category); setIsDropdownOpen(false); }} className={`w-full text-left px-5 py-3 text-sm font-bold transition-colors ${activeCategory === category ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>{category === 'All' ? 'All Categories' : category}</button></li>
+                      <li key={idx}><button type="button" onClick={() => handleCategoryChange(category)} className={`w-full text-left px-5 py-3 text-sm font-bold transition-colors ${activeCategory === category ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>{category === 'All' ? 'All Categories' : category}</button></li>
                     ))}
                   </ul>
                 </div>

@@ -96,7 +96,7 @@ export const useMetricsStore = create((set, get) => ({
         schema: 'public', 
         table: 'orders',
         filter: filterString 
-      }, (payload) => {
+      }, () => {
         get().fetchBadges(profile);
       })
       .subscribe();

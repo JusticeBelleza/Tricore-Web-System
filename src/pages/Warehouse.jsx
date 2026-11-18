@@ -1,16 +1,18 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext';
+import { useAuth } from '../lib/useAuth';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { 
   Search, Package, CheckCircle2, Truck, FileDown, 
   CheckSquare, Square, Box, ChevronDown, Hash, Calendar, MapPin, User, Phone, Mail, Car,
-  ChevronLeft, ChevronRight, CheckCircle, AlertTriangle, XCircle, RefreshCw, ArrowRightCircle, AlertCircle, RotateCcw
+  ChevronLeft, ChevronRight, CheckCircle, AlertTriangle, XCircle, RefreshCw, ArrowRightCircle, AlertCircle, RotateCcw, StickyNote, Route
 } from 'lucide-react';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { generatePackingSlipPdf } from '../lib/packingSlipPdf';
+import { evaluateReturnToApprovalEligibility } from '../lib/orderApprovalUtils';
+import ReturnToApprovalModal from '../components/ReturnToApprovalModal';
+import DriverRouteOrderManager from '../components/DriverRouteOrderManager';
 
 export default function Warehouse() {
   const { profile } = useAuth();
@@ -30,22 +32,24 @@ export default function Warehouse() {
   const [confirmRestock, setConfirmRestock] = useState({ show: false, order: null });
   const [confirmReattempt, setConfirmReattempt] = useState({ show: false, orderId: null });
   const [partialPackModal, setPartialPackModal] = useState({ show: false, item: null, qty: 1 });
+  const [returnApprovalModal, setReturnApprovalModal] = useState({ show: false, order: null });
 
   useEffect(() => {
     const handler = setTimeout(() => { setDebouncedSearch(searchTerm); setPage(0); }, 500);
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
-  useEffect(() => {
+  const handleTabChange = (nextTab) => {
+    setActiveTab(nextTab);
     setPage(0);
     setExpandedOrderId(null);
     setPickedItems({});
-  }, [activeTab]);
+  };
 
   const { data: drivers = [] } = useQuery({
     queryKey: ['warehouse_drivers'],
     queryFn: async () => {
-      const { data, error } = await supabase.from('user_profiles').select('full_name, contact_number').eq('role', 'driver');
+      const { data, error } = await supabase.from('user_profiles').select('id, full_name, contact_number').eq('role', 'driver').order('full_name', { ascending: true });
       if (error) throw error;
       return data || [];
     },
@@ -250,7 +254,7 @@ export default function Warehouse() {
       return filteredData;
     },
     placeholderData: keepPreviousData,
-    enabled: !!profile?.id && activeTab !== 'backorders',
+    enabled: !!profile?.id && activeTab !== 'backorders' && activeTab !== 'route_order',
   });
 
   const hasNextPage = ordersData && ordersData.length > pageSize;
@@ -291,8 +295,16 @@ export default function Warehouse() {
            if (error) throw error;
          }
       } else {
-         const { error } = await supabase.from('orders').update({ status: 'ready_for_delivery', updated_at: new Date().toISOString() }).eq('id', orderId);
+         const { data: updatedRows, error } = await supabase
+           .from('orders')
+           .update({ status: 'ready_for_delivery', updated_at: new Date().toISOString() })
+           .eq('id', orderId)
+           .eq('status', order.status)
+           .select('id');
          if (error) throw error;
+         if (!updatedRows || updatedRows.length === 0) {
+           throw new Error('Order status changed by another user. Refreshing queue...');
+         }
       }
     },
     onSuccess: () => {
@@ -335,6 +347,36 @@ export default function Warehouse() {
     onError: (error) => toast.error(`Failed to process restock: ${error.message}`)
   });
 
+  const returnToApprovalMutation = useMutation({
+    mutationFn: async ({ orderId, reason }) => {
+      const { data, error } = await supabase.rpc('return_order_to_approval', {
+        p_order_id: orderId,
+        p_reason: reason,
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      toast.success('Order returned to Pending approval. Any packed items must be re-checked upon re-approval.');
+      setReturnApprovalModal({ show: false, order: null });
+      setExpandedOrderId(null);
+      setPickedItems({});
+      queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['warehouse_tab_counts'] });
+      queryClient.invalidateQueries({ queryKey: ['admin_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['admin_tab_counts'] });
+      queryClient.invalidateQueries({ queryKey: ['dispatch_deliveries'] });
+      queryClient.invalidateQueries({ queryKey: ['dispatch_tab_counts'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard_metrics'] });
+      queryClient.invalidateQueries({ queryKey: ['driver_route_stops_manager'] });
+    },
+    onError: (err) => {
+      toast.error(err.message || 'Failed to return order to approval.');
+      queryClient.invalidateQueries({ queryKey: ['warehouse_orders'] });
+      queryClient.invalidateQueries({ queryKey: ['warehouse_tab_counts'] });
+    },
+  });
+
   const getDisplayName = (order) => {
     if (order.companies?.name) return order.patient_name ? `${order.companies.name} - ${order.patient_name}` : order.companies.name;
     return order.shipping_name || order.customer_name || 'Retail Customer';
@@ -370,142 +412,8 @@ export default function Warehouse() {
   };
 
   const generatePackingSlip = async (order) => {
-    const doc = new jsPDF();
-    const orderNum = order.id.substring(0, 8).toUpperCase();
-    const datePacked = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-
     const logoData = await getBase64ImageFromUrl('/images/tricore-logo2.png');
-    const isBackorderRun = order.status === 'delivered_partial' || order.status === 'delivered' || order.status === 'shipped';
-
-    const isB2B = !!order.company_id;
-    
-    // BILL TO: Agency or Retail Customer (Removed 'profile' fallback)
-    const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || order.shipping_name || 'Retail Customer');
-    const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
-    const billCityState = isB2B ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
-
-    // SHIP TO: Patient or Retail Customer
-    const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
-    const shipAddress = order.shipping_address || 'No shipping address provided';
-    const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-
-    const drawHeader = () => {
-      if (logoData) {
-        const imgWidth = 45; 
-        const imgHeight = (logoData.height * imgWidth) / logoData.width;
-        doc.addImage(logoData.dataURL, 'PNG', 14, 12, imgWidth, imgHeight);
-      } else {
-        doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42); doc.text("TRICORE MEDICAL SUPPLY", 14, 20);
-      }
-      
-      doc.setFontSize(14); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42);
-      doc.text(isBackorderRun ? "BACKORDER SLIP" : "PACKING SLIP", 140, 18);
-      doc.setFontSize(10); doc.setFont("helvetica", "normal");
-      doc.text(`Order #: ${orderNum}${isBackorderRun ? '-B' : ''}`, 140, 24); 
-      doc.text(`Date: ${datePacked}`, 140, 29);
-    };
-
-    drawHeader();
-
-    doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.text("SHIP TO", 14, 45); doc.text("BILL TO", 110, 45);
-    
-    let currentYShip = 52; doc.setFont("helvetica", "bold"); doc.text(shipName, 14, currentYShip); currentYShip += 5; doc.setFont("helvetica", "normal");
-    if (shipAddress && shipAddress !== 'No shipping address provided') { doc.text(shipAddress, 14, currentYShip); currentYShip += 5; }
-    if (shipCityState) { doc.text(shipCityState, 14, currentYShip); currentYShip += 5; }
-
-    let currentYBill = 52; doc.setFont("helvetica", "bold"); doc.text(billName, 110, currentYBill); currentYBill += 5; doc.setFont("helvetica", "normal");
-    if (billAddress && billAddress !== 'No billing address provided') { doc.text(billAddress, 110, currentYBill); currentYBill += 5; }
-    if (billCityState) { doc.text(billCityState, 110, currentYBill); currentYBill += 5; }
-
-    const maxAddressY = Math.max(currentYBill, currentYShip);
-
-    const activeItems = order.order_items?.filter(item => {
-      const s = item.status?.toLowerCase();
-      if (s === 'cancelled' || s === 'rejected') return false;
-      if (isBackorderRun && s === 'delivered') return false; 
-      return true;
-    }) || [];
-
-    const tableRows = activeItems.map(item => {
-      const s = item.status?.toLowerCase();
-      const isBackordered = s === 'backordered';
-      const required = item.quantity_variants || 0;
-      const shipped = isBackordered ? 0 : required;
-      const backOrder = isBackordered ? required : 0;
-      
-      const sku = item.product_variants?.sku || 'N/A';
-      const productName = item.product_variants?.products?.name || 'Item';
-      const variantName = item.product_variants?.name || '';
-      const description = variantName && variantName !== 'N/A' ? `${productName} (${variantName})` : productName;
-
-      return [required, shipped, backOrder, sku, description];
-    });
-
-    autoTable(doc, {
-      startY: maxAddressY + 10,
-      head: [["Required", "Shipped", "Back Order", "SKU", "Description"]],
-      body: tableRows,
-      theme: 'striped',
-      headStyles: { 
-        fillColor: [241, 245, 249],
-        textColor: [15, 23, 42],
-        fontStyle: 'bold', 
-        fontSize: 9, 
-        halign: 'center' 
-      },
-      styles: { 
-        fontSize: 9, 
-        cellPadding: 4, 
-        textColor: [15, 23, 42] 
-      },
-      columnStyles: {
-        0: { cellWidth: 32, halign: 'center', valign: 'middle' },
-        1: { cellWidth: 32, halign: 'center', valign: 'middle' },
-        2: { cellWidth: 32, halign: 'center', valign: 'middle' },
-        3: { cellWidth: 35, halign: 'center', valign: 'middle' },
-        4: { cellWidth: 'auto', valign: 'middle' }
-      },
-      margin: { top: 40, bottom: 40 },
-      didDrawPage: (data) => {
-        if (data.pageNumber > 1) {
-          drawHeader(); 
-        }
-      }
-    });
-
-    const pageHeight = doc.internal.pageSize.height;
-    let finalY = doc.lastAutoTable.finalY || maxAddressY + 20;
-
-    if (finalY + 70 > pageHeight) {
-        doc.addPage();
-        drawHeader();
-        finalY = 40;
-    }
-
-    doc.setFont("helvetica", "bold"); 
-    doc.text("Signed by:", 14, finalY + 20); 
-    doc.setFont("helvetica", "normal"); 
-    doc.text("___________________________________", 14, finalY + 30);
-    
-    doc.setFont("helvetica", "bold"); 
-    doc.text("Delivered by:", 110, finalY + 20); 
-    doc.setFont("helvetica", "normal"); 
-    doc.text("___________________________________", 110, finalY + 30);
-
-    const totalPages = doc.internal.getNumberOfPages();
-    for (let i = 1; i <= totalPages; i++) {
-      doc.setPage(i);
-      doc.setFontSize(9);
-      doc.setFont("helvetica", "bold");
-      doc.text("Thank you for shopping with us!", 105, pageHeight - 30, { align: "center" });
-      doc.setFont("helvetica", "normal");
-      doc.text("TRICORE MEDICAL SUPPLY", 105, pageHeight - 24, { align: "center" });
-      doc.text("2169 Harbor St, Pittsburg CA 94565, United States", 105, pageHeight - 19, { align: "center" });
-      doc.text("info@tricoremedicalsupply.com", 105, pageHeight - 14, { align: "center" });
-      doc.text("www.tricoremedicalsupply.com", 105, pageHeight - 9, { align: "center" });
-    }
-
-    doc.save(`Packing_Slip_${orderNum}${isBackorderRun ? '_B' : ''}.pdf`);
+    await generatePackingSlipPdf(order, { logoData });
   };
 
   const getStatusBadge = (status, isBackorderRunUI, activeItems = []) => {
@@ -540,7 +448,7 @@ export default function Warehouse() {
         <button 
           className="relative p-3 bg-white border border-slate-200 rounded-xl shadow-sm hover:bg-slate-50 active:scale-95 transition-all flex items-center justify-center shrink-0"
           title="View Returned Orders"
-          onClick={() => setActiveTab('returns')}
+          onClick={() => handleTabChange('returns')}
         >
           <RotateCcw size={22} className="text-slate-700" />
           {tabCounts.returns > 0 && (
@@ -554,17 +462,20 @@ export default function Warehouse() {
       <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center bg-white p-3 rounded-2xl border border-slate-200 shadow-sm w-full">
         <div className="w-full md:w-auto overflow-x-auto scrollbar-hide rounded-xl shrink-0">
           <div className="flex gap-2 p-1 bg-slate-100/50 border border-slate-200 w-max rounded-xl">
-            <button onClick={() => setActiveTab('processing')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><Package size={16}/> To Pack ({tabCounts.processing})</button>
-            <button onClick={() => setActiveTab('completed')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><CheckCircle2 size={16}/> Packed ({tabCounts.completed})</button>
-            <button onClick={() => setActiveTab('returns')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'returns' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><RefreshCw size={16}/> Returns ({tabCounts.returns})</button>
+            <button onClick={() => handleTabChange('processing')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'processing' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><Package size={16}/> To Pack ({tabCounts.processing})</button>
+            <button onClick={() => handleTabChange('completed')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'completed' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><CheckCircle2 size={16}/> Packed ({tabCounts.completed})</button>
+            <button onClick={() => handleTabChange('returns')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'returns' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'}`}><RefreshCw size={16}/> Returns ({tabCounts.returns})</button>
             
-            <button onClick={() => setActiveTab('backorders')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'backorders' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>
+            <button onClick={() => handleTabChange('backorders')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'backorders' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-600 hover:bg-amber-50'}`}>
               <AlertCircle size={16}/> Backorders ({backorderedItems.length})
+            </button>
+            <button onClick={() => handleTabChange('route_order')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${activeTab === 'route_order' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50'}`}>
+              <Route size={16}/> Route Order
             </button>
           </div>
         </div>
         
-        {activeTab !== 'backorders' && (
+        {activeTab !== 'backorders' && activeTab !== 'route_order' && (
           <div className="relative w-full md:w-80 shrink-0">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
             <input type="text" placeholder="Search Patient Name..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-transparent rounded-xl focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all" />
@@ -572,7 +483,11 @@ export default function Warehouse() {
         )}
       </div>
 
-      {activeTab === 'backorders' ? (
+      {activeTab === 'route_order' ? (
+        <div className="mt-6">
+          <DriverRouteOrderManager drivers={drivers} />
+        </div>
+      ) : activeTab === 'backorders' ? (
         <div className="mt-6">
           {isBackordersLoading ? (
             <div className="flex items-center justify-center p-12 text-slate-500">
@@ -897,6 +812,17 @@ export default function Warehouse() {
                                 </div>
 
                                 <div className="space-y-6">
+                                  {order.order_notes?.trim() && (
+                                    <div className="bg-amber-50/70 p-5 rounded-2xl border border-amber-200 shadow-sm">
+                                      <h4 className="text-[10px] font-bold text-amber-800 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                                        <StickyNote size={14} className="shrink-0" /> Order Notes
+                                      </h4>
+                                      <p className="text-sm font-medium text-slate-800 whitespace-pre-wrap break-words leading-relaxed">
+                                        {order.order_notes.trim()}
+                                      </p>
+                                    </div>
+                                  )}
+
                                   {/* SHIP TO CARD */}
                                   <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm group hover:border-slate-300 transition-colors">
                                     <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Package size={14} className="shrink-0"/> Ship To</h4>
@@ -958,6 +884,16 @@ export default function Warehouse() {
                                     {(isOrderDone || isBackorderRunUI) && (
                                       <button onClick={() => generatePackingSlip(order)} className="w-full py-4 text-sm bg-white border border-slate-200 text-slate-900 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
                                         <FileDown size={18} className="text-slate-400"/> Print Packing Slip
+                                      </button>
+                                    )}
+
+                                    {evaluateReturnToApprovalEligibility(order).eligible && (
+                                      <button
+                                        onClick={() => setReturnApprovalModal({ show: true, order })}
+                                        disabled={returnToApprovalMutation.isPending}
+                                        className="w-full py-3.5 text-sm bg-amber-50 border border-amber-200 text-amber-800 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-amber-100 active:scale-95 transition-all shadow-sm"
+                                      >
+                                        <RotateCcw size={16} /> Send Back to Approval
                                       </button>
                                     )}
                                   </div>
@@ -1088,6 +1024,20 @@ export default function Warehouse() {
           </DialogContent>
         </Dialog>
       )}
+
+      <ReturnToApprovalModal
+        open={returnApprovalModal.show}
+        order={returnApprovalModal.order}
+        isPending={returnToApprovalMutation.isPending}
+        onClose={() => setReturnApprovalModal({ show: false, order: null })}
+        onConfirm={(reason) => {
+          if (!returnApprovalModal.order?.id) return;
+          returnToApprovalMutation.mutate({
+            orderId: returnApprovalModal.order.id,
+            reason,
+          });
+        }}
+      />
     </div>
   );
 }

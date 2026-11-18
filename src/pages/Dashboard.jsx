@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { useAuth } from '../lib/AuthContext';
+import { useAuth } from '../lib/useAuth';
 import { supabase } from '../lib/supabase';
 import { useMetricsStore } from '../store/useMetricsStore';
 import { 
@@ -134,7 +134,7 @@ export default function Dashboard() {
     };
 
     fetchLists();
-  }, [profile?.id, profile?.role, profile?.company_id, filterType, filterDetail, filterYear]);
+  }, [profile?.id, profile?.role, profile?.company_id, filterType, filterDetail, filterYear, fetchDashboardMetrics]);
 
   const handleFilterTypeChange = (newType) => {
     setFilterType(newType);

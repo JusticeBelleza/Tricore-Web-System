@@ -1,4 +1,5 @@
-import { parsePhotoUrls } from '../lib/utils';
+import { extractOrderPodSummary } from '../lib/podUtils';
+import DriverRouteOrderManager from '../components/DriverRouteOrderManager';
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
@@ -6,7 +7,7 @@ import {
   Truck, Navigation, CheckCircle2, Clock, MapPin, 
   User, Image as ImageIcon, X, Search,
   AlertTriangle, XCircle, ChevronDown, Car, PackageCheck, CreditCard, Package,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, Route
 } from 'lucide-react';
 
 export default function DispatchMonitor() {
@@ -24,7 +25,7 @@ export default function DispatchMonitor() {
   const [assigningOrder, setAssigningOrder] = useState(null);
   const [driverName, setDriverName] = useState('');
   const [vehicleName, setVehicleName] = useState('');
-  const [vehicleType, setVehicleType] = useState('Cargo Van');
+  const [, setVehicleType] = useState('Cargo Van');
   const [vehicleLicense, setVehicleLicense] = useState('');
   const [notification, setNotification] = useState({ show: false, message: '', isError: false });
 
@@ -33,13 +34,14 @@ export default function DispatchMonitor() {
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
-  useEffect(() => {
+  const handleTabChange = (nextTab) => {
+    setActiveTab(nextTab);
     setPage(0);
-  }, [activeTab]);
+  };
 
   useEffect(() => {
     if (notification.show) {
-      const timer = setTimeout(() => { setNotification({ ...notification, show: false }); }, 3000);
+      const timer = setTimeout(() => { setNotification((prev) => ({ ...prev, show: false })); }, 3000);
       return () => clearTimeout(timer);
     }
   }, [notification.show]);
@@ -138,6 +140,7 @@ export default function DispatchMonitor() {
 
       return filtered;
     },
+    enabled: activeTab !== 'route_order',
     placeholderData: keepPreviousData,
   });
 
@@ -166,19 +169,29 @@ export default function DispatchMonitor() {
       const finalDriverName = driverPhone ? `${driverName} | ${driverPhone}` : driverName;
 
       const isBackorder = ['delivered_partial', 'delivered'].includes(assigningOrder.status);
+      const nextDriverId = assignedDriverObj?.id || null;
+      const shouldResetRouteSlot =
+        isBackorder ||
+        (assigningOrder.route_position != null && assigningOrder.assigned_driver_id !== nextDriverId);
 
       const { data, error } = await supabase.from('orders').update({ 
+        assigned_driver_id: nextDriverId,
         driver_name: finalDriverName || null, 
         vehicle_name: vehicleName || null, 
         vehicle_license: vehicleLicense || null, 
         status: isBackorder ? assigningOrder.status : 'shipped',
+        ...(shouldResetRouteSlot ? { route_position: null, route_run_date: null } : {}),
         updated_at: new Date().toISOString(),
         shipped_at: new Date().toISOString()
       })
       .eq('id', assigningOrder.id)
+      .eq('status', assigningOrder.status)
       .select();
       
       if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error('Order status changed by another user. Please refresh and try again.');
+      }
       
       if (isBackorder) {
         await supabase.from('order_items')
@@ -192,6 +205,7 @@ export default function DispatchMonitor() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dispatch_deliveries'] });
       queryClient.invalidateQueries({ queryKey: ['dispatch_tab_counts'] });
+      queryClient.invalidateQueries({ queryKey: ['driver_route_stops_manager'] });
       setAssigningOrder(null);
       setNotification({ show: true, isError: false, message: 'Driver assigned and route updated successfully!' });
       window.dispatchEvent(new Event('orderStatusChanged'));
@@ -263,6 +277,7 @@ export default function DispatchMonitor() {
   const activeStyles = {
     needs_dispatch: 'bg-purple-600 text-white shadow-md',
     in_transit: 'bg-blue-600 text-white shadow-md',
+    route_order: 'bg-slate-900 text-white shadow-md',
     partially_delivered: 'bg-amber-600 text-white shadow-md',
     delivered: 'bg-emerald-600 text-white shadow-md',
     cancelled: 'bg-red-600 text-white shadow-md'
@@ -288,29 +303,36 @@ export default function DispatchMonitor() {
 
       <div className="flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex gap-1 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full lg:w-auto overflow-x-auto shrink-0 scrollbar-hide">
-          <button onClick={() => setActiveTab('needs_dispatch')} className={`${tabBaseClass} ${activeTab === 'needs_dispatch' ? activeStyles.needs_dispatch : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('needs_dispatch')} className={`${tabBaseClass} ${activeTab === 'needs_dispatch' ? activeStyles.needs_dispatch : tabInactiveClass}`}>
             <PackageCheck size={16}/> Needs Dispatch ({tabCounts.needs_dispatch})
           </button>
-          <button onClick={() => setActiveTab('in_transit')} className={`${tabBaseClass} ${activeTab === 'in_transit' ? activeStyles.in_transit : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('in_transit')} className={`${tabBaseClass} ${activeTab === 'in_transit' ? activeStyles.in_transit : tabInactiveClass}`}>
             <Truck size={16}/> In Transit ({tabCounts.in_transit})
           </button>
-          <button onClick={() => setActiveTab('partially_delivered')} className={`${tabBaseClass} ${activeTab === 'partially_delivered' ? activeStyles.partially_delivered : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('route_order')} className={`${tabBaseClass} ${activeTab === 'route_order' ? activeStyles.route_order : tabInactiveClass}`}>
+            <Route size={16}/> Route Order
+          </button>
+          <button onClick={() => handleTabChange('partially_delivered')} className={`${tabBaseClass} ${activeTab === 'partially_delivered' ? activeStyles.partially_delivered : tabInactiveClass}`}>
             <Package size={16}/> Partial ({tabCounts.partially_delivered || 0})
           </button>
-          <button onClick={() => setActiveTab('delivered')} className={`${tabBaseClass} ${activeTab === 'delivered' ? activeStyles.delivered : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('delivered')} className={`${tabBaseClass} ${activeTab === 'delivered' ? activeStyles.delivered : tabInactiveClass}`}>
             <CheckCircle2 size={16}/> Delivered ({tabCounts.delivered})
           </button>
-          <button onClick={() => setActiveTab('cancelled')} className={`${tabBaseClass} ${activeTab === 'cancelled' ? activeStyles.cancelled : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('cancelled')} className={`${tabBaseClass} ${activeTab === 'cancelled' ? activeStyles.cancelled : tabInactiveClass}`}>
             <AlertTriangle size={16}/> Exceptions ({tabCounts.cancelled})
           </button>
         </div>
-        <div className="relative w-full lg:w-80 shrink-0">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input type="text" placeholder="Search Driver or Customer..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all shadow-sm" />
-        </div>
+        {activeTab !== 'route_order' && (
+          <div className="relative w-full lg:w-80 shrink-0">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <input type="text" placeholder="Search Driver or Customer..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none text-sm font-medium transition-all shadow-sm" />
+          </div>
+        )}
       </div>
 
-      {isLoading ? (
+      {activeTab === 'route_order' ? (
+        <DriverRouteOrderManager drivers={drivers} />
+      ) : isLoading ? (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden mt-6">
           <div className="w-full h-14 bg-slate-50/80 border-b border-slate-200"></div>
           {[1,2,3,4,5].map(n => (<div key={n} className="w-full h-20 bg-white border-b border-slate-100 flex items-center px-6 gap-6 animate-pulse"><div className="w-10 h-10 bg-slate-100 rounded-xl shrink-0"></div><div className="w-32 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-48 h-4 bg-slate-100 rounded shrink-0"></div><div className="w-24 h-6 bg-slate-100 rounded-lg shrink-0 ml-auto"></div></div>))}
@@ -336,7 +358,8 @@ export default function DispatchMonitor() {
               {displayedDeliveries.map(delivery => {
                 const shortId = delivery.id.substring(0, 8).toUpperCase();
                 const driverName = (delivery.driver_name || 'Unassigned').split(' | ')[0];
-                const hasPod = delivery.photo_url || delivery.signature_url || delivery.received_by;
+                const podSummary = extractOrderPodSummary(delivery);
+                const hasPod = podSummary.hasAnyPod;
                 const isAssigned = delivery.driver_name;
                 const isBackorder = ['delivered_partial', 'delivered'].includes(delivery.status) && activeTab !== 'delivered' && activeTab !== 'partially_delivered';
 
@@ -403,13 +426,16 @@ export default function DispatchMonitor() {
                       ) : activeTab === 'in_transit' ? (
                         <span className="inline-flex items-center justify-center px-4 py-2 text-slate-400 text-xs font-bold italic">En Route...</span>
                       ) : (activeTab === 'delivered' || activeTab === 'partially_delivered') ? (
-                        hasPod ? (
-                          <button onClick={() => setSelectedPod(delivery)} className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 text-xs font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
-                            <ImageIcon size={14} className="text-slate-400" /> View POD
-                          </button>
-                        ) : (
-                          <span className="inline-flex items-center justify-center px-4 py-2 bg-slate-50 text-slate-400 text-xs font-bold rounded-xl border border-slate-100 italic">No POD</span>
-                        )
+                        <button
+                          onClick={() => setSelectedPod(delivery)}
+                          className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-bold rounded-xl active:scale-95 transition-all shadow-sm border ${
+                            hasPod
+                              ? 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                              : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100'
+                          }`}
+                        >
+                          <ImageIcon size={14} className="text-slate-400" /> {hasPod ? 'View POD' : 'POD: Not provided'}
+                        </button>
                       ) : (
                         <button onClick={() => setSelectedPod(delivery)} className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 text-xs font-bold rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm">
                           <AlertTriangle size={14} className="text-red-500" /> View Reason
@@ -583,39 +609,63 @@ export default function DispatchMonitor() {
             </div>
             
             <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
-              {selectedPod.received_by && (
-                <div className="bg-slate-50 border border-slate-100 p-4 rounded-xl flex items-center gap-3">
-                   <div className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm">
-                      <User size={16} className="text-slate-500" />
-                   </div>
-                   <div>
-                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Received By</p>
-                     <p className="text-sm font-medium text-slate-900">{selectedPod.received_by}</p>
-                   </div>
-                </div>
-              )}
+              {(() => {
+                const pod = extractOrderPodSummary(selectedPod);
+                return (
+                  <>
+                    {selectedPod.status === 'cancelled' && selectedPod.cancellation_reason && (
+                      <div className="bg-red-50 border border-red-200 p-4 rounded-xl">
+                        <p className="text-[10px] font-bold text-red-500 uppercase tracking-widest mb-1">Exception Reason</p>
+                        <p className="text-sm font-medium text-red-900 whitespace-pre-wrap">{selectedPod.cancellation_reason}</p>
+                      </div>
+                    )}
 
-              {parsePhotoUrls(selectedPod.photo_url).length > 0 && (
-                <div className="space-y-3">
-                  <h4 className="text-sm font-semibold text-slate-900">Delivery Photo{parsePhotoUrls(selectedPod.photo_url).length > 1 ? `s (${parsePhotoUrls(selectedPod.photo_url).length})` : ''}</h4>
-                  <div className={`grid gap-3 ${parsePhotoUrls(selectedPod.photo_url).length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                    {parsePhotoUrls(selectedPod.photo_url).map((url, idx) => (
-                      <a key={idx} href={url} target="_blank" rel="noreferrer" className="rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-slate-50 block hover:opacity-95 transition-opacity">
-                        <img src={url} alt={`Delivery Proof ${idx + 1}`} className="w-full h-auto max-h-48 object-cover" />
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              )}
+                    <div className="bg-slate-50 border border-slate-100 p-4 rounded-xl flex items-center gap-3">
+                      <div className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm">
+                        <User size={16} className="text-slate-500" />
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Received By</p>
+                        <p className={`text-sm font-medium ${pod.recipientName ? 'text-slate-900' : 'text-slate-500'}`}>
+                          {pod.recipientName || 'Not provided'}
+                        </p>
+                      </div>
+                    </div>
 
-              {selectedPod.signature_url && (
-                <div className="space-y-3">
-                  <h4 className="text-sm font-semibold text-slate-900">Customer Signature</h4>
-                  <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <img src={selectedPod.signature_url} alt="Customer Signature" className="w-full h-24 object-contain mix-blend-multiply" />
-                  </div>
-                </div>
-              )}
+                    {pod.photoUrls.length > 0 ? (
+                      <div className="space-y-3">
+                        <h4 className="text-sm font-semibold text-slate-900">Delivery Photo{pod.photoUrls.length > 1 ? `s (${pod.photoUrls.length})` : ''}</h4>
+                        <div className={`grid gap-3 ${pod.photoUrls.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                          {pod.photoUrls.map((url, idx) => (
+                            <a key={idx} href={url} target="_blank" rel="noreferrer" className="rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-slate-50 block hover:opacity-95 transition-opacity">
+                              <img src={url} alt={`Delivery Proof ${idx + 1}`} className="w-full h-auto max-h-48 object-cover" />
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <h4 className="text-sm font-semibold text-slate-900">Delivery Photos</h4>
+                        <p className="text-xs font-medium text-slate-500 bg-slate-50 border border-slate-100 rounded-xl px-3.5 py-2.5">Not provided</p>
+                      </div>
+                    )}
+
+                    {pod.signatureUrl ? (
+                      <div className="space-y-3">
+                        <h4 className="text-sm font-semibold text-slate-900">Customer Signature</h4>
+                        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <img src={pod.signatureUrl} alt="Customer Signature" className="w-full h-24 object-contain mix-blend-multiply" />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <h4 className="text-sm font-semibold text-slate-900">Customer Signature</h4>
+                        <p className="text-xs font-medium text-slate-500 bg-slate-50 border border-slate-100 rounded-xl px-3.5 py-2.5">Not provided</p>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
 
             <div className="p-5 border-t border-slate-100">

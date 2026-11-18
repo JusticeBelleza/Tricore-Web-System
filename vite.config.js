@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react-swc' // 🚀 Switched to the faster SWC 
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import path from "path" // 🚀 ADDED FOR SHADCN UI
+import { fileURLToPath } from "url"
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
   plugins: [

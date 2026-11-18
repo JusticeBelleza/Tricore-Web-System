@@ -16,7 +16,9 @@ export function parsePhotoUrls(photoUrl) {
       try {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) return parsed.filter(Boolean);
-      } catch {}
+      } catch {
+        /* ignore malformed JSON array string */
+      }
     }
     if (trimmed.includes(',')) {
       return trimmed.split(',').map(s => s.trim()).filter(Boolean);

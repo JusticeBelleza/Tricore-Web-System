@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext';
+import { useAuth } from '../lib/useAuth';
 import { 
   User, Phone, Mail, CheckCircle2, Save, 
   AlertCircle, Lock, Key, Eye, EyeOff,

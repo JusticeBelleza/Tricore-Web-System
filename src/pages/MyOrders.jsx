@@ -1,16 +1,16 @@
-import { parsePhotoUrls } from '../lib/utils';
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../lib/AuthContext';
+import { useAuth } from '../lib/useAuth';
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { 
   Package, Receipt, ChevronDown, Calendar, Hash, MapPin, Mail,
   CreditCard, DollarSign, Truck, FileText, ShoppingCart, User, Car, FileDown, Phone, AlertCircle, CheckCircle2,
-  ChevronLeft, ChevronRight, PackageCheck, XCircle, Clock, AlertTriangle, RefreshCw, ShieldCheck, Box
+  ChevronLeft, ChevronRight, PackageCheck, XCircle, Clock, AlertTriangle, RefreshCw, ShieldCheck, Box, StickyNote
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import OrderPodCard from '../components/OrderPodCard';
 
 export default function MyOrders() {
   const { profile } = useAuth();
@@ -22,10 +22,11 @@ export default function MyOrders() {
   const pageSize = 10;
   const [activeTab, setActiveTab] = useState('all'); 
 
-  useEffect(() => {
+  const handleTabChange = (nextTab) => {
+    setActiveTab(nextTab);
     setPage(0);
     setExpandedOrderId(null);
-  }, [activeTab]);
+  };
 
   const { data: drivers = [] } = useQuery({
     queryKey: ['drivers'],
@@ -89,7 +90,7 @@ export default function MyOrders() {
       let query = supabase
         .from('orders')
         .select(`
-          id, user_id, status, created_at, updated_at, processing_at, shipped_at, delivered_at, cancelled_at, cancellation_reason, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
+          id, user_id, status, created_at, updated_at, processing_at, shipped_at, delivered_at, cancelled_at, cancellation_reason, order_notes, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
           driver_name, vehicle_name, vehicle_license,
           shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, company_id,
           companies ( name, address, city, state, zip, phone, email ),
@@ -358,25 +359,25 @@ export default function MyOrders() {
 
       <div className="flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex gap-2 p-1 bg-slate-100/50 rounded-xl border border-slate-200 w-full overflow-x-auto shrink-0 scrollbar-hide">
-          <button onClick={() => setActiveTab('all')} className={`${tabBaseClass} ${activeTab === 'all' ? tabActiveClass : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('all')} className={`${tabBaseClass} ${activeTab === 'all' ? tabActiveClass : tabInactiveClass}`}>
             <FileText size={16}/> All History ({tabCounts.all})
           </button>
-          <button onClick={() => setActiveTab('delivered')} className={`${tabBaseClass} ${activeTab === 'delivered' ? tabActiveClass : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('delivered')} className={`${tabBaseClass} ${activeTab === 'delivered' ? tabActiveClass : tabInactiveClass}`}>
             <PackageCheck size={16}/> Delivered ({tabCounts.delivered})
           </button>
-          <button onClick={() => setActiveTab('backorders')} className={`${tabBaseClass} ${activeTab === 'backorders' ? 'bg-amber-500 text-white shadow-md' : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('backorders')} className={`${tabBaseClass} ${activeTab === 'backorders' ? 'bg-amber-500 text-white shadow-md' : tabInactiveClass}`}>
             <Box size={16}/> Backorders ({tabCounts.backorders})
           </button>
-          <button onClick={() => setActiveTab('due')} className={`${tabBaseClass} ${activeTab === 'due' ? 'bg-orange-500 text-white shadow-md' : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('due')} className={`${tabBaseClass} ${activeTab === 'due' ? 'bg-orange-500 text-white shadow-md' : tabInactiveClass}`}>
             <AlertCircle size={16}/> Due ({tabCounts.due})
           </button>
-          <button onClick={() => setActiveTab('paid')} className={`${tabBaseClass} ${activeTab === 'paid' ? 'bg-emerald-600 text-white shadow-md' : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('paid')} className={`${tabBaseClass} ${activeTab === 'paid' ? 'bg-emerald-600 text-white shadow-md' : tabInactiveClass}`}>
             <CheckCircle2 size={16}/> Paid ({tabCounts.paid})
           </button>
-          <button onClick={() => setActiveTab('cancelled')} className={`${tabBaseClass} ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('cancelled')} className={`${tabBaseClass} ${activeTab === 'cancelled' ? 'bg-red-600 text-white shadow-md' : tabInactiveClass}`}>
             <XCircle size={16}/> Cancelled ({tabCounts.cancelled})
           </button>
-          <button onClick={() => setActiveTab('returned')} className={`${tabBaseClass} ${activeTab === 'returned' ? 'bg-slate-600 text-white shadow-md' : tabInactiveClass}`}>
+          <button onClick={() => handleTabChange('returned')} className={`${tabBaseClass} ${activeTab === 'returned' ? 'bg-slate-600 text-white shadow-md' : tabInactiveClass}`}>
             <RefreshCw size={16}/> Returned ({tabCounts.returned})
           </button>
         </div>
@@ -781,6 +782,17 @@ export default function MyOrders() {
                                     )}
                                   </div>
                                   
+                                  {order.order_notes?.trim() && (
+                                    <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-5 shadow-sm">
+                                      <h4 className="text-[10px] font-bold text-amber-800 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                                        <StickyNote size={14} className="shrink-0" /> Order Notes
+                                      </h4>
+                                      <p className="text-sm font-medium text-slate-800 whitespace-pre-wrap break-words leading-relaxed">
+                                        {order.order_notes.trim()}
+                                      </p>
+                                    </div>
+                                  )}
+
                                   {['ready_for_delivery', 'shipped', 'delivered', 'delivered_partial', 'attempted', 'restocked'].includes(order.status) && order.driver_name && (
                                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                                       <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
@@ -818,46 +830,7 @@ export default function MyOrders() {
                                     </div>
                                   )}
 
-                                  {['delivered', 'delivered_partial'].includes(order.status) && (order.photo_url || order.signature_url || order.received_by) && (
-                                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-sm uppercase tracking-wider mb-2">
-                                        <PackageCheck size={16} className="text-slate-400" /> Proof of Delivery
-                                      </h4>
-
-                                      {order.received_by && (
-                                        <div className="mb-4 p-3 bg-emerald-50 rounded-xl border border-emerald-100">
-                                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">Received By</p>
-                                          <p className="font-bold text-slate-900 flex items-center gap-2 text-sm">
-                                            <User size={14} className="text-emerald-500" /> {order.received_by}
-                                          </p>
-                                        </div>
-                                      )}
-
-                                      <div className="grid grid-cols-2 gap-3">
-                                        {parsePhotoUrls(order.photo_url).length > 0 && (
-                                          <div>
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Photo{parsePhotoUrls(order.photo_url).length > 1 ? `s (${parsePhotoUrls(order.photo_url).length})` : ''}</p>
-                                            <div className={`grid gap-2 ${parsePhotoUrls(order.photo_url).length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                                              {parsePhotoUrls(order.photo_url).map((url, idx) => (
-                                                <a key={idx} href={url} target="_blank" rel="noreferrer" className="block relative group rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-slate-50">
-                                                  <img src={url} alt={`Delivery Proof ${idx + 1}`} className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300" />
-                                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors"></div>
-                                                </a>
-                                              ))}
-                                            </div>
-                                          </div>
-                                        )}
-                                        {order.signature_url && (
-                                          <div>
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Signature</p>
-                                            <a href={order.signature_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-slate-200 bg-white p-2 hover:border-slate-300 transition-colors shadow-sm">
-                                              <img src={order.signature_url} alt="Customer Signature" className="w-full h-20 object-contain mix-blend-multiply" />
-                                            </a>
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-                                  )}
+                                  <OrderPodCard order={order} />
                                 </div>
                               </div>
                             </div>
