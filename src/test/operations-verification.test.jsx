@@ -616,6 +616,42 @@ describe('Live Operational Readiness Verification', () => {
         expect(result.filename).toBe('Packing_Slip_12345678.pdf');
         expect(result.pageCount).toBeGreaterThanOrEqual(2);
       });
+
+      it('renders "PACKING SLIP" heading for all stages including shipped and partial backorder fulfillments', async () => {
+        for (const [status, expectedFilename] of [
+          ['processing', 'Packing_Slip_399E5AD1.pdf'],
+          ['ready_for_delivery', 'Packing_Slip_399E5AD1.pdf'],
+          ['shipped', 'Packing_Slip_399E5AD1.pdf'],
+          ['delivered_partial', 'Packing_Slip_399E5AD1_B.pdf'],
+        ]) {
+          const result = await generatePackingSlipPdf(
+            {
+              id: '399e5ad1-bc5f-4a87-ac70-6beee3adf6f9',
+              status,
+              company_id: 'comp-1',
+              companies: { name: 'Sunrise Medical Supply SFO' },
+              shipping_name: 'Sunrise Medical Supply SFO',
+              order_notes: status === 'delivered_partial' ? 'Fulfilling backorder batch.' : '',
+              order_items: [
+                {
+                  quantity_variants: 5,
+                  status: status === 'delivered_partial' ? 'READY_TO_PACK' : 'active',
+                  product_variants: { sku: 'ABB21040-CS', products: { name: 'Briefs' } },
+                },
+              ],
+            },
+            { download: false }
+          );
+          const pageStream = (result.doc.internal.pages[1] || []).join('\n');
+          expect(pageStream).toContain('(PACKING SLIP) Tj');
+          expect(pageStream).not.toContain('BACKORDER SLIP');
+          if (status === 'shipped') {
+            expect(pageStream).toContain('(Order #: 399E5AD1) Tj');
+            expect(pageStream).not.toContain('399E5AD1-B');
+          }
+          expect(result.filename).toBe(expectedFilename);
+        }
+      });
     });
 
     describe('Fix 1, Fix 5 & Fix 6: Return to Approval, Order Notes & Admin Search', () => {

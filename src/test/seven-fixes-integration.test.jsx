@@ -83,6 +83,24 @@ import AdminOrders from '../pages/AdminOrders';
 import DriverRoutes from '../pages/DriverRoutes';
 import Checkout from '../pages/Checkout';
 import Catalog from '../pages/Catalog';
+import {
+  attachCustomerProfilesToOrders,
+  attachCustomerProfilesToNestedOrderItems,
+  getOrderCustomerProfile,
+  isOrderB2B,
+  isProfileB2B,
+  resolveRetailCustomerName,
+} from '../lib/orderCustomerUtils';
+import { buildWarehouseSummaryGroups } from '../lib/reportUtils';
+import adminOrdersSrc from '../pages/AdminOrders.jsx?raw';
+import warehouseSrc from '../pages/Warehouse.jsx?raw';
+import myOrdersSrc from '../pages/MyOrders.jsx?raw';
+import driverRoutesSrc from '../pages/DriverRoutes.jsx?raw';
+import reportsSrc from '../pages/Reports.jsx?raw';
+import checkoutSrc from '../pages/Checkout.jsx?raw';
+import dashboardSrc from '../pages/Dashboard.jsx?raw';
+import packingSlipSrc from '../lib/packingSlipPdf.js?raw';
+import reportUtilsSrc from '../lib/reportUtils.js?raw';
 
 function createChainQuery(resultPromiseOrValue) {
   const result =
@@ -1097,5 +1115,416 @@ describe('Seven-Fix Component Integration Verification', () => {
     resolveCheckoutRpc({ data: { id: '22223333-4444-5555-6666-777788889999', status: 'pending' }, error: null });
     expect(await screen.findByText('Success!')).toBeInTheDocument();
     expect(checkoutCalls).toHaveLength(1);
+  });
+
+  it('keeps actual retail client name after driver dispatch and never resolves assigned_driver_id via user_profiles', async () => {
+    const orderSelectClauses = [];
+    const profileLookups = [];
+
+    const dispatchedRetailOrder = {
+      id: 'f6fb6e53-6c4c-44b9-8f3c-42cea59c8d12',
+      user_id: 'cust-retail-peninsula',
+      company_id: null,
+      assigned_driver_id: 'drv-cyrus-1',
+      driver_name: 'Cyrus Rajeski | +1 (555) 111-2222',
+      status: 'shipped',
+      created_at: '2026-11-18T13:02:00Z',
+      updated_at: '2026-11-18T14:00:00Z',
+      shipping_name: 'Peninsula Reflections',
+      shipping_email: 'peninsula@gmail.com',
+      shipping_phone: '222222',
+      shipping_address: '205 Collins Ave',
+      shipping_city: 'Colma',
+      shipping_state: 'CA',
+      shipping_zip: '94014',
+      subtotal: 800.99,
+      shipping_amount: 10,
+      tax_amount: 0,
+      total_amount: 810.99,
+      payment_method: 'cod',
+      payment_status: 'unpaid',
+      order_items: [],
+    };
+
+    const dispatchedB2BOrder = {
+      id: 'b2b00001-0000-4000-8000-000000000001',
+      user_id: 'cust-b2b-1',
+      company_id: 'comp-alpha-1',
+      assigned_driver_id: 'drv-cyrus-1',
+      driver_name: 'Cyrus Rajeski | +1 (555) 111-2222',
+      status: 'shipped',
+      created_at: '2026-11-18T12:00:00Z',
+      updated_at: '2026-11-18T14:00:00Z',
+      shipping_name: 'Agency Patient',
+      shipping_address: '100 Agency Rd',
+      shipping_city: 'Colma',
+      shipping_state: 'CA',
+      shipping_zip: '94014',
+      subtotal: 200,
+      shipping_amount: 0,
+      tax_amount: 0,
+      total_amount: 200,
+      payment_method: 'net_30',
+      payment_status: 'unpaid',
+      companies: {
+        name: 'Alpha Care Agency',
+        address: '100 Agency Rd',
+        city: 'Colma',
+        state: 'CA',
+        zip: '94014',
+        phone: '555-8888',
+        email: 'billing@alphacare.test',
+      },
+      order_items: [],
+    };
+
+    // Unit guard checks: reject mismatched driver user_profiles embeds & preserve customer_profile
+    expect(
+      getOrderCustomerProfile({
+        user_id: 'cust-retail-peninsula',
+        assigned_driver_id: 'drv-cyrus-1',
+        user_profiles: { id: 'drv-cyrus-1', full_name: 'Cyrus Rajeski', role: 'driver' },
+      })
+    ).toBeNull();
+    expect(
+      resolveRetailCustomerName({
+        user_id: 'cust-retail-peninsula',
+        assigned_driver_id: 'drv-cyrus-1',
+        shipping_name: 'Peninsula Reflections',
+        user_profiles: { id: 'drv-cyrus-1', full_name: 'Cyrus Rajeski', role: 'driver' },
+      })
+    ).toBe('Peninsula Reflections');
+
+    // Static check: none of the orders pages embed unqualified user_profiles(...) via orders
+    for (const src of [adminOrdersSrc, warehouseSrc, myOrdersSrc, driverRoutesSrc, reportsSrc]) {
+      expect(src).not.toMatch(/user_profiles\s*\(/);
+    }
+
+    // Nested order_items enrichment resolves ordering customer on Warehouse backorders / Reports
+    const enrichedNested = await attachCustomerProfilesToNestedOrderItems(
+      {
+        from: () =>
+          createChainQuery({
+            data: [{ id: 'cust-retail-peninsula', full_name: 'Peninsula Reflections', email: 'peninsula@gmail.com' }],
+            error: null,
+          }),
+      },
+      [{ id: 'item-1', orders: { id: 'ord-1', user_id: 'cust-retail-peninsula', shipping_name: 'Backup Ship' } }]
+    );
+    expect(enrichedNested[0].orders.customer_profile?.full_name).toBe('Peninsula Reflections');
+
+    mockRpc.mockResolvedValue({
+      data: { pending: 0, processing: 0, shipped: 2, cancelled: 0, paid: 0, due: 0, restocked: 0 },
+      error: null,
+    });
+
+    mockFrom.mockImplementation((table) => {
+      if (table === 'orders') {
+        const chain = createChainQuery({ data: [dispatchedRetailOrder, dispatchedB2BOrder], error: null });
+        const origSelect = chain.select;
+        chain.select = (clause) => {
+          if (clause) orderSelectClauses.push(clause);
+          return origSelect(clause);
+        };
+        return chain;
+      }
+      if (table === 'user_profiles') {
+        const chain = {
+          _isDriverQuery: false,
+          select: (cols) => {
+            profileLookups.push({ type: 'select', cols });
+            return chain;
+          },
+          eq: (col, val) => {
+            if (col === 'role' && val === 'driver') chain._isDriverQuery = true;
+            return chain;
+          },
+          in: (col, vals) => {
+            profileLookups.push({ type: 'in', col, vals });
+            return chain;
+          },
+          order: () => chain,
+          then: (onFulfilled, onRejected) => {
+            const rows = chain._isDriverQuery
+              ? [{ id: 'drv-cyrus-1', full_name: 'Cyrus Rajeski', contact_number: '555-111-2222' }]
+              : [
+                  {
+                    id: 'cust-retail-peninsula',
+                    full_name: 'Peninsula Reflections',
+                    contact_number: '222222',
+                    email: 'peninsula@gmail.com',
+                  },
+                  {
+                    id: 'cust-b2b-1',
+                    full_name: 'B2B User',
+                    contact_number: '555-0000',
+                    email: 'b2b@alphacare.test',
+                  },
+                ];
+            return Promise.resolve({ data: rows, error: null }).then(onFulfilled, onRejected);
+          },
+        };
+        return chain;
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    const directAttached = await attachCustomerProfilesToOrders(
+      { from: (...args) => mockFrom(...args) },
+      [dispatchedRetailOrder]
+    );
+    expect(directAttached[0].customer_profile?.full_name).toBe('Peninsula Reflections');
+
+    renderWithProviders(<AdminOrders />);
+
+    expect(await screen.findByText('F6FB6E53')).toBeInTheDocument();
+    expect(screen.getByText('Alpha Care Agency')).toBeInTheDocument();
+    expect(screen.getAllByText('Peninsula Reflections').length).toBeGreaterThanOrEqual(1);
+    // The driver's name must NOT appear in the unexpanded customer column
+    expect(screen.queryByText('Cyrus Rajeski')).not.toBeInTheDocument();
+
+    // Expand the Retail order to verify Bill To & Ship To both show Peninsula Reflections (not driver)
+    fireEvent.click(screen.getByText('F6FB6E53'));
+    await screen.findByText('Order Management Panel');
+
+    expect(screen.getAllByText('Peninsula Reflections').length).toBeGreaterThanOrEqual(3);
+    expect(orderSelectClauses.some((s) => /user_profiles\s*\(/.test(s))).toBe(false);
+    expect(profileLookups.some((call) => call.type === 'in' && call.vals.includes('cust-retail-peninsula'))).toBe(true);
+  });
+
+  it('classifies Retail orders linked to Retail-type companies as Retail instead of B2B Agency in AdminOrders and summary helpers', async () => {
+    // 1. Unit checks for isProfileB2B / isOrderB2B across Retail-company vs B2B-company accounts
+    expect(
+      isProfileB2B({
+        id: 'retail-user-justice',
+        role: 'retail',
+        company_id: 'comp-retail-justice',
+        companies: { name: 'Justice Belleza', account_type: 'Retail' },
+      })
+    ).toBe(false);
+
+    expect(
+      isProfileB2B({
+        id: 'retail-user-justice',
+        role: 'retail',
+        company_id: 'comp-retail-justice',
+      })
+    ).toBe(false);
+
+    expect(
+      isProfileB2B({
+        id: 'b2b-user-1',
+        role: 'b2b',
+        company_id: 'comp-b2b-1',
+        companies: { name: 'Alpha Care Agency', account_type: 'B2B' },
+      })
+    ).toBe(true);
+
+    // Backward-compatible fallback for minimal test fixtures without account_type or role
+    expect(isProfileB2B({ id: 'legacy-b2b', company_id: 'comp-legacy-1' })).toBe(true);
+    expect(isProfileB2B(null)).toBe(false);
+
+    const retailCompanyOrder = {
+      id: 'ffa8239e-bd85-41c9-a286-316b35543d70',
+      user_id: '435ae90c-28d6-49fa-84f2-4414d0c08312',
+      company_id: 'e81e841a-1107-40e9-baa7-6001f97209c4',
+      patient_id: null,
+      status: 'pending',
+      created_at: '2026-11-24T20:32:00Z',
+      updated_at: '2026-11-24T20:32:00Z',
+      shipping_name: 'Justice Belleza',
+      shipping_address: '100 Retail Way',
+      shipping_city: 'Pittsburg',
+      shipping_state: 'CA',
+      shipping_zip: '94565',
+      subtotal: 3.0,
+      shipping_amount: 10.0,
+      tax_amount: 0.29,
+      total_amount: 13.29,
+      payment_method: 'card',
+      payment_status: 'unpaid',
+      companies: {
+        name: 'Justice Belleza',
+        account_type: 'Retail',
+        address: '999 Ignored Billing Rd',
+        city: 'Pittsburg',
+        state: 'CA',
+        zip: '94565',
+        phone: '999-9999',
+        email: 'company@ignored.test',
+      },
+      order_items: [
+        {
+          id: 'item-retail-1',
+          quantity_variants: 1,
+          unit_price: 3.0,
+          line_total: 3.0,
+          status: 'pending',
+          product_variants: {
+            id: 'var-1',
+            name: 'Box',
+            sku: 'SKU-1',
+            price: 3.0,
+            multiplier: 1,
+            products: { name: 'Medical Tape', base_sku: 'SKU' },
+          },
+        },
+      ],
+    };
+
+    const realB2BOrder = {
+      id: 'bbbb239e-bd85-41c9-a286-316b35543d70',
+      user_id: 'cust-b2b-alpha',
+      company_id: 'comp-b2b-alpha',
+      patient_id: null,
+      status: 'pending',
+      created_at: '2026-11-24T19:00:00Z',
+      updated_at: '2026-11-24T19:00:00Z',
+      shipping_name: 'Patient Zero',
+      shipping_address: '200 Agency Pkwy',
+      shipping_city: 'Antioch',
+      shipping_state: 'CA',
+      shipping_zip: '94509',
+      subtotal: 100.0,
+      shipping_amount: 5.0,
+      tax_amount: 0,
+      total_amount: 105.0,
+      payment_method: 'net_30',
+      payment_status: 'unpaid',
+      companies: {
+        name: 'Alpha Care Agency',
+        account_type: 'B2B',
+        address: '200 Agency Pkwy',
+        city: 'Antioch',
+        state: 'CA',
+        zip: '94509',
+        phone: '555-8888',
+        email: 'billing@alphacare.test',
+      },
+      order_items: [],
+    };
+
+    expect(isOrderB2B(retailCompanyOrder)).toBe(false);
+    expect(
+      isOrderB2B({
+        company_id: 'e81e841a-1107-40e9-baa7-6001f97209c4',
+        companies: { name: 'Justice Belleza' },
+        customer_profile: { role: 'retail', full_name: 'Justice Belleza' },
+      })
+    ).toBe(false);
+    expect(
+      isOrderB2B(
+        { id: 'ord-null-co', user_id: 'u-r', company_id: null },
+        { id: 'u-r', role: 'retail', company_id: 'e81e841a-1107-40e9-baa7-6001f97209c4' }
+      )
+    ).toBe(false);
+    expect(isOrderB2B(realB2BOrder)).toBe(true);
+    expect(
+      isOrderB2B({ company_id: 'comp-legacy', companies: { name: 'Legacy Agency' } })
+    ).toBe(true);
+
+    // 2. Report grouping uses shipping address & customer identity (not company billing) for Retail-company orders
+    const summaryGroups = buildWarehouseSummaryGroups([
+      {
+        ...retailCompanyOrder,
+        customer_profile: { full_name: 'Justice Belleza', role: 'retail' },
+      },
+    ]);
+    expect(summaryGroups).toHaveLength(1);
+    expect(summaryGroups[0].address).toBe('100 Retail Way Pittsburg CA 94565');
+
+    // 3. Static checks across Checkout, Dashboard, Order pages & PDF/report helpers
+    for (const src of [
+      adminOrdersSrc,
+      warehouseSrc,
+      myOrdersSrc,
+      driverRoutesSrc,
+      reportsSrc,
+      checkoutSrc,
+      dashboardSrc,
+      packingSlipSrc,
+      reportUtilsSrc,
+    ]) {
+      expect(src).not.toMatch(/\bisB2B\s*=\s*!!(?:order|profile)\??\.company_id\b/);
+    }
+    for (const src of [adminOrdersSrc, warehouseSrc, myOrdersSrc, driverRoutesSrc, reportsSrc]) {
+      expect(src).toMatch(/companies\s*\([^)]*account_type/);
+    }
+
+    // 4. Component render check on <AdminOrders /> for #FFA8239E (Retail) alongside B2B Agency
+    const orderSelectClauses = [];
+    const profileSelectCols = [];
+
+    mockRpc.mockResolvedValue({
+      data: { pending: 2, processing: 0, shipped: 0, cancelled: 0, paid: 0, due: 0, restocked: 0 },
+      error: null,
+    });
+
+    mockFrom.mockImplementation((table) => {
+      if (table === 'orders') {
+        const chain = createChainQuery({ data: [retailCompanyOrder, realB2BOrder], error: null });
+        const origSelect = chain.select;
+        chain.select = (clause) => {
+          if (clause) orderSelectClauses.push(clause);
+          return origSelect(clause);
+        };
+        return chain;
+      }
+      if (table === 'user_profiles') {
+        const chain = {
+          _isDriverQuery: false,
+          select: (cols) => {
+            profileSelectCols.push(cols);
+            return chain;
+          },
+          eq: (col, val) => {
+            if (col === 'role' && val === 'driver') chain._isDriverQuery = true;
+            return chain;
+          },
+          in: () => chain,
+          order: () => chain,
+          then: (onFulfilled, onRejected) => {
+            const rows = chain._isDriverQuery
+              ? []
+              : [
+                  {
+                    id: '435ae90c-28d6-49fa-84f2-4414d0c08312',
+                    full_name: 'Justice Belleza',
+                    contact_number: '555-321-7777',
+                    email: 'testcustomer@gmail.com',
+                    role: 'retail',
+                  },
+                  {
+                    id: 'cust-b2b-alpha',
+                    full_name: 'Alpha Buyer',
+                    contact_number: '555-0001',
+                    email: 'buyer@alphacare.test',
+                    role: 'b2b',
+                  },
+                ];
+            return Promise.resolve({ data: rows, error: null }).then(onFulfilled, onRejected);
+          },
+        };
+        return chain;
+      }
+      return createChainQuery({ data: [], error: null });
+    });
+
+    renderWithProviders(<AdminOrders />);
+
+    expect(await screen.findByText('FFA8239E')).toBeInTheDocument();
+    expect(screen.getByText('Justice Belleza')).toBeInTheDocument();
+    expect(screen.getByText('Retail')).toBeInTheDocument();
+    expect(screen.getByText('Alpha Care Agency')).toBeInTheDocument();
+    expect(screen.getAllByText('B2B Agency')).toHaveLength(1);
+
+    // Expand #FFA8239E to verify Bill To shows retail customer details instead of company billing info
+    fireEvent.click(screen.getByText('FFA8239E'));
+    await screen.findByText('Order Management Panel');
+    expect(screen.getAllByText('testcustomer@gmail.com').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('company@ignored.test')).not.toBeInTheDocument();
+
+    expect(orderSelectClauses.some((s) => /companies\s*\([^)]*account_type/.test(s))).toBe(true);
+    expect(profileSelectCols.some((cols) => cols.includes('role'))).toBe(true);
   });
 });

@@ -8,6 +8,7 @@ import {
   Wallet, FileText, Activity, CreditCard, Calendar, ChevronDown
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
+import { isProfileB2B } from '../lib/orderCustomerUtils';
 
 export default function Dashboard() {
   const { profile } = useAuth();
@@ -218,7 +219,7 @@ export default function Dashboard() {
   // 🏢 AGENCY / RETAIL CUSTOMER DASHBOARD
   // ==========================================
   if (profile?.role === 'b2b' || profile?.role === 'retail' || profile?.role === 'user' || !profile?.role) {
-    const isB2B = !!profile?.company_id;
+    const isB2B = isProfileB2B(profile);
     const limit = Number(profile?.companies?.credit_limit || 0);
     const available = Math.max(0, limit - dashboardData.outstanding);
 

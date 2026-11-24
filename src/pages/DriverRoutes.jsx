@@ -18,6 +18,11 @@ import {
   sortDriverStops,
 } from '../lib/routingUtils';
 import { evaluatePodProof } from '../lib/podUtils';
+import {
+  attachCustomerProfilesToOrders,
+  getOrderCustomerProfile,
+  isOrderB2B,
+} from '../lib/orderCustomerUtils';
 
 import SignatureCanvas from 'react-signature-canvas';
 
@@ -319,7 +324,7 @@ export default function DriverRoutes() {
 
       let query = supabase
         .from('orders')
-        .select(`*, companies ( name, address, city, state, zip, phone ), agency_patients ( contact_number ), user_profiles ( full_name, contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, line_total, unit_price, product_variants ( product_id, name, multiplier, products(name) ) )`)
+        .select(`*, companies ( name, account_type, address, city, state, zip, phone ), agency_patients ( contact_number ), order_items ( id, product_variant_id, quantity_variants, total_base_units, status, line_total, unit_price, product_variants ( product_id, name, multiplier, products(name) ) )`)
         .or(driverOrFilter)
         .order('created_at', { ascending: true });
 
@@ -340,7 +345,8 @@ export default function DriverRoutes() {
         return true;
       });
 
-      const sortedOrders = sortDriverStops(validOrders);
+      const enrichedOrders = await attachCustomerProfilesToOrders(supabase, validOrders, { includeRole: true });
+      const sortedOrders = sortDriverStops(enrichedOrders);
 
       const startOfWeek = new Date();
       startOfWeek.setHours(0, 0, 0, 0);
@@ -840,13 +846,14 @@ export default function DriverRoutes() {
       ) : (
         <div className="space-y-4 mt-2">
           {orders.map((order, index) => {
-            const isB2B = !!order.company_id;
-            const shipName = order.shipping_name || (isB2B ? order.companies?.name : order.user_profiles?.full_name || 'Customer');
+            const isB2B = isOrderB2B(order);
+            const customerProfile = getOrderCustomerProfile(order);
+            const shipName = order.shipping_name || (isB2B ? order.companies?.name : customerProfile?.full_name || 'Customer');
             const addrInfo = formatOrderDeliveryAddress(order);
             const navUrl = buildSingleStopNavigationUrl(order);
             const shipAddress = addrInfo.street || 'No address provided';
             const shipCityState = addrInfo.cityStateZip;
-            const shipPhone = order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
+            const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || customerProfile?.contact_number || '';
             const shortId = order.id.split('-')[0].toUpperCase();
 
             const isBackorder = ['delivered_partial', 'delivered'].includes(order.status);

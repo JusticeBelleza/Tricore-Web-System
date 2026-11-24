@@ -19,6 +19,7 @@ import {
   MAX_ORDER_NOTES_LENGTH,
   normalizeOrderNotes,
 } from '../lib/orderApprovalUtils';
+import { isProfileB2B } from '../lib/orderCustomerUtils';
 
 export default function Checkout() {
   const { profile, user } = useAuth();
@@ -50,7 +51,7 @@ export default function Checkout() {
   // 🚀 FIX: Extract targetPatientId so we can auto-select them!
   const targetPatientId = isProxy ? proxySession.targetPatientId : null; 
   
-  const isB2B = isProxy ? proxySession.orderType === 'b2b' : !!profile?.company_id;
+  const isB2B = isProxy ? proxySession.orderType === 'b2b' : isProfileB2B(profile);
 
   const cartKey = targetCompanyId ? `tricore_cart_agency_${targetCompanyId}` : `tricore_cart_user_${targetUserId}`;
 

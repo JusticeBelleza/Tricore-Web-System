@@ -21,6 +21,12 @@ import {
   normalizeOrderNotes,
   normalizeOrderSearchQuery,
 } from '../lib/orderApprovalUtils';
+import {
+  attachCustomerProfilesToOrders,
+  getOrderCustomerProfile,
+  isOrderB2B,
+  resolveRetailCustomerName,
+} from '../lib/orderCustomerUtils';
 
 export default function AdminOrders() {
   const { profile } = useAuth(); 
@@ -117,10 +123,9 @@ export default function AdminOrders() {
     queryKey: ['admin_orders', activeTab, debouncedSearch, page],
     queryFn: async () => {
       const orderSelect = `
-          *, 
-          companies ( name, address, city, state, zip, phone, email ), 
+          *,
+          companies ( name, account_type, address, city, state, zip, phone, email ),
           agency_patients ( contact_number, email ),
-          user_profiles ( full_name, contact_number, email ),
           order_items ( id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, cancellation_reason, product_variants ( id, product_id, name, sku, price, multiplier, products(name, base_sku) ) )
         `;
       const cleanedSearch = normalizeOrderSearchQuery(debouncedSearch);
@@ -144,7 +149,8 @@ export default function AdminOrders() {
           .in('id', matchedIds);
         if (fetchErr) throw fetchErr;
 
-        const byId = new Map((fetchedOrders || []).map((o) => [o.id, o]));
+        const enrichedOrders = await attachCustomerProfilesToOrders(supabase, fetchedOrders || [], { includeRole: true });
+        const byId = new Map(enrichedOrders.map((o) => [o.id, o]));
         return matchedIds.map((id) => byId.get(id)).filter(Boolean);
       }
 
@@ -170,7 +176,7 @@ export default function AdminOrders() {
 
       const { data, error } = await query;
       if (error) throw error;
-      return data || [];
+      return attachCustomerProfilesToOrders(supabase, data || [], { includeRole: true });
     },
     placeholderData: keepPreviousData,
     enabled: !!profile?.id
@@ -466,10 +472,10 @@ export default function AdminOrders() {
       if (docType === 'receipt') { doc.setFont("helvetica", "bold"); doc.setTextColor(16, 185, 129); doc.text("Status: PAID IN FULL", 140, 34); doc.setTextColor(15, 23, 42); } 
       else { doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34); }
 
-      const isB2B = !!order.company_id;
-      const up = Array.isArray(order.user_profiles) ? order.user_profiles[0] : order.user_profiles;
+      const isB2B = isOrderB2B(order);
+      const up = getOrderCustomerProfile(order);
 
-      const billName = isB2B ? (order.companies?.name || 'Agency') : (up?.full_name || order.shipping_name || 'Retail Customer');
+      const billName = isB2B ? (order.companies?.name || 'Agency') : resolveRetailCustomerName(order);
       const billAddress = isB2B ? (order.companies?.address || '') : (order.shipping_address || '');
       const billCityState = isB2B ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
       const billPhone = isB2B ? (order.companies?.phone || '') : (order.shipping_phone || up?.contact_number || '');
@@ -564,9 +570,8 @@ export default function AdminOrders() {
   };
 
   const getDisplayName = (order) => {
-    if (order.companies?.name) return order.companies.name;
-    const up = Array.isArray(order.user_profiles) ? order.user_profiles[0] : order.user_profiles;
-    return up?.full_name || order.shipping_name || 'Retail Customer';
+    if (isOrderB2B(order) && order.companies?.name) return order.companies.name;
+    return resolveRetailCustomerName(order);
   };
 
   const getStatusBadge = (status) => {
@@ -662,11 +667,11 @@ export default function AdminOrders() {
               <tbody className="divide-y divide-slate-100">
                 {displayOrders.map((order) => {
                   const isExpanded = expandedOrderId === order.id;
-                  const isB2B = !!order.company_id;
+                  const isB2B = isOrderB2B(order);
                   const shortId = order.id.substring(0, 8).toUpperCase();
-                  const up = Array.isArray(order.user_profiles) ? order.user_profiles[0] : order.user_profiles;
+                  const up = getOrderCustomerProfile(order);
 
-                  const billName = isB2B ? (order.companies?.name || 'Agency') : (up?.full_name || order.shipping_name || 'Retail Customer');
+                  const billName = isB2B ? (order.companies?.name || 'Agency') : resolveRetailCustomerName(order);
                   const billEmail = isB2B ? order.companies?.email : (order.shipping_email || up?.email);
                   const billPhone = isB2B ? order.companies?.phone : (order.shipping_phone || up?.contact_number);
                   const billAddress = isB2B ? (order.companies?.address || '') : (order.shipping_address || '');

@@ -1,5 +1,6 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { isOrderB2B, resolveRetailCustomerName } from './orderCustomerUtils';
 
 export const PACKING_SLIP_MARGIN = { top: 40, bottom: 40 };
 
@@ -121,7 +122,7 @@ export function drawPackingSlipOrderNotes(doc, rawNotes, startY, drawHeader) {
 }
 
 /**
- * Generate and download the Warehouse Packing / Backorder Slip PDF.
+ * Generate and download the Warehouse Packing Slip PDF.
  */
 export async function generatePackingSlipPdf(order, { logoData = null, download = true } = {}) {
   const doc = new jsPDF();
@@ -132,17 +133,15 @@ export async function generatePackingSlipPdf(order, { logoData = null, download 
     year: 'numeric',
   });
 
-  const isBackorderRun =
-    order.status === 'delivered_partial' ||
-    order.status === 'delivered' ||
-    order.status === 'shipped';
+  const isBackorderFulfillment =
+    order.status === 'delivered_partial' || order.status === 'delivered';
 
-  const isB2B = !!order.company_id;
+  const isB2B = isOrderB2B(order);
 
   // BILL TO: Agency or Retail Customer (customer email/phone intentionally omitted on packing slip)
   const billName = isB2B
     ? order.companies?.name || 'Agency'
-    : order.user_profiles?.full_name || order.shipping_name || 'Retail Customer';
+    : resolveRetailCustomerName(order);
   const billAddress = isB2B
     ? order.companies?.address || 'No billing address provided'
     : order.shipping_address || 'No billing address provided';
@@ -170,10 +169,10 @@ export async function generatePackingSlipPdf(order, { logoData = null, download 
     doc.setFontSize(14);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(15, 23, 42);
-    doc.text(isBackorderRun ? 'BACKORDER SLIP' : 'PACKING SLIP', 140, 18);
+    doc.text('PACKING SLIP', 140, 18);
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
-    doc.text(`Order #: ${orderNum}${isBackorderRun ? '-B' : ''}`, 140, 24);
+    doc.text(`Order #: ${orderNum}${isBackorderFulfillment ? '-B' : ''}`, 140, 24);
     doc.text(`Date: ${datePacked}`, 140, 29);
   };
 
@@ -218,7 +217,7 @@ export async function generatePackingSlipPdf(order, { logoData = null, download 
     order.order_items?.filter((item) => {
       const s = item.status?.toLowerCase();
       if (s === 'cancelled' || s === 'rejected') return false;
-      if (isBackorderRun && s === 'delivered') return false;
+      if (isBackorderFulfillment && s === 'delivered') return false;
       return true;
     }) || [];
 
@@ -264,7 +263,7 @@ export async function generatePackingSlipPdf(order, { logoData = null, download 
   doc.text('___________________________________', 110, finalY + 30);
 
   drawPackingSlipFooters(doc);
-  const filename = `Packing_Slip_${orderNum}${isBackorderRun ? '_B' : ''}.pdf`;
+  const filename = `Packing_Slip_${orderNum}${isBackorderFulfillment ? '_B' : ''}.pdf`;
   if (download) {
     doc.save(filename);
   }

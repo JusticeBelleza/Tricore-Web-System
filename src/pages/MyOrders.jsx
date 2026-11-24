@@ -11,6 +11,12 @@ import {
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import OrderPodCard from '../components/OrderPodCard';
+import {
+  attachCustomerProfilesToOrders,
+  getOrderCustomerProfile,
+  isOrderB2B,
+  resolveRetailCustomerName,
+} from '../lib/orderCustomerUtils';
 
 export default function MyOrders() {
   const { profile } = useAuth();
@@ -92,10 +98,9 @@ export default function MyOrders() {
         .select(`
           id, user_id, status, created_at, updated_at, processing_at, shipped_at, delivered_at, cancelled_at, cancellation_reason, order_notes, total_amount, subtotal, tax_amount, shipping_amount, payment_method, payment_status, signature_url, photo_url, received_by,
           driver_name, vehicle_name, vehicle_license,
-          shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, company_id,
-          companies ( name, address, city, state, zip, phone, email ),
+          shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, company_id, patient_id,
+          companies ( name, account_type, address, city, state, zip, phone, email ),
           agency_patients ( contact_number, email ),
-          user_profiles ( full_name, contact_number, email, role ),
           order_items (
             id, quantity_variants, unit_price, line_total, status, cancellation_reason,
             product_variants ( name, sku, products ( name, base_sku ) ) 
@@ -137,7 +142,7 @@ export default function MyOrders() {
       const { data, error } = await query;
       if (error) throw error;
       
-      return data || [];
+      return attachCustomerProfilesToOrders(supabase, data || [], { includeRole: true });
     },
     placeholderData: keepPreviousData, 
     enabled: !!(profile?.id || profile?.company_id),
@@ -248,19 +253,24 @@ export default function MyOrders() {
     if (docType === 'receipt') { doc.setFont("helvetica", "bold"); doc.setTextColor(16, 185, 129); doc.text("Status: PAID IN FULL", 140, 34); doc.setTextColor(15, 23, 42); } 
     else { doc.text(`Status: ${order.payment_status === 'paid' ? 'PAID' : 'UNPAID'}`, 140, 34); }
 
-    const isB2B = !!order.company_id || !!profile?.company_id;
+    const isB2B = isOrderB2B(order, profile);
 
-    const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || 'Retail Customer');
+    const customerProfile = getOrderCustomerProfile(order);
+    const matchingProfile =
+      profile && (!order.user_id || !profile.id || profile.id === order.user_id)
+        ? profile
+        : null;
+    const billName = isB2B ? (order.companies?.name || 'Agency') : resolveRetailCustomerName(order, matchingProfile);
     const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
     const billCityState = isB2B ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
-    const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '');
-    const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || profile?.email || '');
+    const billPhone = isB2B ? (order.companies?.phone || '') : (customerProfile?.contact_number || order.shipping_phone || matchingProfile?.contact_number || matchingProfile?.phone || '');
+    const billEmail = isB2B ? (order.companies?.email || '') : (customerProfile?.email || order.shipping_email || matchingProfile?.email || '');
 
     const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
     const shipAddress = order.shipping_address || 'No shipping address provided';
     const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-    const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
-    const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
+    const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || customerProfile?.contact_number || matchingProfile?.contact_number || matchingProfile?.phone || '';
+    const shipEmail = order.shipping_email || order.agency_patients?.email || customerProfile?.email || matchingProfile?.email || '';
 
     doc.setFont("helvetica", "bold"); doc.text("BILL TO:", 14, 50); doc.text("SHIP TO:", 110, 50); doc.setFont("helvetica", "normal");
     
@@ -423,7 +433,7 @@ export default function MyOrders() {
                 {displayOrders.map((order, index) => {
                   const isExpanded = expandedOrderId === order.id;
                   const shortId = order.id.split('-')[0].toUpperCase();
-                  const isB2B = !!order.company_id || !!profile?.company_id;
+                  const isB2B = isOrderB2B(order, profile);
                   
                   const isProxyOrder = order.user_id !== profile.id;
                   const hasAdjustments = order.order_items?.some(item => item.status === 'cancelled' || item.status === 'rejected');
@@ -439,19 +449,24 @@ export default function MyOrders() {
                     displayDriverPhone = assignedDriverObj?.contact_number || '';
                   }
 
-                  const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || profile?.full_name || 'Retail Customer');
+                  const customerProfile = getOrderCustomerProfile(order);
+                  const matchingProfile =
+                    profile && (!order.user_id || !profile.id || profile.id === order.user_id)
+                      ? profile
+                      : null;
+                  const billName = isB2B ? (order.companies?.name || 'Agency') : resolveRetailCustomerName(order, matchingProfile);
                   const billAddress = isB2B ? (order.companies?.address || 'No billing address provided') : (order.shipping_address || 'No billing address provided');
                   const billCityState = isB2B 
                     ? (`${order.companies?.city || ''}, ${order.companies?.state || ''} ${order.companies?.zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '')) 
                     : (`${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, ''));
-                  const billPhone = isB2B ? (order.companies?.phone || '') : (order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '');
-                  const billEmail = isB2B ? (order.companies?.email || '') : (order.user_profiles?.email || profile?.email || '');
+                  const billPhone = isB2B ? (order.companies?.phone || '') : (customerProfile?.contact_number || order.shipping_phone || matchingProfile?.contact_number || matchingProfile?.phone || '');
+                  const billEmail = isB2B ? (order.companies?.email || '') : (customerProfile?.email || order.shipping_email || matchingProfile?.email || '');
 
                   const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
                   const shipAddress = order.shipping_address || 'No shipping address provided';
                   const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
-                  const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || profile?.contact_number || profile?.phone || '';
-                  const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || profile?.email || '';
+                  const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || customerProfile?.contact_number || matchingProfile?.contact_number || matchingProfile?.phone || '';
+                  const shipEmail = order.shipping_email || order.agency_patients?.email || customerProfile?.email || matchingProfile?.email || '';
 
                   const isNet30 = order.payment_method === 'net_30';
                   let dueDateDisplay = '';

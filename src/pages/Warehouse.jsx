@@ -13,6 +13,13 @@ import { generatePackingSlipPdf } from '../lib/packingSlipPdf';
 import { evaluateReturnToApprovalEligibility } from '../lib/orderApprovalUtils';
 import ReturnToApprovalModal from '../components/ReturnToApprovalModal';
 import DriverRouteOrderManager from '../components/DriverRouteOrderManager';
+import {
+  attachCustomerProfilesToNestedOrderItems,
+  attachCustomerProfilesToOrders,
+  getOrderCustomerProfile,
+  isOrderB2B,
+  resolveRetailCustomerName,
+} from '../lib/orderCustomerUtils';
 
 export default function Warehouse() {
   const { profile } = useAuth();
@@ -80,7 +87,7 @@ export default function Warehouse() {
           quantity_variants,
           status,
           order_id,
-          orders ( id, company_id, user_id, companies ( name ), user_profiles ( full_name ) ),
+          orders ( id, company_id, user_id, patient_id, shipping_name, companies ( name, account_type ) ),
           product_variants ( 
             id, 
             name, 
@@ -92,7 +99,7 @@ export default function Warehouse() {
         .ilike('status', 'backordered');
 
       if (error) throw error;
-      return data || [];
+      return attachCustomerProfilesToNestedOrderItems(supabase, data || [], { includeRole: true });
     },
     refetchInterval: 30000, 
   });
@@ -128,7 +135,9 @@ export default function Warehouse() {
       }
 
       groups[sku].totalOwed += Number(item.quantity_variants || 0);
-      const customerName = item.orders?.companies?.name || item.orders?.user_profiles?.full_name || 'Retail Customer';
+      const customerName = isOrderB2B(item.orders)
+        ? (item.orders?.companies?.name || 'Agency')
+        : resolveRetailCustomerName(item.orders);
       groups[sku].pendingOrders.push({
         orderId: item.order_id,
         itemId: item.id,
@@ -205,10 +214,9 @@ export default function Warehouse() {
       }
 
       let query = supabase.from('orders').select(`
-          *, 
-          companies ( name, address, city, state, zip, phone, email ), 
+          *,
+          companies ( name, account_type, address, city, state, zip, phone, email ),
           agency_patients ( contact_number, email ),
-          user_profiles ( full_name, contact_number, email ),
           order_items ( 
             id, product_variant_id, quantity_variants, total_base_units, unit_price, line_total, status, 
             product_variants ( 
@@ -251,7 +259,7 @@ export default function Warehouse() {
         });
       }
       
-      return filteredData;
+      return attachCustomerProfilesToOrders(supabase, filteredData, { includeRole: true });
     },
     placeholderData: keepPreviousData,
     enabled: !!profile?.id && activeTab !== 'backorders' && activeTab !== 'route_order',
@@ -378,8 +386,8 @@ export default function Warehouse() {
   });
 
   const getDisplayName = (order) => {
-    if (order.companies?.name) return order.patient_name ? `${order.companies.name} - ${order.patient_name}` : order.companies.name;
-    return order.shipping_name || order.customer_name || 'Retail Customer';
+    if (isOrderB2B(order) && order.companies?.name) return order.patient_name ? `${order.companies.name} - ${order.patient_name}` : order.companies.name;
+    return resolveRetailCustomerName(order);
   };
 
   const toggleOrderDetails = (orderId) => {
@@ -600,7 +608,7 @@ export default function Warehouse() {
               <tbody className="divide-y divide-slate-100">
                 {displayOrders.map(order => {
                   const isExpanded = expandedOrderId === order.id;
-                  const isB2B = !!order.company_id;
+                  const isB2B = isOrderB2B(order);
                   
                   const isOrderDone = order.status === 'ready_for_delivery' || order.status === 'shipped';
                   const isReturn = activeTab === 'returns' && (order.status === 'attempted' || order.status === 'delivered_partial');
@@ -630,11 +638,12 @@ export default function Warehouse() {
                   const allItemsPicked = requiredPickItems.length > 0 && requiredPickItems.every(item => pickedItems[item.id]);
                   
                   // Updated fallback logic exactly as instructed
-                  const billName = isB2B ? (order.companies?.name || 'Agency') : (order.user_profiles?.full_name || order.shipping_name || 'Retail Customer');
+                  const customerProfile = getOrderCustomerProfile(order);
+                  const billName = isB2B ? (order.companies?.name || 'Agency') : resolveRetailCustomerName(order);
 
                   const shipName = order.shipping_name || (isB2B ? 'Patient' : billName);
-                  const shipEmail = order.shipping_email || order.agency_patients?.email || order.user_profiles?.email || '';
-                  const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || order.user_profiles?.contact_number || '';
+                  const shipEmail = order.shipping_email || order.agency_patients?.email || customerProfile?.email || '';
+                  const shipPhone = order.shipping_phone || order.agency_patients?.contact_number || customerProfile?.contact_number || '';
                   const shipAddress = order.shipping_address || 'No shipping address provided';
                   const shipCityState = `${order.shipping_city || ''}, ${order.shipping_state || ''} ${order.shipping_zip || ''}`.replace(/^[,\s]+|[,\s]+$/g, '');
 

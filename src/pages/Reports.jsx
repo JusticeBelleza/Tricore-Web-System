@@ -7,6 +7,17 @@ import {
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import {
+  attachCustomerProfilesToNestedOrderItems,
+  attachCustomerProfilesToOrders,
+  isOrderB2B,
+  resolveRetailCustomerName,
+} from '../lib/orderCustomerUtils';
+import {
+  buildWarehouseSummaryGroups,
+  getCaliforniaRangeIso,
+  renderWarehouseOrderSummaryPdf,
+} from '../lib/reportUtils';
 
 // 🚀 STRICT DATE FORMATTERS (Ensures California Time everywhere)
 const getCaliforniaDateString = (offsetDays = 0) => {
@@ -97,6 +108,20 @@ export default function Reports() {
     { value: 'warehouse_summary', label: 'Warehouse Order Summary' }
   ];
 
+  const handleStartDateChange = (nextStart) => {
+    setStartDate(nextStart);
+    if (nextStart && endDate && nextStart > endDate) {
+      setEndDate(nextStart);
+    }
+  };
+
+  const handleEndDateChange = (nextEnd) => {
+    setEndDate(nextEnd);
+    if (nextEnd && startDate && nextEnd < startDate) {
+      setStartDate(nextEnd);
+    }
+  };
+
   // 🚀 QUICK DATE SELECTION LOGIC (Locked to California time)
   const setQuickDate = (preset) => {
     let startDays = 0;
@@ -167,14 +192,13 @@ export default function Reports() {
   }, [startDate, endDate, reportType, debouncedSearch, authLoading]);
 
   const fetchKPIs = async () => {
-    const adjustedEndDate = new Date(endDate);
-    adjustedEndDate.setHours(23, 59, 59, 999);
+    const { startIso, endIso } = getCaliforniaRangeIso(startDate, endDate);
 
     let query = supabase.from('orders')
-      .select('id, total_amount, tax_amount, shipping_amount, subtotal, shipping_state, shipping_name, status, companies(name)')
+      .select('id, total_amount, tax_amount, shipping_amount, subtotal, shipping_state, shipping_name, status, companies(name, account_type)')
       .in('status', ['delivered', 'delivered_partial'])
-      .gte('created_at', new Date(startDate).toISOString())
-      .lte('created_at', adjustedEndDate.toISOString());
+      .gte('created_at', startIso)
+      .lte('created_at', endIso);
 
     if (debouncedSearch) {
       const cleanSearch = debouncedSearch.trim();
@@ -217,18 +241,17 @@ export default function Reports() {
   const fetchTableData = async () => {
     setLoading(true);
     try {
-      const adjustedEndDate = new Date(endDate);
-      adjustedEndDate.setHours(23, 59, 59, 999);
+      const { startIso, endIso } = getCaliforniaRangeIso(startDate, endDate);
 
       let query = supabase.from('orders').select(`
-        id, created_at, status, subtotal, shipping_amount, tax_amount, total_amount, company_id,
+        id, user_id, created_at, status, subtotal, shipping_amount, tax_amount, total_amount, company_id, patient_id,
         shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
-        companies ( name )
+        companies ( name, account_type )
         ${reportType === 'itemized' ? `, order_items ( quantity_variants, unit_price, line_total, status, product_variants ( name, sku, products ( name, base_sku ) ) )` : ''}
       `)
       .in('status', ['delivered', 'delivered_partial'])
-      .gte('created_at', new Date(startDate).toISOString())
-      .lte('created_at', adjustedEndDate.toISOString())
+      .gte('created_at', startIso)
+      .lte('created_at', endIso)
       .order('created_at', { ascending: false });
 
       let allData = [];
@@ -244,7 +267,8 @@ export default function Reports() {
         currentOffset += chunk;
       }
 
-      let formatted = formatData(allData);
+      const enrichedData = await attachCustomerProfilesToOrders(supabase, allData, { includeRole: true });
+      let formatted = formatData(enrichedData);
 
       if (debouncedSearch) {
         const s = debouncedSearch.trim().toLowerCase();
@@ -280,19 +304,18 @@ export default function Reports() {
   const fetchTopProductsAnalytics = async () => {
     setLoading(true);
     try {
-      const adjustedEndDate = new Date(endDate);
-      adjustedEndDate.setHours(23, 59, 59, 999);
+      const { startIso, endIso } = getCaliforniaRangeIso(startDate, endDate);
 
       let query = supabase.from('order_items').select(`
         quantity_variants, line_total, status, product_variant_id,
-        orders!inner ( id, created_at, status, shipping_name, companies(name), user_profiles(full_name) ),
+        orders!inner ( id, user_id, company_id, patient_id, created_at, status, shipping_name, companies(name, account_type) ),
         product_variants ( name, sku, products(name, base_sku) )
       `)
       .neq('status', 'cancelled')
       .neq('status', 'rejected')
       .in('orders.status', ['delivered', 'delivered_partial'])
-      .gte('orders.created_at', new Date(startDate).toISOString())
-      .lte('orders.created_at', adjustedEndDate.toISOString());
+      .gte('orders.created_at', startIso)
+      .lte('orders.created_at', endIso);
 
       let allData = [];
       let currentOffset = 0;
@@ -307,15 +330,16 @@ export default function Reports() {
         currentOffset += chunk;
       }
 
+      allData = await attachCustomerProfilesToNestedOrderItems(supabase, allData, { includeRole: true });
+
       let rev = 0;
       let items = 0;
       const uniqueOrders = new Set();
       const productMap = {};
 
       allData.forEach(row => {
-        const isB2B = !!row.orders.companies?.name;
-        const up = Array.isArray(row.orders.user_profiles) ? row.orders.user_profiles[0] : row.orders.user_profiles;
-        const buyerName = isB2B ? row.orders.companies.name : (up?.full_name || row.orders.shipping_name || 'Retail Customer');
+        const isB2B = isOrderB2B(row.orders);
+        const buyerName = isB2B ? (row.orders.companies?.name || 'Agency') : resolveRetailCustomerName(row.orders);
         const pName = row.product_variants?.products?.name || row.product_variants?.name || 'Unknown';
         const pSku = row.product_variants?.sku || row.product_variants?.products?.base_sku || '';
 
@@ -368,19 +392,18 @@ export default function Reports() {
   const fetchProfitabilityReport = async () => {
     setLoading(true);
     try {
-      const adjustedEndDate = new Date(endDate);
-      adjustedEndDate.setHours(23, 59, 59, 999);
+      const { startIso, endIso } = getCaliforniaRangeIso(startDate, endDate);
 
       let query = supabase.from('order_items').select(`
         quantity_variants, line_total, status, product_variant_id,
-        orders!inner ( id, created_at, status, shipping_name, companies(name) ),
+        orders!inner ( id, user_id, company_id, patient_id, created_at, status, shipping_name, companies(name, account_type) ),
         product_variants ( name, sku, products(name, base_sku) )
       `)
       .neq('status', 'cancelled')
       .neq('status', 'rejected')
       .in('orders.status', ['delivered', 'delivered_partial'])
-      .gte('orders.created_at', new Date(startDate).toISOString())
-      .lte('orders.created_at', adjustedEndDate.toISOString());
+      .gte('orders.created_at', startIso)
+      .lte('orders.created_at', endIso);
 
       let allData = [];
       let currentOffset = 0;
@@ -453,18 +476,17 @@ export default function Reports() {
   const fetchWarehouseSummary = async () => {
     setLoading(true);
     try {
-      const adjustedEndDate = new Date(endDate);
-      adjustedEndDate.setHours(23, 59, 59, 999);
+      const { startIso, endIso } = getCaliforniaRangeIso(startDate, endDate);
 
       let query = supabase.from('orders').select(`
-        id, status, company_id, created_at,
+        id, user_id, status, company_id, patient_id, created_at,
         shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip,
-        companies ( name, address, city, state, zip ),
+        companies ( name, account_type, address, city, state, zip ),
         order_items ( quantity_variants, status, product_variant_id, product_variants ( name, sku, products ( name, base_sku ) ) )
       `)
       .in('status', ['processing', 'ready_for_delivery', 'shipped', 'delivered', 'delivered_partial'])
-      .gte('created_at', new Date(startDate).toISOString())
-      .lte('created_at', adjustedEndDate.toISOString())
+      .gte('created_at', startIso)
+      .lte('created_at', endIso)
       .order('created_at', { ascending: false });
 
       let allData = [];
@@ -480,94 +502,11 @@ export default function Reports() {
         currentOffset += chunk;
       }
 
-      const customerMap = {};
-
-      allData.forEach(order => {
-        const isB2B = !!order.company_id;
-        const custName = isB2B ? (order.companies?.name || 'Agency') : (order.shipping_name || 'Retail Customer');
-        const address = isB2B ? order.companies?.address : order.shipping_address;
-        const city = isB2B ? order.companies?.city : order.shipping_city;
-        const state = isB2B ? order.companies?.state : order.shipping_state;
-        const zip = isB2B ? order.companies?.zip : order.shipping_zip;
-        
-        const fullAddress = `${address || ''} ${city || ''} ${state || ''} ${zip || ''}`.replace(/\s+/g, ' ').trim() || 'No Address Provided';
-        const custKey = `${custName}_${fullAddress}`;
-
-        if (!customerMap[custKey]) {
-          customerMap[custKey] = { 
-            name: custName, 
-            address: fullAddress, 
-            items: {}, 
-            latestOrder: order.created_at
-          };
-        } else {
-          if (new Date(order.created_at) > new Date(customerMap[custKey].latestOrder)) {
-            customerMap[custKey].latestOrder = order.created_at;
-          }
-        }
-
-        const patientName = order.shipping_name ? String(order.shipping_name).trim().toUpperCase() : '';
-
-        order.order_items?.forEach(item => {
-          if (item.status === 'cancelled' || item.status === 'rejected') return;
-
-          const qty = Number(item.quantity_variants || 0);
-          const isBackordered = item.status?.toLowerCase() === 'backordered';
-          const shippedQty = isBackordered ? 0 : qty;
-          const backorderQty = isBackordered ? qty : 0;
-          
-          const pName = item.product_variants?.products?.name || 'Unknown Item';
-          const vName = item.product_variants?.name || '';
-          const sku = item.product_variants?.sku || item.product_variants?.products?.base_sku || '';
-          
-          const itemKey = `${sku}_${pName}_${patientName}`; 
-
-          if (!customerMap[custKey].items[itemKey]) {
-            customerMap[custKey].items[itemKey] = { name: pName, variant: vName, sku, required: 0, shipped: 0, backorder: 0, patientName };
-          }
-          customerMap[custKey].items[itemKey].required += qty;
-          customerMap[custKey].items[itemKey].shipped += shippedQty;
-          customerMap[custKey].items[itemKey].backorder += backorderQty;
-        });
-      });
-
-      let finalData = Object.values(customerMap).map(c => ({
-        ...c,
-        items: Object.values(c.items).sort((a, b) => {
-          if (a.patientName === '' && b.patientName !== '') return -1;
-          if (b.patientName === '' && a.patientName !== '') return 1;
-          return a.patientName.localeCompare(b.patientName) || a.name.localeCompare(b.name);
-        })
-      })).sort((a, b) => new Date(b.latestOrder) - new Date(a.latestOrder));
-
-      if (debouncedSearch) {
-        const s = debouncedSearch.trim().toLowerCase();
-        finalData = finalData.filter(cust => 
-          cust.name.toLowerCase().includes(s) || cust.address.toLowerCase().includes(s)
-        );
-      }
-
-      const structuredData = finalData.map(c => {
-        const patientsMap = {};
-        c.items.forEach(item => {
-          if (!patientsMap[item.patientName]) patientsMap[item.patientName] = [];
-          patientsMap[item.patientName].push(item);
-        });
-
-        const patientsArray = Object.entries(patientsMap).map(([pName, items]) => ({
-          patientName: pName,
-          items: items
-        })).sort((a, b) => {
-          if (a.patientName === '') return -1;
-          if (b.patientName === '') return 1;
-          return a.patientName.localeCompare(b.patientName);
-        });
-
-        return { ...c, patients: patientsArray };
-      });
+      const enrichedOrders = await attachCustomerProfilesToOrders(supabase, allData, { includeRole: true });
+      const structuredData = buildWarehouseSummaryGroups(enrichedOrders, debouncedSearch);
 
       setWarehouseData(structuredData);
-      setTotalCount(structuredData.length); 
+      setTotalCount(structuredData.length);
 
     } catch (error) {
       console.error('Error generating warehouse summary:', error);
@@ -579,7 +518,7 @@ export default function Reports() {
   const formatData = (rawData) => {
     const formatted = [];
     rawData.forEach(order => {
-      const customer = order.company_id ? (order.companies?.name || 'Agency') : (order.shipping_name || 'Retail Customer');
+      const customer = isOrderB2B(order) ? (order.companies?.name || 'Agency') : resolveRetailCustomerName(order);
       const streetAddress = order.shipping_address || 'N/A';
       const city = order.shipping_city || 'N/A';
       const state = (order.shipping_state || 'N/A').trim();
@@ -647,15 +586,14 @@ export default function Reports() {
         fileName = `Tricore_Profitability_Report_${startDate}_to_${endDate}.csv`;
         
       } else if (reportType === 'warehouse_summary') {
-        // ✨ NEW: Required, Shipped, Backorder columns added to CSV
-        const headers = ["Customer/Agency", "Address", "Patient Name", "Required", "Shipped", "Backorder", "Variant", "Product Name", "SKU"];
+        const headers = ["Customer/Agency", "Address", "Patient Name", "Delivery Address", "Required", "Shipped", "Backorder", "Variant", "Product Name", "SKU"];
         const rows = [];
         warehouseData.forEach(cust => {
           cust.patients.forEach(p => {
             p.items.forEach(item => {
               const variantStr = (item.variant && item.variant !== 'Default') ? item.variant : '';
               rows.push([
-                `"${cust.name}"`, `"${cust.address}"`, `"${p.patientName}"`,
+                `"${cust.name}"`, `"${cust.address}"`, `"${p.patientName}"`, `"${p.shippingAddress || cust.address}"`,
                 item.required, item.shipped, item.backorder, `"${variantStr}"`, `"${item.name}"`, `"${item.sku}"`
               ]);
             });
@@ -780,54 +718,13 @@ export default function Reports() {
     };
 
     if (reportType === 'warehouse_summary') {
-      const tableRows = [];
-      warehouseData.forEach(cust => {
-        tableRows.push([{ 
-          content: `${cust.name.toUpperCase()} \n${cust.address}`, 
-          colSpan: 6,
-          styles: { fontStyle: 'bold', fontSize: 10, fillColor: [248, 250, 252], textColor: [15, 23, 42] } 
-        }]);
-        
-        cust.patients.forEach(p => {
-          if (p.items.length === 0) return;
-          
-          if (p.patientName !== '') {
-            tableRows.push([{ content: `  ${p.patientName.toUpperCase()}`, colSpan: 6, styles: { fontStyle: 'bold', fontSize: 9, textColor: [15, 23, 42] } }]);
-          }
-          
-          p.items.forEach(item => {
-            const variantText = (item.variant && item.variant !== 'Default') ? item.variant : '';
-            tableRows.push([
-              item.required.toString(),
-              item.shipped.toString(),
-              item.backorder.toString(),
-              variantText,
-              item.name,
-              item.sku || ''
-            ]);
-          });
-        });
-        tableRows.push([{ content: ' ', colSpan: 6, styles: { minCellHeight: 6 } }]); 
-      });
-
-      autoTable(doc, {
-        startY: tableStartY,
-        head: [["REQUIRED", "SHIPPED", "BACKORDER", "VARIANT", "PRODUCT", "SKU"]],
-        body: tableRows,
-        theme: 'plain', 
-        headStyles: { ...commonHeadStyles, halign: 'center' },
-        styles: { fontSize: 8, cellPadding: 2.5, textColor: [15, 23, 42] }, 
-        columnStyles: { 
-          // Increased widths to 24 and 26 to prevent awkward word wrapping
-          0: { cellWidth: 24, halign: 'center', fontStyle: 'bold' }, 
-          1: { cellWidth: 24, halign: 'center', fontStyle: 'bold' }, 
-          2: { cellWidth: 26, halign: 'center', fontStyle: 'bold' }, 
-          3: { cellWidth: 30, halign: 'center', textColor: [100, 100, 100] },
-          4: { cellWidth: 'auto' },
-          5: { cellWidth: 25 }
-        },
-        didDrawPage: (data) => { if (data.pageNumber > 1) { drawHeader(); drawFooter(); } },
-        margin: { top: tableStartY, bottom: 20 } 
+      renderWarehouseOrderSummaryPdf({
+        doc,
+        JsPdfCtor: jsPDF,
+        warehouseData,
+        drawHeader,
+        drawFooter,
+        getTableStartY: () => tableStartY,
       });
       doc.save(`Tricore_Warehouse_Order_Summary_${startDate}_to_${endDate}.pdf`);
 
@@ -1017,14 +914,14 @@ export default function Reports() {
               <div className="grid grid-cols-2 sm:flex sm:items-center gap-3 w-full sm:w-auto z-10 relative">
                 <div className="w-full sm:w-auto">
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Start Date</label>
-                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full sm:w-36 px-2.5 sm:px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-[13px] sm:text-sm font-bold text-slate-700 shadow-sm transition-all hover:border-slate-300" />
+                  <input type="date" value={startDate} onChange={(e) => handleStartDateChange(e.target.value)} className="w-full sm:w-36 px-2.5 sm:px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-[13px] sm:text-sm font-bold text-slate-700 shadow-sm transition-all hover:border-slate-300" />
                 </div>
                 
                 <ArrowRight className="hidden sm:block text-slate-300 mt-5 shrink-0" size={16} />
                 
                 <div className="w-full sm:w-auto">
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">End Date</label>
-                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full sm:w-36 px-2.5 sm:px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-[13px] sm:text-sm font-bold text-slate-700 shadow-sm transition-all hover:border-slate-300" />
+                  <input type="date" value={endDate} onChange={(e) => handleEndDateChange(e.target.value)} className="w-full sm:w-36 px-2.5 sm:px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 text-[13px] sm:text-sm font-bold text-slate-700 shadow-sm transition-all hover:border-slate-300" />
                 </div>
               </div>
               
@@ -1250,14 +1147,24 @@ export default function Reports() {
                       </td>
                     </tr>
                     
-                    {cust.patients.map((p, pIdx) => (
+                    {cust.patients.map((p, pIdx) => {
+                      const showPatientRow =
+                        p.patientName !== '' &&
+                        (p.patientName.toUpperCase() !== (cust.name || '').toUpperCase() ||
+                          (p.shippingAddress && p.shippingAddress !== cust.address));
+                      return (
                       <React.Fragment key={`${i}-${pIdx}`}>
-                        {p.patientName !== '' && (
+                        {showPatientRow && (
                           <tr className="bg-white border-b border-slate-50">
                             <td colSpan="6" className="px-6 pt-4 pb-2">
                               <span className="text-[11px] font-bold uppercase tracking-widest flex items-center gap-1.5 text-blue-600">
                                 {p.patientName}
                               </span>
+                              {p.shippingAddress && p.shippingAddress !== cust.address && (
+                                <div className="text-xs font-medium text-slate-500 mt-0.5">
+                                  {p.shippingAddress}
+                                </div>
+                              )}
                             </td>
                           </tr>
                         )}
@@ -1292,7 +1199,8 @@ export default function Reports() {
                           </tr>
                         ))}
                       </React.Fragment>
-                    ))}
+                      );
+                    })}
                   </React.Fragment>
                 ))}
               </tbody>
